@@ -141,9 +141,9 @@ the next one: fix now. Belongs to code that's about to be replaced: defer.
 - After the merge, switch back to `main` and pull.
 - Where `gh` is not authenticated (cloud sessions), use the GitHub MCP equivalents:
   `create_pull_request`, then `enable_pr_auto_merge` with `SQUASH`.
-- GitHub refuses auto-merge on a PR with nothing pending ("clean status"). That is every
-  PR while `main` has no required status check (none as of 2026-10-03; CI runs but is not
-  required). Then stop and ask the user to merge.
+- `main` is protected and requires the CI `check` job (as of 2026-10-03), so auto-merge
+  waits for it. If GitHub refuses auto-merge with "clean status" (nothing pending), the
+  requirement has lapsed: stop and ask the user to merge.
 
 ## Project
 
