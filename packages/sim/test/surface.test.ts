@@ -2,6 +2,8 @@
 import { describe, expect, it } from "vitest";
 import {
   CONTENTS_SOLID,
+  boxLeafs,
+  boxOnPlaneSide,
   checkBspIntegrity,
   clusterPvs,
   faceLightmapBytes,
@@ -146,5 +148,77 @@ describe("point leaf and PVS", () => {
     const synthetic: Bsp = { ...bsp, visibility: { numClusters: 20, offsets, data } };
     expect(Array.from(clusterPvs(synthetic, 0))).toEqual([0x05, 0, 0]);
     expect(Array.from(clusterPvs(synthetic, 1))).toEqual([0, 0, 0]);
+  });
+});
+
+describe("box against planes and leafs", () => {
+  /** The fixture with plane 0 replaced, for cases the all-axial fixture lacks. */
+  const withPlane0 = (normal: [number, number, number], dist: number, type: number): Bsp => {
+    const planes = { ...bsp.planes, normal: bsp.planes.normal.slice(), dist: bsp.planes.dist.slice(), type: bsp.planes.type.slice() };
+    planes.normal.set(normal, 0);
+    planes.dist[0] = dist;
+    planes.type[0] = type;
+    return { ...bsp, planes };
+  };
+
+  it("axial planes compare one axis; touching from in front is in front, from behind is behind", () => {
+    // Plane 2 is x = -512 (normal +X, type 0).
+    expect([...bsp.planes.normal.subarray(6, 9), bsp.planes.dist[2], bsp.planes.type[2]]).toEqual([1, 0, 0, -512, 0]);
+    expect(boxOnPlaneSide(bsp, 2, [-512, 0, 0], [-400, 1, 1])).toBe(1);
+    expect(boxOnPlaneSide(bsp, 2, [-600, 0, 0], [-512, 1, 1])).toBe(2);
+    expect(boxOnPlaneSide(bsp, 2, [-600, 0, 0], [-500, 1, 1])).toBe(3);
+  });
+
+  it("other planes test the nearest and farthest corners, with the same touching rule", () => {
+    // Normal components exact in float32 (not unit length: the test does not need it), so
+    // the touching cases land exactly on the plane.
+    const tilted = withPlane0([0.5, 0.5, 0], 10, 3);
+    expect(boxOnPlaneSide(tilted, 0, [0, 0, 0], [5, 5, 5])).toBe(2); // farthest corner 5
+    expect(boxOnPlaneSide(tilted, 0, [0, 0, 0], [10, 10, 0])).toBe(3); // farthest corner touches: 10
+    expect(boxOnPlaneSide(tilted, 0, [10, 10, 0], [20, 20, 0])).toBe(1); // nearest corner touches: 10
+    expect(boxOnPlaneSide(tilted, 0, [0, 0, 0], [9.5, 10, 0])).toBe(2); // farthest corner 9.75
+    // A negative normal component takes the other corner.
+    const flipped = withPlane0([-0.5, 0.5, 0], 10, 3);
+    expect(boxOnPlaneSide(flipped, 0, [-20, 10, 0], [-10, 20, 0])).toBe(1); // nearest (-10, 10) touches
+    expect(boxOnPlaneSide(flipped, 0, [-10, 0, 0], [0, 10, 0])).toBe(3); // farthest (-10, 10) touches
+    expect(boxOnPlaneSide(flipped, 0, [0, 0, 0], [10, 10, 0])).toBe(2); // farthest (0, 10): 5
+  });
+
+  it("a box inside one empty leaf lists only it, with no top node", () => {
+    // The player start, in cluster 6 (x -512..-288, y -32..32, z 0..128).
+    const { leafs, topNode } = boxLeafs(bsp, [-456, -8, 38], [-440, 8, 54], 64);
+    expect(leafs).toEqual([pointLeaf(bsp, -448, 0, 46)]);
+    expect(topNode).toBe(-1);
+  });
+
+  it("a box over the whole map lists every world leaf once; a full list keeps the same top node", () => {
+    const all = boxLeafs(bsp, [-1024, -1024, -1024], [1024, 1024, 1024], 1024);
+    // The world's leafs are those reachable from model 0's head node; the func_wall's own tree has the rest.
+    const reachable = new Set<number>();
+    const stack = [bsp.models.headNode[0]!];
+    while (stack.length) {
+      const n = stack.pop()!;
+      if (n < 0) reachable.add(-(n + 1));
+      else stack.push(bsp.nodes.children[n * 2]!, bsp.nodes.children[n * 2 + 1]!);
+    }
+    expect([...all.leafs].sort((a, b) => a - b)).toEqual([...reachable].sort((a, b) => a - b));
+    expect(all.topNode).toBe(bsp.models.headNode[0]);
+    const three = boxLeafs(bsp, [-1024, -1024, -1024], [1024, 1024, 1024], 3);
+    expect(three.leafs).toEqual(all.leafs.slice(0, 3));
+    expect(three.topNode).toBe(all.topNode);
+  });
+
+  it("stops at a child index past the node lump instead of looping", () => {
+    const children = bsp.nodes.children.slice();
+    children[1] = bsp.nodes.count + 5;
+    const broken: Bsp = { ...bsp, nodes: { ...bsp.nodes, children } };
+    const { leafs } = boxLeafs(broken, [-1024, -1024, -1024], [1024, 1024, 1024], 1024);
+    expect(leafs.length).toBeGreaterThan(0);
+    expect(leafs.length).toBeLessThan(boxLeafs(bsp, [-1024, -1024, -1024], [1024, 1024, 1024], 1024).leafs.length);
+  });
+
+  it("a box straddling the pillar's side lists the empty leaf and the pillar's solid leaf", () => {
+    const { leafs } = boxLeafs(bsp, [-296, -8, 38], [-280, 8, 54], 64);
+    expect(leafs.map((l) => bsp.leafs.cluster[l]).sort()).toEqual([-1, 6]);
   });
 });

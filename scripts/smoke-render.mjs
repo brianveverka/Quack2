@@ -4,7 +4,8 @@
 // (WebGL2 through ANGLE/SwiftShader worked without flags, measured 2026-10-03 with
 // Chromium 141; the run prints the renderer it got), checks three views by reading back
 // pixels, and saves a screenshot of each. It checks the fixture's func_wall is drawn,
-// and drawn at a moved entity origin, and rotated, in copies of the map. Another load mounts synthetic
+// and drawn at a moved entity origin, and rotated, in copies of the map, and that copies
+// of it outside the PVS or the view frustum are culled. Another load mounts synthetic
 // game data (a pak and a deflated zip built here, never id data) and checks the textures
 // arrive, and that ?map= finds a BSP packed into a mounted pak.
 // Usage: node scripts/smoke-render.mjs [outdir]   (default packages/client/dist/smoke)
@@ -47,6 +48,14 @@ SYNTHETIC["/data/moved.bsp"] = withEntityString(fixtureBsp, movedEntities);
 SYNTHETIC["/data/rotated.bsp"] = withEntityString(
   fixtureBsp,
   fixtureEntities.replace('"model" "*1"', '"model" "*1"\n"origin" "0 192 0"\n"angle" "90"'),
+);
+// Culled: two more instances of the func_wall's model. One 256 units down, buried under
+// the floor, touches no cluster, so the server would never send it. One 320 east
+// (x -64..0) is in cluster 2 with the original, in every PVS, and behind the camera of
+// the wall-north view below, which looks west from x -160.
+SYNTHETIC["/data/culled.bsp"] = withEntityString(
+  fixtureBsp,
+  `${fixtureEntities}{\n"classname" "func_wall"\n"model" "*1"\n"origin" "0 0 -256"\n}\n{\n"classname" "func_wall"\n"model" "*1"\n"origin" "320 0 0"\n}\n`,
 );
 // The moved map packed at a path the server does not have, so only the pak can supply it.
 SYNTHETIC["/data/maps.pak"] = writePak({
@@ -246,15 +255,21 @@ try {
   const compiled = await wallBoxes("compiled");
   const compiledRotated = await wallBoxes("compiled", ROTATED_VIEWS.slice(1));
   console.log(`  brush models: ${JSON.stringify(compiled[0].brushModels)}, stats ${JSON.stringify(compiled[0].stats)}`);
+  const culls = (r) => [r.stats.brushModels, r.stats.brushModelsOutsidePvs, r.stats.brushModelsOutsideFrustum].join(" ");
+  // From the south view the compiled wall is 60 degrees off the view axis, outside the
+  // 45-degree half-angle frustum, and from the north view the moved one is.
   check(
-    JSON.stringify(compiled[0].brushModels) === JSON.stringify(["func_wall *1 at 0 0 0"]) && compiled.every((r) => r.stats.brushModels === 1),
-    "the fixture's func_wall is placed from the entity string and drawn",
+    JSON.stringify(compiled[0].brushModels) === JSON.stringify(["func_wall *1 at 0 0 0"]) && culls(compiled[0]) === "1 0 0" && culls(compiled[1]) === "0 0 1",
+    `the fixture's func_wall is placed from the entity string, drawn in view and frustum culled out of it (drawn, outside PVS, outside frustum: ${compiled.map(culls).join(", ")})`,
   );
   await page.goto(`${ORIGIN}/?map=data/moved.bsp`);
   await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
   const moved = await wallBoxes("moved");
   console.log(`  moved brush models: ${JSON.stringify(moved[0].brushModels)}`);
-  check(JSON.stringify(moved[0].brushModels) === JSON.stringify(["func_wall *1 at 0 -320 0"]), "moved map places the func_wall at its origin key");
+  check(
+    JSON.stringify(moved[0].brushModels) === JSON.stringify(["func_wall *1 at 0 -320 0"]) && culls(moved[0]) === "0 0 1" && culls(moved[1]) === "1 0 0",
+    `moved map places the func_wall at its origin key, frustum culled by its moved box (${moved.map(culls).join(", ")})`,
+  );
   const [north, south] = [0, 1].map((i) => changed(compiled[i].box, moved[i].box));
   const frames = [0, 1].map((i) => changed(compiled[i].frame, moved[i].frame));
   console.log(`  changed pixels: compiled spot ${north.toFixed(3)}, moved spot ${south.toFixed(3)}, whole frames ${frames.map((f) => f.toFixed(3))}`);
@@ -277,6 +292,27 @@ try {
   check(rotatedFrames.every((f) => f < 0.06), "rotating the func_wall changes only the wall's own pixels");
   check(left > 0.9, "the rotated func_wall leaves its compiled spot");
   check(arrived > 0.9, "the rotated func_wall shows where yaw 90 then its origin put it");
+
+  // Culling: the buried copy is outside the PVS from every eye in the map, the copy
+  // east of the wall-north camera is outside its frustum; the stats prove the culls. Neither
+  // copy could show there anyway, so the frame matching the one-wall map pixel for pixel
+  // proves only that culling did not drop the original. The player start view sees the east copy.
+  await page.goto(`${ORIGIN}/?map=data/culled.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const [culledNorth] = await wallBoxes("culled", WALL_VIEWS.slice(0, 1));
+  console.log(`  culled brush models: ${JSON.stringify(culledNorth.brushModels)}, stats ${JSON.stringify(culledNorth.stats)}`);
+  check(
+    JSON.stringify(culledNorth.brushModels) === JSON.stringify(["func_wall *1 at 0 0 0", "func_wall *1 at 0 0 -256", "func_wall *1 at 320 0 0"]),
+    "culled map places three instances of the func_wall",
+  );
+  check(culls(culledNorth) === "1 1 1", `wall-north view draws the original, PVS culls the buried copy, frustum culls the one behind (${culls(culledNorth)})`);
+  const culledFrame = changed(compiled[0].frame, culledNorth.frame);
+  check(culledFrame === 0 && changed(compiled[0].box, culledNorth.box) === 0, `culling keeps the visible original: frame matches the one-wall map (${culledFrame.toFixed(3)} of it changed)`);
+  const culledSpawn = await shoot("culled-spawn", { origin: [-448, 0, 46], pitch: 0, yaw: 0 });
+  check(culls({ stats: culledSpawn }) === "2 1 0", `player start view draws the original and the east copy (${culls({ stats: culledSpawn })})`);
+  // Outside the map every world face is drawn, so brush models are not PVS culled either.
+  const culledOutside = await shoot("culled-outside", { origin: [1200, 0, 400], pitch: 20, yaw: 180 });
+  check(culledOutside.cluster === -1 && culledOutside.brushModelsOutsidePvs === 0, "outside the map, no brush model is PVS culled");
 
   // Game data: ?pak= mounts in order; 404s are reported, in URL order, and skipped.
   await page.goto(`${ORIGIN}/?pak=data/absent-1.pak&pak=data/synthetic.pak&pak=data/absent-2.pak&pak=data/synthetic.zip`);

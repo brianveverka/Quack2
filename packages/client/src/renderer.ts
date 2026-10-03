@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // WebGL2 world renderer: one static vertex buffer for every model, a world index buffer
 // rebuilt when the eye changes cluster, a static index buffer for the brush models drawn
-// at their entity origins and angles, one draw per texture per model.
+// at their entity origins and angles (culled per frame by PVS and frustum, see cull.ts),
+// one draw per texture per model.
 
 import { pointLeaf, type Bsp } from "@quack2/sim";
 import type { BrushModelInstance } from "./bmodels.js";
+import { cullBox, entityClusters, fatPvs, frustumPlanes, renderBox, touchesPvs } from "./cull.js";
 import { buildLightmapAtlas } from "./lightmap.js";
 import { fovY, modelMatrix, multiply, perspective, viewMatrix, type Mat4 } from "./math.js";
 import { resolveTextures, type TextureImage, type TextureSource } from "./textures.js";
@@ -65,6 +67,10 @@ export interface FrameStats {
   readonly visibleFaces: number;
   /** Brush model instances drawn. */
   readonly brushModels: number;
+  /** Brush model instances not drawn because they touch no cluster in the eye's fat PVS. */
+  readonly brushModelsOutsidePvs: number;
+  /** Brush model instances in the PVS but not drawn because their box is outside the view frustum. */
+  readonly brushModelsOutsideFrustum: number;
   readonly draws: number;
 }
 
@@ -73,6 +79,11 @@ interface InstanceDraws {
   readonly model: Mat4;
   /** Ranges in the brush model index buffer. */
   readonly draws: readonly DrawRange[];
+  /** Clusters the server links the entity into. */
+  readonly clusters: readonly number[];
+  /** World box R_DrawBrushModel culls by. */
+  readonly mins: readonly number[];
+  readonly maxs: readonly number[];
 }
 
 export class WorldRenderer {
@@ -140,7 +151,12 @@ export class WorldRenderer {
     for (const inst of brushModels) {
       const { base, list } = lists.get(inst.model)!;
       if (list.draws.length === 0) continue;
-      this.instances.push({ model: modelMatrix(inst.origin, inst.angles), draws: list.draws.map((d) => ({ ...d, first: d.first + base })) });
+      this.instances.push({
+        model: modelMatrix(inst.origin, inst.angles),
+        draws: list.draws.map((d) => ({ ...d, first: d.first + base })),
+        clusters: entityClusters(bsp, inst),
+        ...renderBox(bsp, inst),
+      });
     }
     this.brushIndexBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.brushIndexBuffer);
@@ -193,17 +209,28 @@ export class WorldRenderer {
     gl.uniformMatrix4fv(this.uModel, false, IDENTITY);
     this.drawRanges(this.drawList.draws);
     let draws = this.drawList.draws.length;
-    // Brush models are not PVS culled (the engine's server drops entities outside the
-    // client's PVS). One outside it costs draw time but cannot show: every world face
-    // in front of it is visible from the eye, so it is in the PVS and drawn.
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.brushIndexBuffer);
+    const pvs = this.instances.length > 0 ? fatPvs(bsp, view.origin) : null;
+    const frustum = frustumPlanes(this.viewProj);
+    let brushModels = 0;
+    let brushModelsOutsidePvs = 0;
+    let brushModelsOutsideFrustum = 0;
     for (const inst of this.instances) {
+      if (pvs && !touchesPvs(bsp, pvs, inst.clusters)) {
+        brushModelsOutsidePvs++;
+        continue;
+      }
+      if (cullBox(frustum, inst.mins, inst.maxs)) {
+        brushModelsOutsideFrustum++;
+        continue;
+      }
       gl.uniformMatrix4fv(this.uModel, false, inst.model);
       this.drawRanges(inst.draws);
       draws += inst.draws.length;
+      brushModels++;
     }
     gl.bindVertexArray(null);
-    return { leaf, cluster, visibleFaces: this.drawList.visibleFaces, brushModels: this.instances.length, draws };
+    return { leaf, cluster, visibleFaces: this.drawList.visibleFaces, brushModels, brushModelsOutsidePvs, brushModelsOutsideFrustum, draws };
   }
 
   private drawRanges(ranges: readonly DrawRange[]): void {

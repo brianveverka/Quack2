@@ -4,9 +4,9 @@ Milestones in order. Each is roughly one session; split further when starting it
 
 ## 1. Game data and renderer completeness
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps, PVS, inline brush
-models at their entity origin and spawn angles, free-fly camera, `.wal` textures and
-`?map=` BSPs from mounted pak/zip data, picked archives read by range, checker fallback,
-`pnpm smoke`).
+models at their entity origin and spawn angles, culled by fat PVS and frustum, free-fly
+camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data, picked archives read
+by range, checker fallback, `pnpm smoke`).
 Remaining:
 - Brightness is not checked against the engine: GL Quake 2 scales textures by
   `gl_intensity` (default 2) and the lightmap blend differs from a plain multiply.
@@ -23,12 +23,12 @@ Remaining:
 - Entity keys match case sensitively; the game's ED_ParseField uses Q_stricmp, so a
   map with "Origin" or "Angle" places the entity differently here, and one with
   "Model" is not drawn.
-- Brush models are drawn every frame with no PVS or frustum culling. Correct, but
-  wasted draws on maps with many doors.
 - Only light style 0 is drawn; styles 1-3 (switchable and animated lights) are ignored.
 - Surface flags: SURF_SKY, SURF_WARP, SURF_TRANS33/66 draw as ordinary opaque faces
   (NODRAW is skipped). Needs a sky box, warp shader, and a sorted translucent pass.
-- No area portal (areabits) or frustum culling; PVS only. The engine's second view
+- No area portal (areabits) or frustum culling of the world; PVS only. Brush models are
+  not checked against areas either (SV_BuildClientFrame CM_AreasConnected), so one
+  behind a closed door's area portal is drawn if the PVS reaches it. The engine's second view
   cluster near water surfaces (R_MarkLeaves `viewcluster2`) is not handled either.
 - `lightmapExtents` computes in double, the engine in float; may differ by a luxel on
   non-axial texinfo. Check against a map with rotated or scaled textures.
