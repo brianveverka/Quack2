@@ -125,6 +125,19 @@ For each unit of work:
 **What gets fixed now:** decide by coupling, not timing. Caused by this change, or blocks
 the next one: fix now. Belongs to code that's about to be replaced: defer.
 
+## Git workflow
+- Never commit directly to `main`.
+- For each task, branch off an up-to-date `main`: `git checkout main && git pull`, then
+  `git checkout -b <type>/<short-desc>` (e.g. `feat/multi-map-loader`).
+- Make focused commits with clear messages.
+- When the task is done: push the branch, open a PR with `gh pr create` (a real title,
+  and a body summarizing what changed and why), then run `gh pr merge --auto --squash`.
+- If CI checks fail, fix them on the same branch and push again. Never bypass checks or
+  merge with `--admin`.
+- After the merge, switch back to `main` and pull.
+- Where `gh` is not authenticated (cloud sessions), use the GitHub MCP equivalents:
+  `create_pull_request`, then `enable_pr_auto_merge` with `SQUASH`.
+
 ## Project
 
 Quack2: a browser arena shooter that loads Quake 2 BSP (IBSP v38) maps from an open
