@@ -25,13 +25,13 @@ export function visRowBytes(bsp: Bsp): number {
 /**
  * Decompressed PVS row of a cluster: bit c set means cluster c is potentially visible.
  * Rows are run-length encoded: a zero byte is followed by a count of zero bytes.
- * A map without vis data sees everything; cluster -1 (in solid) sees nothing, as in the
- * engine. Callers that want "draw everything when outside the map" check -1 themselves.
+ * Cluster -1 (in solid) sees nothing, as in the engine. A map without vis data has no
+ * clusters and an empty row; callers that want "draw everything" in either case check
+ * for it themselves.
  */
 export function clusterPvs(bsp: Bsp, cluster: number, out = new Uint8Array(visRowBytes(bsp))): Uint8Array {
   const { numClusters, offsets, data } = bsp.visibility;
   const row = visRowBytes(bsp);
-  if (numClusters === 0) return out.fill(0xff, 0, row);
   if (cluster < 0 || cluster >= numClusters) return out.fill(0, 0, row);
   let i = offsets[cluster * 2 + DVIS_PVS]!;
   let o = 0;

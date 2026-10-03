@@ -13,7 +13,8 @@ camera, checker placeholders, `pnpm smoke`). Remaining:
 - Only light style 0 is drawn; styles 1-3 (switchable and animated lights) are ignored.
 - Surface flags: SURF_SKY, SURF_WARP, SURF_TRANS33/66 draw as ordinary opaque faces
   (NODRAW is skipped). Needs a sky box, warp shader, and a sorted translucent pass.
-- No area portal (areabits) or frustum culling; PVS only.
+- No area portal (areabits) or frustum culling; PVS only. The engine's second view
+  cluster near water surfaces (R_MarkLeaves `viewcluster2`) is not handled either.
 - `lightmapExtents` computes in double, the engine in float; may differ by a luxel on
   non-axial texinfo. Check against a map with rotated or scaled textures.
 

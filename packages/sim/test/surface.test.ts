@@ -81,6 +81,19 @@ describe("lightmap extents", () => {
     }
   });
 
+  it("rounds the low bound down and the high bound up on both axes", () => {
+    // The fixture's texinfo puts every face bound on a multiple of 16 in t, which cannot
+    // tell floor from ceil there. Offset face 2's texinfo so none of its bounds is.
+    // Corners (s, t) are (232, -256), (232, -32), (224, -32); with s + 3, t + 5 the bounds
+    // are s 227..235 and t -251..-27, so luxels span s 14..15 and t -16..-1.
+    const shifted = parseBsp(bytes);
+    const ti = shifted.faces.texinfo[2]!;
+    expect(lightmapExtents(shifted, 2)).toEqual({ textureMinS: 224, textureMinT: -256, width: 2, height: 15 });
+    shifted.texinfo.vecs[ti * 8 + 3] = shifted.texinfo.vecs[ti * 8 + 3]! + 3;
+    shifted.texinfo.vecs[ti * 8 + 7] = shifted.texinfo.vecs[ti * 8 + 7]! + 5;
+    expect(lightmapExtents(shifted, 2)).toEqual({ textureMinS: 224, textureMinT: -256, width: 2, height: 16 });
+  });
+
   it("integrity check flags a lightmap that runs past the lighting lump", () => {
     const broken = parseBsp(bytes);
     const f = bsp.faces.lightOfs.findIndex((o) => o !== -1);
@@ -117,7 +130,7 @@ describe("point leaf and PVS", () => {
     }
   });
 
-  it("cluster -1 sees nothing; a map without vis sees everything", () => {
+  it("cluster -1 sees nothing; a map without vis has an empty row", () => {
     expect(Array.from(clusterPvs(bsp, -1))).toEqual([0, 0]);
     const novis: Bsp = { ...bsp, visibility: { numClusters: 0, offsets: new Int32Array(0), data: new Uint8Array(0) } };
     expect(Array.from(clusterPvs(novis, 0))).toEqual([]);

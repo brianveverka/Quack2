@@ -5,6 +5,7 @@
 
 import { checkBspIntegrity, entityVec3, parseBsp, parseEntities, type Bsp } from "@quack2/sim";
 import { FlyCamera } from "./camera.js";
+import { transformPoint } from "./math.js";
 import { WorldRenderer, type FrameStats, type View } from "./renderer.js";
 import { noTextures } from "./textures.js";
 
@@ -25,6 +26,8 @@ export interface QuackDebug {
   integrityErrors?: readonly string[];
   view(): View;
   setView(view: View): void;
+  /** Pixel (x right, y up from the bottom row) of a world point in the last frame, or undefined behind the eye. */
+  project(x: number, y: number, z: number): [number, number] | undefined;
   /** Render one frame now and return its RGBA pixels, bottom row first. */
   readPixels(): { width: number; height: number; data: Uint8Array };
 }
@@ -57,6 +60,7 @@ async function main(): Promise<void> {
     frames: 0,
     view: () => ({ origin: [0, 0, 0], pitch: 0, yaw: 0 }),
     setView: () => {},
+    project: () => undefined,
     readPixels: () => ({ width: 0, height: 0, data: new Uint8Array(0) }),
   });
   const gl = canvas.getContext("webgl2", { antialias: false });
@@ -68,8 +72,10 @@ async function main(): Promise<void> {
   if (!res.ok) return showError(`Could not load ${mapUrl}: HTTP ${res.status}`);
   const bsp = parseBsp(await res.arrayBuffer());
   debug.integrityErrors = checkBspIntegrity(bsp);
+  // The engine never runs these checks, and many (plane types, brush shape) do not
+  // affect drawing; the renderer reads defensively, so warn and draw anyway.
   if (debug.integrityErrors.length > 0) {
-    return showError(`${mapUrl} failed integrity checks:\n${debug.integrityErrors.slice(0, 10).join("\n")}`);
+    console.warn(`${mapUrl}: ${debug.integrityErrors.length} integrity problems`, debug.integrityErrors.slice(0, 10));
   }
 
   const renderer = new WorldRenderer(gl, bsp, noTextures);
@@ -81,7 +87,8 @@ async function main(): Promise<void> {
   addEventListener("keydown", (e) => keys.add(e.code));
   addEventListener("keyup", (e) => keys.delete(e.code));
   addEventListener("blur", () => keys.clear());
-  canvas.addEventListener("click", () => void canvas.requestPointerLock());
+  // Refused when the page lacks focus or the user just exited lock; clicking again retries.
+  canvas.addEventListener("click", () => void canvas.requestPointerLock()?.catch(() => {}));
   addEventListener("mousemove", (e) => {
     if (document.pointerLockElement === canvas) camera.look(e.movementY * MOUSE_SENSITIVITY, -e.movementX * MOUSE_SENSITIVITY);
   });
@@ -101,6 +108,11 @@ async function main(): Promise<void> {
     camera.origin = [v.origin[0], v.origin[1], v.origin[2]];
     camera.pitch = v.pitch;
     camera.yaw = v.yaw;
+  };
+  debug.project = (x, y, z) => {
+    const [cx, cy, , w] = transformPoint(renderer.viewProj, x, y, z);
+    if (w <= 0) return undefined;
+    return [((cx / w + 1) / 2) * canvas.width, ((cy / w + 1) / 2) * canvas.height];
   };
   debug.readPixels = () => {
     draw();

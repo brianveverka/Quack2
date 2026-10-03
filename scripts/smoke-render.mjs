@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Headless render smoke test: builds the client, loads the test arena in Chromium
-// (WebGL2 through SwiftShader works without flags), checks three views by reading back
+// (WebGL2 through ANGLE/SwiftShader worked without flags, measured 2026-10-03 with
+// Chromium 141; the run prints the renderer it got), checks three views by reading back
 // pixels, and saves a screenshot of each.
 // Usage: node scripts/smoke-render.mjs [outdir]   (default packages/client/dist/smoke)
 import { execFileSync } from "node:child_process";
@@ -85,6 +86,29 @@ try {
   check(spawn.cluster >= 0, "spawn view is inside a cluster");
   check(spawn.clearFraction === 0, "spawn view has no background pixels (closed room, no cracks)");
   check(spawn.colors > 100, "spawn view shows textured, lit surfaces (>100 distinct colors)");
+
+  // Lightmaps reach the screen: the floor in the pillar's shadow is far darker than the
+  // floor beside it (lightmap luxels measured 21 vs 216 on the fixture). Averaging a box
+  // spanning several checker cells keeps the 2:1 checker contrast from deciding this.
+  const floor = await page.evaluate(() => {
+    const { width, data } = window.quack.readPixels();
+    const box = (wx, wy) => {
+      const p = window.quack.project(wx, wy, 0);
+      if (!p) return NaN;
+      let sum = 0, n = 0;
+      for (let y = Math.round(p[1]) - 15; y <= Math.round(p[1]) + 15; y++) {
+        for (let x = Math.round(p[0]) - 15; x <= Math.round(p[0]) + 15; x++) {
+          const i = (y * width + x) * 4;
+          sum += data[i] + data[i + 1] + data[i + 2];
+          n++;
+        }
+      }
+      return sum / n;
+    };
+    return { shadow: box(-304, 0), lit: box(-256, -112) };
+  });
+  console.log(`  floor brightness: ${JSON.stringify(floor)}`);
+  check(floor.lit > 4 * floor.shadow, "lightmap shadow shows on screen (lit floor > 4x shadowed floor)");
 
   // The player start is in cluster 6 (below the pillar tops, west of the pillar), whose
   // PVS excludes the clusters between the other pillars. The east half sees everything.

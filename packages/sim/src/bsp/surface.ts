@@ -46,8 +46,8 @@ export interface LightmapExtents {
 /**
  * Lightmap placement of a face, derived from the texture-space bounds of its corners.
  * Computed in double precision; the reference engine accumulates in float, which can
- * only differ when a bound lands within float error of a multiple of 16. The fixture
- * test that checks lightmaps pack the lump exactly would catch such a mismatch.
+ * only differ when a bound lands within float error of a multiple of 16. The fixture only
+ * has axis-aligned, unscaled texinfo, so it cannot show such a mismatch.
  */
 export function lightmapExtents(bsp: Bsp, face: number): LightmapExtents {
   const ti = bsp.faces.texinfo[face]!;

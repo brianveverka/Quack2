@@ -63,6 +63,8 @@ export class WorldRenderer {
   private readonly lightmap: WebGLTexture;
   private readonly uViewProj: WebGLUniformLocation | null;
   private readonly uTexSize: WebGLUniformLocation | null;
+  /** View-projection of the last rendered frame. */
+  viewProj: Float32Array = new Float32Array(16);
   private cluster = Number.NaN;
   private drawList: DrawList = { indices: new Uint32Array(0), draws: [], visibleFaces: 0 };
 
@@ -126,7 +128,8 @@ export class WorldRenderer {
     const aspect = width / height;
     const proj = perspective(fovY(FOV_X, aspect), aspect, NEAR, FAR);
     gl.useProgram(this.program);
-    gl.uniformMatrix4fv(this.uViewProj, false, multiply(proj, viewMatrix(view.origin, view.pitch, view.yaw)));
+    this.viewProj = multiply(proj, viewMatrix(view.origin, view.pitch, view.yaw));
+    gl.uniformMatrix4fv(this.uViewProj, false, this.viewProj);
     gl.bindVertexArray(this.vao);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.lightmap);
@@ -151,7 +154,7 @@ function uploadTexture(gl: WebGL2RenderingContext, img: TextureImage, repeat: bo
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
   if (repeat) {
-    // Surface textures: mipmapped, crisp up close like the original renderer.
+    // Surface textures: mipmapped, crisp up close like the software renderer.
     gl.generateMipmap(gl.TEXTURE_2D);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);

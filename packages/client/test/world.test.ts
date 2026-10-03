@@ -70,6 +70,26 @@ describe("lightmap atlas", () => {
     });
   });
 
+  it("puts luxel i's centre at s = textureMinS + 16 i, so corners stay inside their rect", () => {
+    // Luxel i is sampled at texture-space textureMin + 16 i; a texel centre is at +0.5 in
+    // atlas space. Corners then span [0.5, size - 0.5] luxels and bilinear filtering never
+    // reads a neighbouring face's luxels.
+    for (let f = 0; f < WORLD_FACES; f++) {
+      const r = atlas.rects[f]!;
+      const o = mesh.faceFirstVertex[f]! * VERTEX_FLOATS;
+      for (let i = 0; i < mesh.faceNumVertices[f]!; i++) {
+        const [s, t, u, v] = mesh.vertices.subarray(o + i * VERTEX_FLOATS + 3, o + i * VERTEX_FLOATS + 7);
+        const lx = u! * atlas.width - r.x, ly = v! * atlas.height - r.y;
+        expect(r.textureMinS + 16 * (lx - 0.5)).toBeCloseTo(s!, 3);
+        expect(r.textureMinT + 16 * (ly - 0.5)).toBeCloseTo(t!, 3);
+        expect(lx).toBeGreaterThanOrEqual(0.5);
+        expect(lx).toBeLessThanOrEqual(r.width - 0.5);
+        expect(ly).toBeGreaterThanOrEqual(0.5);
+        expect(ly).toBeLessThanOrEqual(r.height - 0.5);
+      }
+    }
+  });
+
   it("copies each face's luxels row by row from lightOfs", () => {
     for (let f = 0; f < bsp.faces.count; f++) {
       const r = atlas.rects[f]!;
@@ -126,6 +146,11 @@ describe("PVS face selection", () => {
     const mask = visibleFaceMask(bsp, mesh, -1);
     expect(mask.reduce((a, m) => a + m, 0)).toBe(WORLD_FACES);
     expect(buildDrawList(mesh, mask).visibleFaces).toBe(WORLD_FACES);
+  });
+
+  it("a map without vis data draws every world face from any cluster", () => {
+    const novis = { ...bsp, visibility: { numClusters: 0, offsets: new Int32Array(0), data: new Uint8Array(0) } };
+    expect(visibleFaceMask(novis, mesh, 3).reduce((a, m) => a + m, 0)).toBe(WORLD_FACES);
   });
 
   it("the player start's cluster culls faces, and never selects brush-model faces", () => {
