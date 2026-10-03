@@ -6,8 +6,10 @@
 ## Cloud sessions
 - Sessions here usually run in a cloud sandbox on a fresh clone. Nothing outside the
   repo exists: no local machine, no homelab, no user-level skills or settings.
-- Commit finished units of work without asking. Push the session branch without asking
-  once its review loop is done; unpushed work is lost when the sandbox goes away.
+- Commit finished units of work without asking. Once the review loop is done, push the
+  task branch, open its PR and enable auto-merge without asking (see Git workflow);
+  unpushed work is lost when the sandbox goes away. A branch the session harness assigns
+  is used as the task branch instead of creating one.
 - Never push to `main`. Never force-push.
 
 ## Response style
@@ -75,8 +77,9 @@
 ## Consent and blast radius
 - Read the relevant files and propose the approach before changing code.
 - Ask first for anything that changes live behavior or cannot be undone: deploys,
-  anything visible to other people or machines beyond the session branch, deleting data,
-  or committing in a repo the session was not asked to commit in.
+  anything visible to other people or machines beyond the task branch and its PR, deleting
+  data, or committing in a repo the session was not asked to commit in. Opening the PR and
+  enabling squash auto-merge are pre-approved; any other merge is not.
 - Deletions: count first, abort if the count is surprising, never delete on a wildcard.
 - Check the clock before anything time-sensitive.
 
@@ -120,7 +123,7 @@ For each unit of work:
 5. **Second review, scoped to step 4's diff only.** Not a re-sweep. Fixes introduce
    defects.
 6. **Fix, then amend the step 2 commit,** so the history shows only the finished change
-   with no debug cycles. Then push the session branch.
+   with no debug cycles. Then push the task branch and open its PR per Git workflow.
 
 **What gets fixed now:** decide by coupling, not timing. Caused by this change, or blocks
 the next one: fix now. Belongs to code that's about to be replaced: defer.
@@ -128,7 +131,8 @@ the next one: fix now. Belongs to code that's about to be replaced: defer.
 ## Git workflow
 - Never commit directly to `main`.
 - For each task, branch off an up-to-date `main`: `git checkout main && git pull`, then
-  `git checkout -b <type>/<short-desc>` (e.g. `feat/multi-map-loader`).
+  `git checkout -b <type>/<short-desc>` (e.g. `feat/multi-map-loader`), or use the
+  harness-assigned branch (see Cloud sessions).
 - Make focused commits with clear messages.
 - When the task is done: push the branch, open a PR with `gh pr create` (a real title,
   and a body summarizing what changed and why), then run `gh pr merge --auto --squash`.
@@ -137,6 +141,9 @@ the next one: fix now. Belongs to code that's about to be replaced: defer.
 - After the merge, switch back to `main` and pull.
 - Where `gh` is not authenticated (cloud sessions), use the GitHub MCP equivalents:
   `create_pull_request`, then `enable_pr_auto_merge` with `SQUASH`.
+- GitHub refuses auto-merge on a PR with nothing pending ("clean status"). That is every
+  PR while `main` has no required status check (none as of 2026-10-03; CI runs but is not
+  required). Then stop and ask the user to merge.
 
 ## Project
 

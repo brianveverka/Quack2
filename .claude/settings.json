@@ -8,6 +8,26 @@
       "Bash(gh pr merge:*)",
       "Bash(gh pr checks:*)",
       "Bash(gh pr view:*)"
+    ],
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(git push * --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * -f*)",
+      "Bash(git push * +*)",
+      "Bash(git push --all*)",
+      "Bash(git push * --all*)",
+      "Bash(git push --mirror*)",
+      "Bash(git push * --mirror*)",
+      "Bash(git push * main)",
+      "Bash(git push * main *)",
+      "Bash(git push * *:main)",
+      "Bash(git push * *:main *)",
+      "Bash(git push * refs/heads/main)",
+      "Bash(git push * refs/heads/main *)",
+      "Bash(git push * *:refs/heads/main)",
+      "Bash(git push * *:refs/heads/main *)",
+      "Bash(gh pr merge*--admin*)"
     ]
   }
 }
