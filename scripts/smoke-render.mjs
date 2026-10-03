@@ -6,7 +6,7 @@
 // pixels, and saves a screenshot of each. It checks the fixture's func_wall is drawn,
 // and drawn at a moved entity origin in a copy of the map. Another load mounts synthetic
 // game data (a pak and a deflated zip built here, never id data) and checks the textures
-// arrive.
+// arrive, and that ?map= finds a BSP packed into a mounted pak.
 // Usage: node scripts/smoke-render.mjs [outdir]   (default packages/client/dist/smoke)
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
@@ -41,6 +41,11 @@ const fixtureEntities = fixtureBsp
 const movedEntities = fixtureEntities.replace('"model" "*1"', '"model" "*1"\n"origin" "0 -320 0"');
 if (movedEntities === fixtureEntities) throw new Error("fixture has no func_wall \"model\" \"*1\" to move");
 SYNTHETIC["/data/moved.bsp"] = withEntityString(fixtureBsp, movedEntities);
+// The moved map packed at a path the server does not have, so only the pak can supply it.
+SYNTHETIC["/data/maps.pak"] = writePak({
+  "maps/packed.bsp": SYNTHETIC["/data/moved.bsp"],
+  "maps/truncated.bsp": SYNTHETIC["/data/moved.bsp"].subarray(0, 100),
+});
 
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".map": "application/json", ".bsp": "application/octet-stream" };
 
@@ -58,8 +63,14 @@ try {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
-  // Chromium logs every failed fetch as a console error; the deliberate 404 below is expected.
-  page.on("console", (m) => m.type() === "error" && !m.location().url.includes("/data/absent-") && errors.push(m.text()));
+  // Chromium logs every failed fetch as a console error, and the client logs the error
+  // it shows; the deliberate 404s below, and the map that is missing everywhere, are expected.
+  const ABSENT_MAP_ERROR = "Could not load data/absent-map.bsp: not in data/maps.pak and HTTP 404";
+  const TRUNCATED_MAP_ERROR = "Could not load maps/truncated.bsp from data/maps.pak: BSP too small: 100 bytes, header alone is 160";
+  page.on(
+    "console",
+    (m) => m.type() === "error" && !m.location().url.includes("/data/absent-") && m.text() !== ABSENT_MAP_ERROR && m.text() !== TRUNCATED_MAP_ERROR && errors.push(m.text()),
+  );
   await page.route(`${ORIGIN}/**`, (route) => {
     const path = new URL(route.request().url()).pathname;
     // Delayed so it finishes last: mount errors must still be reported in URL order.
@@ -267,6 +278,43 @@ try {
   const [redFloor] = await floorBoxes([[-256, -112]]);
   console.log(`  textured floor rgb: ${JSON.stringify(redFloor.map(Math.round))}`);
   check(redFloor[0] > 40 && redFloor[1] < 8 && redFloor[2] < 8, "floor shows the pak's palette color (red, lit)");
+
+  // ?map= with a path looks in the mounted archives before the server: maps/packed.bsp
+  // exists only inside data/maps.pak. A path in neither fails on the status line.
+  await page.goto(`${ORIGIN}/?pak=data/maps.pak&map=maps/packed.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const packed = await page.evaluate(() => ({
+    error: window.quack.error,
+    map: window.quack.map,
+    mapSource: window.quack.mapSource,
+    brushModels: window.quack.brushModels,
+    integrity: window.quack.integrityErrors,
+  }));
+  console.log(`  packed map: ${JSON.stringify(packed)}`);
+  check(
+    !packed.error &&
+      packed.mapSource === "data/maps.pak" &&
+      packed.integrity.length === 0 &&
+      JSON.stringify(packed.brushModels) === JSON.stringify(["func_wall *1 at 0 -320 0"]),
+    "?map=maps/packed.bsp loads the BSP from the mounted pak",
+  );
+  const packedView = await shoot("packed", { origin: [-448, 0, 46], pitch: 0, yaw: 0 });
+  check(packedView.clearFraction === 0 && packedView.colors > 100, "the map from the pak renders");
+  await page.goto(`${ORIGIN}/?pak=data/maps.pak&map=data/absent-map.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const absent = await page.evaluate(() => ({ error: window.quack.error, status: document.getElementById("status")?.textContent }));
+  console.log(`  absent map: ${JSON.stringify(absent)}`);
+  check(
+    absent.error === ABSENT_MAP_ERROR && absent.status === absent.error,
+    "a map in neither the archives nor the server is reported on the status line",
+  );
+
+  // A BSP that fails to parse names the archive it came from.
+  await page.goto(`${ORIGIN}/?pak=data/maps.pak&map=maps/truncated.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const truncated = await page.evaluate(() => window.quack.error);
+  console.log(`  truncated map: ${JSON.stringify(truncated)}`);
+  check(truncated === TRUNCATED_MAP_ERROR, "a corrupt BSP from a pak is reported with the archive's name");
 
   // The file picker mounts on a running page, in numeric name order, and re-textures.
   // It ships disabled and is enabled only once its listener exists.

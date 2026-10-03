@@ -4,7 +4,7 @@ import { GameFs } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
 import { syntheticPalette, writePak, writePalettePcx, writeWal, writeZip } from "../../../scripts/synthetic-data.mjs";
 import { deflateRawSync } from "node:zlib";
-import { errorMessage, inflateRaw, loadWalTextures, openGameArchive, walPath } from "../src/assets.js";
+import { MapLoadError, errorMessage, inflateRaw, loadMap, loadWalTextures, openGameArchive, walPath } from "../src/assets.js";
 import { CHECKER_SIZE, resolveTextures } from "../src/textures.js";
 import { PALETTE_PATH, TRANSPARENT_INDEX, WalError, decodeWal, pcxPalette, walToRgba } from "../src/wal.js";
 
@@ -138,5 +138,77 @@ describe("loadWalTextures", () => {
     const t = await loadWalTextures(new GameFs(), names);
     expect([t.palette, t.loaded, t.errors]).toEqual([false, [], []]);
     expect(resolveTextures(names, t.source).missing).toEqual(names);
+  });
+});
+
+describe("loadMap", () => {
+  const packed = new TextEncoder().encode("bsp from the pak");
+  const served = new TextEncoder().encode("bsp from the server");
+  const text = (m: { bytes: Uint8Array }) => new TextDecoder().decode(m.bytes);
+  /** A fetch that serves `served` at "maps/served.bsp" and 404s everything else, logging each URL. */
+  const server = () => {
+    const urls: string[] = [];
+    const fetchUrl = async (url: string) => {
+      urls.push(url);
+      return url === "maps/served.bsp" || url === "maps/both.bsp" ? new Response(served) : new Response("no", { status: 404 });
+    };
+    return { urls, fetchUrl };
+  };
+  const mounted = () => {
+    const fs = new GameFs();
+    fs.mount("pak0.pak", openGameArchive(writePak({ "maps/packed.bsp": packed, "maps/both.bsp": packed })));
+    fs.mount("pak1.pak", openGameArchive(writePak({ "pics/colormap.pcx": pcx })));
+    return fs;
+  };
+
+  it("reads a path from the mounted archives without fetching, case-insensitively", async () => {
+    const { urls, fetchUrl } = server();
+    const m = await loadMap(mounted(), "Maps/Packed.BSP", fetchUrl);
+    expect([text(m), m.source, urls]).toEqual(["bsp from the pak", "pak0.pak", []]);
+  });
+
+  it("prefers the archive copy over the same path on the server", async () => {
+    const { urls, fetchUrl } = server();
+    const m = await loadMap(mounted(), "maps/both.bsp", fetchUrl);
+    expect([text(m), m.source, urls]).toEqual(["bsp from the pak", "pak0.pak", []]);
+  });
+
+  it("falls back to fetching a path the archives lack", async () => {
+    const { urls, fetchUrl } = server();
+    const m = await loadMap(mounted(), "maps/served.bsp", fetchUrl);
+    expect([text(m), m.source, urls]).toEqual(["bsp from the server", "maps/served.bsp", ["maps/served.bsp"]]);
+  });
+
+  it("only fetches a URL with a scheme, even when an archive has that path", async () => {
+    const { urls, fetchUrl } = server();
+    const e = await loadMap(mounted(), "http://x/maps/packed.bsp", fetchUrl).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(MapLoadError);
+    expect((e as Error).message).toBe("Could not load http://x/maps/packed.bsp: HTTP 404");
+    expect(urls).toEqual(["http://x/maps/packed.bsp"]);
+  });
+
+  it("names the searched archives and the HTTP failure when a path is in neither", async () => {
+    const { fetchUrl } = server();
+    await expect(loadMap(mounted(), "maps/absent.bsp", fetchUrl)).rejects.toThrow(
+      new MapLoadError("Could not load maps/absent.bsp: not in pak0.pak, pak1.pak and HTTP 404"),
+    );
+    await expect(loadMap(new GameFs(), "maps/absent.bsp", fetchUrl)).rejects.toThrow("Could not load maps/absent.bsp: HTTP 404");
+  });
+
+  it("reports a network failure as a MapLoadError", async () => {
+    const fetchUrl = () => Promise.reject(new TypeError("Failed to fetch"));
+    await expect(loadMap(new GameFs(), "maps/x.bsp", fetchUrl)).rejects.toThrow(new MapLoadError("Could not load maps/x.bsp: Failed to fetch"));
+  });
+
+  it("reports a corrupt archive entry instead of fetching another copy", async () => {
+    const bsp = new Uint8Array(4000).fill(7);
+    const zip = writeZip({ "maps/bad.bsp": bsp });
+    // Corrupt the deflated data (it follows the 30-byte local header and the name).
+    zip.fill(0xff, 30 + "maps/bad.bsp".length, 30 + "maps/bad.bsp".length + 4);
+    const fs = new GameFs();
+    fs.mount("bad.zip", openGameArchive(zip));
+    const { urls, fetchUrl } = server();
+    await expect(loadMap(fs, "maps/bad.bsp", fetchUrl)).rejects.toThrow(/^Could not load maps\/bad\.bsp from bad\.zip: ./);
+    expect(urls).toEqual([]);
   });
 });

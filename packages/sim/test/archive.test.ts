@@ -143,6 +143,7 @@ describe("openArchive and GameFs", () => {
     expect(text(await fs.read("b.txt"))).toBe("pak0 b");
     expect(await fs.read("c.txt")).toBeUndefined();
     expect(fs.has("B.txt")).toBe(true);
+    expect([fs.source("A.txt"), fs.source("./b.TXT"), fs.source("c.txt")]).toEqual(["pak1.zip", "pak0.pak", undefined]);
   });
 
   it("normalizes separators, leading ./ and case", () => {

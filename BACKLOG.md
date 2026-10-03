@@ -4,11 +4,9 @@ Milestones in order. Each is roughly one session; split further when starting it
 
 ## 1. Game data and renderer completeness
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps, PVS, inline brush
-models at their entity origin, free-fly camera, `.wal` textures from mounted pak/zip
-data, checker fallback, `pnpm smoke`).
+models at their entity origin, free-fly camera, `.wal` textures and `?map=` BSPs from
+mounted pak/zip data, checker fallback, `pnpm smoke`).
 Remaining:
-- `?map=` only fetches a URL; it does not look inside mounted archives, so
-  `maps/q2dm1.bsp` from a mounted pak0 cannot be loaded yet.
 - Brightness is not checked against the engine: GL Quake 2 scales textures by
   `gl_intensity` (default 2) and the lightmap blend differs from a plain multiply.
   Compare a screenshot of a real map against the engine before tuning.

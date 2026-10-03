@@ -32,8 +32,9 @@ pnpm dev          # serve the client at http://localhost:8000/ (rebuilds on chan
 pnpm smoke        # headless Chromium render test, screenshots in packages/client/dist/smoke
 ```
 
-The client loads `maps/test_arena.bsp` by default; `?map=<url>` loads another BSP. Click
-the view to capture the mouse, WASD to fly, Space/C up and down, Shift to go fast.
+The client loads `maps/test_arena.bsp` by default; `?map=<path or url>` loads another
+BSP (see below for maps inside mounted archives). Click the view to capture the mouse,
+WASD to fly, Space/C up and down, Shift to go fast.
 `pnpm smoke` needs Playwright's Chromium (`pnpm exec playwright install chromium` where
 it is not preinstalled).
 
@@ -61,11 +62,19 @@ client, either way:
   repo's `assets/` (gitignored) are served at `assets/` by `pnpm dev`, so
   `http://localhost:8000/?pak=assets/pak0.pak` works.
 
+A `?map=` path (no `http:`-style scheme) is looked up in the `?pak=` archives first,
+newest mount first, and fetched from the server only if none has it, so
+`?pak=assets/pak0.pak&map=maps/q2dm1.bsp` loads the map from the pak. A map found in
+neither is reported on the status line. Archives picked with the file picker mount
+after the map has loaded, so they only supply textures.
+
 World textures come from `textures/<name>.wal`, the palette from `pics/colormap.pcx`.
 A missing `.wal` draws the checker; a `.wal` with no palette mounted draws a checker at
 the texture's real size. Problems (unreachable URL, corrupt file) are reported in the
 game data line at the bottom of the page and in the console, and never stop the map
-from rendering.
+from rendering, unless the map itself was to come from the broken archive: then the
+map fails on the status line, naming the archive it came from, or listing the
+archives that did not mount.
 
 ## License
 

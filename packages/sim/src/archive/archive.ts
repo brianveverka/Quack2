@@ -59,8 +59,16 @@ export class GameFs {
   }
 
   has(path: string): boolean {
+    return this.source(path) !== undefined;
+  }
+
+  /** Name of the archive a read of `path` comes from (the newest that has it), or undefined. */
+  source(path: string): string | undefined {
     const p = normalizePath(path);
-    return this.mounts.some((m) => m.archive.has(p));
+    for (let i = this.mounts.length - 1; i >= 0; i--) {
+      if (this.mounts[i]!.archive.has(p)) return this.mounts[i]!.name;
+    }
+    return undefined;
   }
 
   async read(path: string): Promise<Uint8Array | undefined> {

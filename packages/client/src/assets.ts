@@ -2,7 +2,8 @@
 // Game data in the browser: archives the user supplies (file picker or ?pak= URL) are
 // mounted into a GameFs, and world textures are decoded from it up front so the
 // renderer's synchronous TextureSource can serve them. Nothing here is required: no
-// archives, no palette, or a broken .wal each degrade to checker placeholders.
+// archives, no palette, or a broken .wal each degrade to checker placeholders. Maps are
+// looked up in the same GameFs before falling back to a fetch.
 
 import { GameFs, openArchive, type Archive } from "@quack2/sim";
 import { checkerTexture, type TextureImage, type TextureSource } from "./textures.js";
@@ -90,4 +91,54 @@ export async function loadWalTextures(fs: GameFs, names: readonly string[]): Pro
   loaded.sort();
   errors.sort();
   return { source: (name) => images.get(name), palette: palette !== undefined, loaded, errors };
+}
+
+/** A loaded BSP and where it came from: a mounted archive's name, or the fetched URL. */
+export interface MapFile {
+  readonly bytes: Uint8Array;
+  readonly source: string;
+}
+
+/** Thrown with a status-line message when a map cannot be loaded from anywhere. */
+export class MapLoadError extends Error {
+  override name = "MapLoadError";
+}
+
+/** A scheme (http:, blob:, data:) or a protocol-relative "//": only fetch can load it. */
+function isUrl(map: string): boolean {
+  return /^([a-z][a-z0-9+.-]*:|\/\/)/i.test(map);
+}
+
+/**
+ * Loads `map` from the mounted archives when it is a path they hold (like the engine's
+ * search path, newest mount first), otherwise fetches it as a URL relative to the page.
+ * A corrupt archive entry is an error, not a reason to fall back: the archive copy is
+ * the one the engine would load.
+ */
+export async function loadMap(
+  fs: GameFs,
+  map: string,
+  fetchUrl: (url: string) => Promise<Response> = fetch,
+): Promise<MapFile> {
+  const archive = isUrl(map) ? undefined : fs.source(map);
+  if (archive !== undefined) {
+    let bytes: Uint8Array | undefined;
+    try {
+      bytes = await fs.read(map);
+    } catch (e) {
+      throw new MapLoadError(`Could not load ${map} from ${archive}: ${errorMessage(e)}`);
+    }
+    // source() found it, so read() searches the same mounts and finds it too.
+    return { bytes: bytes!, source: archive };
+  }
+  let failure: string;
+  try {
+    const res = await fetchUrl(map);
+    if (res.ok) return { bytes: new Uint8Array(await res.arrayBuffer()), source: map };
+    failure = `HTTP ${res.status}`;
+  } catch (e) {
+    failure = errorMessage(e);
+  }
+  const searched = !isUrl(map) && fs.names.length > 0 ? `not in ${fs.names.join(", ")} and ` : "";
+  throw new MapLoadError(`Could not load ${map}: ${searched}${failure}`);
 }

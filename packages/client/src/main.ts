@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Browser entry: mounts game data (?pak=<url>, repeatable, later overrides earlier),
-// loads a BSP (?map=, default the bundled test arena), spawns a free-fly camera at the
+// loads a BSP (?map=<path or url>, default the bundled test arena; a path in the mounted
+// archives wins over the same path on the server), spawns a free-fly camera at the
 // player start, and renders until the page closes. The file picker mounts more archives
 // at any time and re-textures the world. Click to capture the mouse; WASD to fly,
 // Space/C up/down, Shift fast.
 
 import { GameFs, checkBspIntegrity, entityVec3, parseBsp, parseEntities, type BspEntity } from "@quack2/sim";
-import { errorMessage, loadWalTextures, openGameArchive } from "./assets.js";
+import { MapLoadError, errorMessage, loadMap, loadWalTextures, openGameArchive } from "./assets.js";
 import { brushModelInstances } from "./bmodels.js";
 import { FlyCamera } from "./camera.js";
 import { transformPoint } from "./math.js";
@@ -22,6 +23,8 @@ export interface QuackDebug {
   ready: boolean;
   error?: string;
   map?: string;
+  /** Where the map was read from: a mounted archive's name, or the URL fetched. */
+  mapSource?: string;
   frames: number;
   stats?: FrameStats;
   missingTextures?: readonly string[];
@@ -108,11 +111,27 @@ async function main(): Promise<void> {
     else mountErrors.push(`${f.url}: ${f.error}`);
   }
 
-  const mapUrl = params.get("map") ?? "maps/test_arena.bsp";
+  // An empty ?map= would fetch the page itself.
+  const mapUrl = params.get("map") || "maps/test_arena.bsp";
   debug.map = mapUrl;
-  const res = await fetch(mapUrl);
-  if (!res.ok) return showError(`Could not load ${mapUrl}: HTTP ${res.status}`);
-  const bsp = parseBsp(await res.arrayBuffer());
+  // The game data line is not up yet, and a pak that failed to mount may be why the map failed.
+  const unmounted = mountErrors.length > 0 ? `; archives not mounted: ${mountErrors.join("; ")}` : "";
+  let mapFile;
+  try {
+    mapFile = await loadMap(fs, mapUrl);
+  } catch (e) {
+    if (!(e instanceof MapLoadError)) throw e;
+    return showError(e.message + unmounted);
+  }
+  debug.mapSource = mapFile.source;
+  let bsp;
+  try {
+    bsp = parseBsp(mapFile.bytes);
+  } catch (e) {
+    // Name the archive too: a map from a mounted pak is not visible in the URL.
+    const from = mapFile.source === mapUrl ? "" : ` from ${mapFile.source}`;
+    return showError(`Could not load ${mapUrl}${from}: ${errorMessage(e)}${unmounted}`);
+  }
   debug.integrityErrors = checkBspIntegrity(bsp);
   // The engine never runs these checks, and many (plane types, brush shape) do not
   // affect drawing; the renderer reads defensively, so warn and draw anyway.
