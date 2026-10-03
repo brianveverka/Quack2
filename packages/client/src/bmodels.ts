@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Inline brush model instances (func_wall, doors, plats: entities with "model" "*N")
-// at their compiled position plus entity "origin", from the entity string alone. Moves
-// the game makes at spawn (lowered plats, open doors) are not applied. DOM-free.
+// at their compiled position rotated by the entity's spawn angles and moved by its
+// "origin", from the entity string alone. Moves the game makes at spawn (lowered plats,
+// open doors) are not applied. DOM-free.
 
 import { entityVec3, type Bsp, type BspEntity } from "@quack2/sim";
 
@@ -33,10 +34,47 @@ const SHOWN_BRUSH_CLASSES = new Set([
   "turret_base",
 ]);
 
+/**
+ * Classnames whose spawn function leaves s.angles as the map set them. The rest clear
+ * them: G_SetMovedir (doors, buttons, water) turns them into a move direction, and
+ * func_plat, func_train, func_door_secret and func_door_rotating clear them directly (a
+ * START_OPEN func_door_rotating then turns to its open angles: a spawn move, not applied).
+ */
+const KEEPS_ANGLES = new Set([
+  "func_rotating",
+  "func_conveyor",
+  "func_wall",
+  "func_object",
+  "target_character",
+  "turret_breach",
+  "turret_base",
+]);
+
 /** atoi as ED_ParseField uses it: optional whitespace and sign, leading digits, else 0. Out of range clamps (MSVC). */
 function atoi(s: string): number {
   const m = /^[ \t\n\v\f\r]*([+-]?\d+)/.exec(s);
   return m ? Math.min(Math.max(Number(m[1]), -0x80000000), 0x7fffffff) : 0;
+}
+
+/** atof's leading-number prefix, else 0. Decimal forms only. */
+function atof(s: string): number {
+  const m = /^[ \t\n\v\f\r]*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/.exec(s);
+  return m ? Number(m[1]) : 0;
+}
+
+/**
+ * Entity angles (pitch, yaw, roll): "angle" is a yaw alone, "angles" all three, and
+ * whichever key comes later wins, as in ED_ParseField. Unlike the game, keys match case
+ * sensitively (as for every key here) and an "angles" that is not exactly three numbers
+ * counts as none, as a malformed "origin" does.
+ */
+export function entityAngles(ent: BspEntity): [number, number, number] {
+  // Key order is first appearance: a key repeated after the other one is not seen as later.
+  const keys = Object.keys(ent).filter((k) => k === "angle" || k === "angles");
+  const last = keys[keys.length - 1];
+  if (last === "angle") return [0, atof(ent.angle!), 0];
+  if (last === "angles") return entityVec3(ent, "angles") ?? [0, 0, 0];
+  return [0, 0, 0];
 }
 
 export interface BrushModelInstance {
@@ -44,6 +82,8 @@ export interface BrushModelInstance {
   readonly model: number;
   /** World translation of the model's faces: the entity's "origin", default 0 0 0. */
   readonly origin: readonly [number, number, number];
+  /** Rotation (pitch, yaw, roll) about the model-space origin, applied before `origin`; 0 0 0 for classes that clear it at spawn. */
+  readonly angles: readonly [number, number, number];
   readonly classname: string;
 }
 
@@ -90,7 +130,12 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
       return;
     }
     if (!visibleAtSpawn(ent)) return;
-    instances.push({ model, origin: entityVec3(ent, "origin") ?? [0, 0, 0], classname });
+    instances.push({
+      model,
+      origin: entityVec3(ent, "origin") ?? [0, 0, 0],
+      angles: KEEPS_ANGLES.has(classname) ? entityAngles(ent) : [0, 0, 0],
+      classname,
+    });
   });
   return { instances, errors };
 }

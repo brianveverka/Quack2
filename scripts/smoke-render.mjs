@@ -4,7 +4,7 @@
 // (WebGL2 through ANGLE/SwiftShader worked without flags, measured 2026-10-03 with
 // Chromium 141; the run prints the renderer it got), checks three views by reading back
 // pixels, and saves a screenshot of each. It checks the fixture's func_wall is drawn,
-// and drawn at a moved entity origin in a copy of the map. Another load mounts synthetic
+// and drawn at a moved entity origin, and rotated, in copies of the map. Another load mounts synthetic
 // game data (a pak and a deflated zip built here, never id data) and checks the textures
 // arrive, and that ?map= finds a BSP packed into a mounted pak.
 // Usage: node scripts/smoke-render.mjs [outdir]   (default packages/client/dist/smoke)
@@ -41,6 +41,13 @@ const fixtureEntities = fixtureBsp
 const movedEntities = fixtureEntities.replace('"model" "*1"', '"model" "*1"\n"origin" "0 -320 0"');
 if (movedEntities === fixtureEntities) throw new Error("fixture has no func_wall \"model\" \"*1\" to move");
 SYNTHETIC["/data/moved.bsp"] = withEntityString(fixtureBsp, movedEntities);
+// Rotated: yaw 90 about the model-space origin turns x -384..-320, y 128..192 into
+// x -192..-128, y -384..-320, and the origin lifts it to y -192..-128. Yaw -90 (a sign
+// error) would put it outside the map.
+SYNTHETIC["/data/rotated.bsp"] = withEntityString(
+  fixtureBsp,
+  fixtureEntities.replace('"model" "*1"', '"model" "*1"\n"origin" "0 192 0"\n"angle" "90"'),
+);
 // The moved map packed at a path the server does not have, so only the pak can supply it.
 SYNTHETIC["/data/maps.pak"] = writePak({
   "maps/packed.bsp": SYNTHETIC["/data/moved.bsp"],
@@ -195,10 +202,16 @@ try {
     { name: "wall-north", view: { origin: [-160, 160, 24], pitch: 0, yaw: 180 }, point: [-320, 160, 24] },
     { name: "wall-south", view: { origin: [-160, -160, 24], pitch: 0, yaw: 180 }, point: [-320, -160, 24] },
   ];
+  // The rotated wall's north face (y -128, the compiled east face turned by yaw 90) seen
+  // head-on from 160 units north, and the compiled spot it leaves.
+  const ROTATED_VIEWS = [
+    WALL_VIEWS[0],
+    { name: "wall-rotated", view: { origin: [-160, 32, 24], pitch: 0, yaw: 270 }, point: [-160, -128, 24] },
+  ];
   /** Stats and the RGB of a 31x31 pixel box around the projected point, per wall view. */
-  const wallBoxes = async (prefix) => {
+  const wallBoxes = async (prefix, views = WALL_VIEWS) => {
     const out = [];
-    for (const { name, view, point } of WALL_VIEWS) {
+    for (const { name, view, point } of views) {
       const r = await page.evaluate(
         ([view, point]) => {
           window.quack.setView(view);
@@ -231,6 +244,7 @@ try {
     return n / (a.length / 3);
   };
   const compiled = await wallBoxes("compiled");
+  const compiledRotated = await wallBoxes("compiled", ROTATED_VIEWS.slice(1));
   console.log(`  brush models: ${JSON.stringify(compiled[0].brushModels)}, stats ${JSON.stringify(compiled[0].stats)}`);
   check(
     JSON.stringify(compiled[0].brushModels) === JSON.stringify(["func_wall *1 at 0 0 0"]) && compiled.every((r) => r.stats.brushModels === 1),
@@ -248,6 +262,21 @@ try {
   check(frames.every((f) => f < 0.06), "moving the func_wall changes only the wall's own pixels");
   check(north > 0.9, "the func_wall's pixels show at its compiled spot and leave it when moved");
   check(south > 0.9, "the moved func_wall's pixels show at its entity origin");
+  await page.goto(`${ORIGIN}/?map=data/rotated.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const rotated = await wallBoxes("rotated", ROTATED_VIEWS);
+  console.log(`  rotated brush models: ${JSON.stringify(rotated[0].brushModels)}`);
+  check(
+    JSON.stringify(rotated[0].brushModels) === JSON.stringify(["func_wall *1 at 0 192 0 angles 0 90 0"]),
+    "rotated map gives the func_wall its angle key",
+  );
+  const unrotated = [compiled[0], compiledRotated[0]];
+  const [left, arrived] = [0, 1].map((i) => changed(unrotated[i].box, rotated[i].box));
+  const rotatedFrames = [0, 1].map((i) => changed(unrotated[i].frame, rotated[i].frame));
+  console.log(`  changed pixels: compiled spot ${left.toFixed(3)}, rotated spot ${arrived.toFixed(3)}, whole frames ${rotatedFrames.map((f) => f.toFixed(3))}`);
+  check(rotatedFrames.every((f) => f < 0.06), "rotating the func_wall changes only the wall's own pixels");
+  check(left > 0.9, "the rotated func_wall leaves its compiled spot");
+  check(arrived > 0.9, "the rotated func_wall shows where yaw 90 then its origin put it");
 
   // Game data: ?pak= mounts in order; 404s are reported, in URL order, and skipped.
   await page.goto(`${ORIGIN}/?pak=data/absent-1.pak&pak=data/synthetic.pak&pak=data/absent-2.pak&pak=data/synthetic.zip`);

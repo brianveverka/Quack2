@@ -36,7 +36,7 @@ export interface QuackDebug {
   assetErrors: string[];
   /** Drawable faces in the world model: what a view with no PVS culling draws. */
   worldFaces?: number;
-  /** Brush model instances placed from the entity string, e.g. ["func_wall *1 at 0 0 0"]. */
+  /** Brush model instances placed from the entity string, e.g. ["func_wall *1 at 0 0 0"], with " angles p y r" when rotated. */
   brushModels?: readonly string[];
   integrityErrors?: readonly string[];
   view(): View;
@@ -142,7 +142,9 @@ async function main(): Promise<void> {
   const entities = parseEntities(bsp.entityString);
   const brush = brushModelInstances(bsp, entities);
   if (brush.errors.length > 0) console.warn(`${mapUrl}: ${brush.errors.length} bad brush model references`, brush.errors);
-  debug.brushModels = brush.instances.map((b) => `${b.classname} *${b.model} at ${b.origin.join(" ")}`);
+  debug.brushModels = brush.instances.map(
+    (b) => `${b.classname} *${b.model} at ${b.origin.join(" ")}${b.angles.some((a) => a !== 0) ? ` angles ${b.angles.join(" ")}` : ""}`,
+  );
   const renderer = new WorldRenderer(gl, bsp, noTextures, brush.instances);
   debug.missingTextures = renderer.missingTextures;
   const dataStatus = document.getElementById("data");
