@@ -1,3 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Browser client: WebGL2 renderer, input, prediction. Stub until the renderer milestone.
-export {};
+// Browser client library. The page entry is main.ts; these modules are also used by tests.
+export * from "./camera.js";
+export * from "./lightmap.js";
+export * from "./math.js";
+export * from "./renderer.js";
+export * from "./textures.js";
+export * from "./world.js";

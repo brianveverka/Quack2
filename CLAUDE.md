@@ -135,6 +135,11 @@ community map pool. pnpm workspace, TypeScript strict, vitest.
 - `pnpm test` - vitest, all packages.
 - `pnpm typecheck` - `tsc` per package; sim is checked twice (src without DOM/Node, tests with Node).
 - `pnpm check` - typecheck then test. Run before every commit.
+- `pnpm build` / `pnpm dev` - bundle the client with esbuild into `packages/client/dist`
+  (fixture BSPs copied to `dist/maps`); `dev` also serves it on :8000 and rebuilds on change.
+- `pnpm smoke` - `scripts/smoke-render.mjs`: builds, renders the fixture in headless
+  Chromium via Playwright, checks pixels and PVS stats, writes screenshots. Run after
+  renderer changes; not part of `check`.
 - `scripts/build-ericw-tools.sh` - build the pinned ericw-tools into `.tools/bin` (needs
   cmake, a C++ compiler, `libtbb-dev`, `libembree-dev`). Idempotent.
 - `scripts/build-fixture.sh [name]` - compile `fixtures/maps/<name>.map` to `.bsp` and

@@ -2,16 +2,20 @@
 
 Milestones in order. Each is roughly one session; split further when starting it.
 
-## 1. Renderer
-- WebGL2 world renderer in `packages/client`: faces from the BSP (surfedges -> polygons),
-  lightmaps from the lighting lump, PVS culling from the visibility lump.
-- Asset loading: pak and zip archives, `.wal` textures with the Q2 palette.
-  Missing textures fall back to a placeholder, never an error.
-- Free-fly camera, loads `fixtures/maps/test_arena.bsp`.
-- Headless Chromium + SwiftShader smoke test (WebGL2 worked in the cloud sandbox,
-  Playwright 1.56.1 / Chromium 141, measured 2026-10-03).
-- Integrity check that each face's lightmap (extents x styles) fits in the lighting lump;
-  needs the face extent math the renderer adds anyway.
+## 1. Game data and renderer completeness
+The WebGL2 world renderer is in `packages/client` (faces, lightmaps, PVS, free-fly
+camera, checker placeholders, `pnpm smoke`). Remaining:
+- Asset loading: pak and zip archives, `.wal` textures with the Q2 palette, plugged in
+  as a `TextureSource` (`packages/client/src/textures.ts`). Missing textures keep falling
+  back to the checker. Real texture sizes then replace the 64x64 placeholder scale.
+- Inline brush models (`*1`.. on func_wall, doors, plats) are not drawn; the fixture's
+  func_wall (model 1) is invisible.
+- Only light style 0 is drawn; styles 1-3 (switchable and animated lights) are ignored.
+- Surface flags: SURF_SKY, SURF_WARP, SURF_TRANS33/66 draw as ordinary opaque faces
+  (NODRAW is skipped). Needs a sky box, warp shader, and a sorted translucent pass.
+- No area portal (areabits) or frustum culling; PVS only.
+- `lightmapExtents` computes in double, the engine in float; may differ by a luxel on
+  non-axial texinfo. Check against a map with rotated or scaled textures.
 
 ## 2. Box trace + pmove
 - Port `CM_BoxTrace` / `CM_PointContents` against the parsed brushes into `packages/sim`.
