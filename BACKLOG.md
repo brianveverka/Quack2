@@ -4,10 +4,15 @@ Milestones in order. Each is roughly one session; split further when starting it
 
 ## 1. Game data and renderer completeness
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps, PVS, free-fly
-camera, checker placeholders, `pnpm smoke`). Remaining:
-- Asset loading: pak and zip archives, `.wal` textures with the Q2 palette, plugged in
-  as a `TextureSource` (`packages/client/src/textures.ts`). Missing textures keep falling
-  back to the checker. Real texture sizes then replace the 64x64 placeholder scale.
+camera, `.wal` textures from mounted pak/zip data, checker fallback, `pnpm smoke`).
+Remaining:
+- `?map=` only fetches a URL; it does not look inside mounted archives, so
+  `maps/q2dm1.bsp` from a mounted pak0 cannot be loaded yet.
+- Brightness is not checked against the engine: GL Quake 2 scales textures by
+  `gl_intensity` (default 2) and the lightmap blend differs from a plain multiply.
+  Compare a screenshot of a real map against the engine before tuning.
+- Archives are read whole into memory (a full pak0.pak is a few hundred MB). Reading
+  entries lazily from a `Blob` would avoid that for the file picker.
 - Inline brush models (`*1`.. on func_wall, doors, plats) are not drawn; the fixture's
   func_wall (model 1) is invisible.
 - Only light style 0 is drawn; styles 1-3 (switchable and animated lights) are ignored.

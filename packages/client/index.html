@@ -9,11 +9,16 @@
       html, body { margin: 0; height: 100%; background: #200020; color: #eee; font: 14px system-ui, sans-serif; }
       #view { display: block; width: 100%; height: 100%; }
       #status { position: absolute; top: 8px; left: 8px; white-space: pre-wrap; }
+      #hud { position: absolute; bottom: 8px; left: 8px; right: 8px; text-shadow: 0 0 3px #000; }
     </style>
   </head>
   <body>
     <canvas id="view"></canvas>
     <div id="status">Loading...</div>
+    <div id="hud">
+      <label>Game data (.pak, .zip, .pk3): <input id="pak" type="file" multiple accept=".pak,.zip,.pk3" disabled /></label>
+      <span id="data">none mounted, checker textures</span>
+    </div>
     <script type="module" src="main.js"></script>
   </body>
 </html>

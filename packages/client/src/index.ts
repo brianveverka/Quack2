@@ -5,4 +5,6 @@ export * from "./lightmap.js";
 export * from "./math.js";
 export * from "./renderer.js";
 export * from "./textures.js";
+export * from "./wal.js";
+export * from "./assets.js";
 export * from "./world.js";

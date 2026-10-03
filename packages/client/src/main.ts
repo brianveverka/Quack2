@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Browser entry: loads a BSP (?map=, default the bundled test arena), spawns a free-fly
-// camera at the player start, and renders until the page closes. Click to capture the
-// mouse; WASD to fly, Space/C up/down, Shift fast.
+// Browser entry: mounts game data (?pak=<url>, repeatable, later overrides earlier),
+// loads a BSP (?map=, default the bundled test arena), spawns a free-fly camera at the
+// player start, and renders until the page closes. The file picker mounts more archives
+// at any time and re-textures the world. Click to capture the mouse; WASD to fly,
+// Space/C up/down, Shift fast.
 
-import { checkBspIntegrity, entityVec3, parseBsp, parseEntities, type Bsp } from "@quack2/sim";
+import { GameFs, checkBspIntegrity, entityVec3, parseBsp, parseEntities, type Bsp } from "@quack2/sim";
+import { errorMessage, loadWalTextures, openGameArchive } from "./assets.js";
 import { FlyCamera } from "./camera.js";
 import { transformPoint } from "./math.js";
 import { WorldRenderer, type FrameStats, type View } from "./renderer.js";
@@ -21,6 +24,12 @@ export interface QuackDebug {
   frames: number;
   stats?: FrameStats;
   missingTextures?: readonly string[];
+  /** Mounted archive names, oldest (lowest priority) first. */
+  archives: string[];
+  /** Whether a palette (pics/colormap.pcx) was found in the mounted data. */
+  palette: boolean;
+  /** Non-fatal game data problems: archives that failed to mount, corrupt files. */
+  assetErrors: string[];
   /** Drawable faces in the world model: what a view with no PVS culling draws. */
   worldFaces?: number;
   integrityErrors?: readonly string[];
@@ -58,6 +67,9 @@ async function main(): Promise<void> {
   const debug: QuackDebug = (window.quack = {
     ready: false,
     frames: 0,
+    archives: [],
+    palette: false,
+    assetErrors: [],
     view: () => ({ origin: [0, 0, 0], pitch: 0, yaw: 0 }),
     setView: () => {},
     project: () => undefined,
@@ -66,7 +78,35 @@ async function main(): Promise<void> {
   const gl = canvas.getContext("webgl2", { antialias: false });
   if (!gl) return showError("WebGL2 is not available in this browser.");
 
-  const mapUrl = new URLSearchParams(location.search).get("map") ?? "maps/test_arena.bsp";
+  const params = new URLSearchParams(location.search);
+  const fs = new GameFs();
+  const mountErrors: string[] = [];
+  const mount = (name: string, bytes: Uint8Array) => {
+    try {
+      fs.mount(name, openGameArchive(bytes));
+    } catch (e) {
+      mountErrors.push(`${name}: ${errorMessage(e)}`);
+    }
+  };
+  // Fetch in parallel; mount, and report failures, in URL order so a later ?pak=
+  // overrides an earlier one.
+  const fetched = await Promise.all(
+    params.getAll("pak").map(async (url) => {
+      try {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return { url, bytes: new Uint8Array(await r.arrayBuffer()) };
+      } catch (e) {
+        return { url, error: errorMessage(e) };
+      }
+    }),
+  );
+  for (const f of fetched) {
+    if ("bytes" in f) mount(f.url, f.bytes);
+    else mountErrors.push(`${f.url}: ${f.error}`);
+  }
+
+  const mapUrl = params.get("map") ?? "maps/test_arena.bsp";
   debug.map = mapUrl;
   const res = await fetch(mapUrl);
   if (!res.ok) return showError(`Could not load ${mapUrl}: HTTP ${res.status}`);
@@ -80,6 +120,54 @@ async function main(): Promise<void> {
 
   const renderer = new WorldRenderer(gl, bsp, noTextures);
   debug.missingTextures = renderer.missingTextures;
+  const dataStatus = document.getElementById("data");
+  // Debug fields change together at the end, so a reader never sees archives mounted
+  // but their textures not yet applied.
+  const applyGameData = async () => {
+    const errors = [...mountErrors];
+    let palette = false;
+    let status = "none mounted, checker textures";
+    if (fs.names.length > 0) {
+      const t = await loadWalTextures(fs, renderer.mesh.textures);
+      renderer.setTextures(t.source);
+      palette = t.palette;
+      errors.push(...t.errors);
+      status = `${fs.names.join(", ")}: ${t.loaded.length} of ${renderer.mesh.textures.length} textures`;
+      if (!t.palette) status += ", no palette (pics/colormap.pcx) so checkers";
+    }
+    if (errors.length > 0) {
+      status += `; ${errors.length} problems, see console`;
+      console.warn(`game data: ${errors.length} problems`, errors);
+    }
+    if (dataStatus) dataStatus.textContent = status;
+    Object.assign(debug, { archives: fs.names, palette, assetErrors: errors, missingTextures: renderer.missingTextures });
+  };
+  await applyGameData();
+  // Picks mount on top of everything already mounted, in name order (pak0 before pak1).
+  // The picker starts disabled in index.html and is enabled only here, once the world
+  // exists to re-texture, so no pick is made with nothing listening.
+  let picking = Promise.resolve();
+  const picker = document.getElementById("pak") as HTMLInputElement | null;
+  if (picker) picker.disabled = false;
+  picker?.addEventListener("change", () => {
+    const files = [...(picker.files ?? [])].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    picker.value = "";
+    picking = picking
+      .then(async () => {
+        for (const file of files) {
+          let bytes: Uint8Array;
+          try {
+            bytes = new Uint8Array(await file.arrayBuffer());
+          } catch (e) {
+            mountErrors.push(`${file.name}: ${errorMessage(e)}`);
+            continue;
+          }
+          mount(file.name, bytes);
+        }
+        await applyGameData();
+      })
+      .catch((e: unknown) => console.warn("mounting picked files failed", e));
+  });
   debug.worldFaces = renderer.mesh.faceTexture.filter((t) => t >= 0).length;
   const camera = spawnPoint(bsp);
 

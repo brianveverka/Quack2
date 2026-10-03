@@ -3,18 +3,32 @@
 // Headless render smoke test: builds the client, loads the test arena in Chromium
 // (WebGL2 through ANGLE/SwiftShader worked without flags, measured 2026-10-03 with
 // Chromium 141; the run prints the renderer it got), checks three views by reading back
-// pixels, and saves a screenshot of each.
+// pixels, and saves a screenshot of each. A second load mounts synthetic game data
+// (a pak and a deflated zip built here, never id data) and checks the textures arrive.
 // Usage: node scripts/smoke-render.mjs [outdir]   (default packages/client/dist/smoke)
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { syntheticPalette, writePak, writePalettePcx, writeWal, writeZip } from "./synthetic-data.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const dist = join(root, "packages/client/dist");
 const outDir = resolve(process.argv[2] ?? join(dist, "smoke"));
 const ORIGIN = "http://quack.test";
+// Synthetic game data, served from memory: the floor is solid pure red (index 1) from
+// the pak, the walls solid blue (index 2) from the zip, the trim absent.
+const palette = syntheticPalette();
+palette.set([255, 0, 0], 3);
+palette.set([0, 0, 255], 6);
+const SYNTHETIC = {
+  "/data/synthetic.pak": writePak({
+    "pics/colormap.pcx": writePalettePcx(palette),
+    "textures/quack/floor.wal": writeWal("quack/floor", 64, 64, () => 1),
+  }),
+  "/data/synthetic.zip": writeZip({ "textures/quack/wall.wal": writeWal("quack/wall", 32, 64, () => 2) }),
+};
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".map": "application/json", ".bsp": "application/octet-stream" };
 
 execFileSync(process.execPath, [join(root, "packages/client/build.mjs")], { stdio: "inherit" });
@@ -31,9 +45,13 @@ try {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
-  page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  // Chromium logs every failed fetch as a console error; the deliberate 404 below is expected.
+  page.on("console", (m) => m.type() === "error" && !m.location().url.includes("/data/absent-") && errors.push(m.text()));
   await page.route(`${ORIGIN}/**`, (route) => {
     const path = new URL(route.request().url()).pathname;
+    // Delayed so it finishes last: mount errors must still be reported in URL order.
+    if (path === "/data/absent-1.pak") return void setTimeout(() => route.fulfill({ status: 404, body: "not found" }), 300);
+    if (SYNTHETIC[path]) return route.fulfill({ body: Buffer.from(SYNTHETIC[path]), contentType: "application/octet-stream" });
     const file = join(dist, path === "/" ? "index.html" : path);
     try {
       route.fulfill({ body: readFileSync(file), contentType: TYPES[extname(file)] ?? "application/octet-stream" });
@@ -90,24 +108,29 @@ try {
   // Lightmaps reach the screen: the floor in the pillar's shadow is far darker than the
   // floor beside it (luxel RGB sums 21 vs 243, measured 2026-10-03). Averaging a box
   // spanning several checker cells keeps the 2:1 checker contrast from deciding this.
-  const floor = await page.evaluate(() => {
-    window.quack.setView({ origin: [-448, 0, 46], pitch: 0, yaw: 0 });
-    const { width, data } = window.quack.readPixels();
-    const box = (wx, wy) => {
-      const p = window.quack.project(wx, wy, 0);
-      if (!p) return NaN;
-      let sum = 0, n = 0;
-      for (let y = Math.round(p[1]) - 15; y <= Math.round(p[1]) + 15; y++) {
-        for (let x = Math.round(p[0]) - 15; x <= Math.round(p[0]) + 15; x++) {
-          const i = (y * width + x) * 4;
-          sum += data[i] + data[i + 1] + data[i + 2];
-          n++;
+  /** Mean RGB of a 31x31 pixel box around each floor point, from the player start view. */
+  const floorBoxes = (points) =>
+    page.evaluate((points) => {
+      window.quack.setView({ origin: [-448, 0, 46], pitch: 0, yaw: 0 });
+      const { width, data } = window.quack.readPixels();
+      return points.map(([wx, wy]) => {
+        const p = window.quack.project(wx, wy, 0);
+        if (!p) return [NaN, NaN, NaN];
+        const sum = [0, 0, 0];
+        let n = 0;
+        for (let y = Math.round(p[1]) - 15; y <= Math.round(p[1]) + 15; y++) {
+          for (let x = Math.round(p[0]) - 15; x <= Math.round(p[0]) + 15; x++) {
+            const i = (y * width + x) * 4;
+            for (let c = 0; c < 3; c++) sum[c] += data[i + c];
+            n++;
+          }
         }
-      }
-      return sum / n;
-    };
-    return { shadow: box(-312, 0), lit: box(-256, -112) };
-  });
+        return sum.map((v) => v / n);
+      });
+    }, points);
+  const brightness = (rgb) => rgb[0] + rgb[1] + rgb[2];
+  const [shadowRgb, litRgb] = await floorBoxes([[-312, 0], [-256, -112]]);
+  const floor = { shadow: brightness(shadowRgb), lit: brightness(litRgb) };
   console.log(`  floor brightness: ${JSON.stringify(floor)}`);
   check(floor.lit > 4 * floor.shadow, "lightmap shadow shows on screen (lit floor > 4x shadowed floor)");
 
@@ -136,6 +159,55 @@ try {
   const [x, y, z] = after.view.origin;
   check(after.frames > before, `animation loop is running (${after.frames - before} frames in 0.5 s)`);
   check(x > -448 && Math.abs(y) < 1e-6 && z === 46, `holding W flies along +X (x ${x.toFixed(1)})`);
+
+  // Game data: ?pak= mounts in order; 404s are reported, in URL order, and skipped.
+  await page.goto(`${ORIGIN}/?pak=data/absent-1.pak&pak=data/synthetic.pak&pak=data/absent-2.pak&pak=data/synthetic.zip`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const data = await page.evaluate(() => ({
+    error: window.quack.error,
+    archives: window.quack.archives,
+    palette: window.quack.palette,
+    assetErrors: window.quack.assetErrors,
+    missing: window.quack.missingTextures,
+    hud: document.getElementById("data")?.textContent,
+  }));
+  console.log(`  game data: ${JSON.stringify(data)}`);
+  check(!data.error, "client boots with game data mounted");
+  check(
+    JSON.stringify(data.archives) === JSON.stringify(["data/synthetic.pak", "data/synthetic.zip"]) && data.palette,
+    "pak and zip mounted in URL order, palette found",
+  );
+  check(
+    JSON.stringify(data.assetErrors) === JSON.stringify(["data/absent-1.pak: HTTP 404", "data/absent-2.pak: HTTP 404"]),
+    "unreachable paks are reported in URL order, not fatal",
+  );
+  check(JSON.stringify(data.missing) === JSON.stringify(["quack/trim"]), "floor (pak) and wall (deflated zip) textures decoded; trim falls back");
+  await shoot("textured", { origin: [-448, 0, 46], pitch: 0, yaw: 0 });
+  // Pure red floor times a white-ish lightmap: green and blue stay near zero (red 79,
+  // green and blue 0, measured 2026-10-03). Checker tints never go below 48 per channel,
+  // so a fallback cannot pass this.
+  const [redFloor] = await floorBoxes([[-256, -112]]);
+  console.log(`  textured floor rgb: ${JSON.stringify(redFloor.map(Math.round))}`);
+  check(redFloor[0] > 40 && redFloor[1] < 8 && redFloor[2] < 8, "floor shows the pak's palette color (red, lit)");
+
+  // The file picker mounts on a running page, in numeric name order, and re-textures.
+  // It ships disabled and is enabled only once its listener exists.
+  const html = readFileSync(join(dist, "index.html"), "utf8");
+  await page.goto(`${ORIGIN}/`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const enabled = await page.evaluate(() => !document.getElementById("pak").disabled);
+  check(/id="pak"[^>]*disabled/.test(html) && enabled, "file picker ships disabled and is enabled once the world is up");
+  await page.setInputFiles("#pak", [
+    { name: "pak10.zip", mimeType: "application/zip", buffer: Buffer.from(SYNTHETIC["/data/synthetic.zip"]) },
+    { name: "pak9.pak", mimeType: "application/octet-stream", buffer: Buffer.from(SYNTHETIC["/data/synthetic.pak"]) },
+  ]);
+  await page.waitForFunction(() => window.quack.archives.length === 2, null, { timeout: 10000 });
+  const picked = await page.evaluate(() => ({ archives: window.quack.archives, missing: window.quack.missingTextures }));
+  console.log(`  picked: ${JSON.stringify(picked)}`);
+  check(
+    JSON.stringify(picked) === JSON.stringify({ archives: ["pak9.pak", "pak10.zip"], missing: ["quack/trim"] }),
+    "file picker mounts in numeric name order and re-textures the running world",
+  );
 
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
 } finally {

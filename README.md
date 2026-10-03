@@ -4,20 +4,21 @@ A browser arena shooter that plays Quake 2 deathmatch maps from an open communit
 pool. Planned shape: a WebGL2 browser client and an authoritative Node server running a
 shared simulation.
 
-Status: early. The BSP parser and a WebGL2 world renderer (lightmaps, PVS culling,
-free-fly camera, checker placeholders for every texture) are implemented and tested.
-Game data loading, movement, the server, and netcode are not written yet. See
+Status: early. The BSP parser, pak/zip readers, and a WebGL2 world renderer (lightmaps,
+PVS culling, free-fly camera, `.wal` textures from game data you mount, checker
+placeholders for anything missing) are implemented and tested. Movement, the server,
+and netcode are not written yet. See
 [BACKLOG.md](BACKLOG.md).
 
 ## Layout
 
 | Path | What |
 | --- | --- |
-| `packages/sim` | Shared simulation, runs in browser and Node. BSP v38 parser, entity parser, integrity checks, face/lightmap math, PVS, constants. |
-| `packages/client` | Browser client: WebGL2 world renderer and free-fly camera. |
+| `packages/sim` | Shared simulation, runs in browser and Node. BSP v38 parser, entity parser, integrity checks, face/lightmap math, PVS, pak and zip readers, constants. |
+| `packages/client` | Browser client: WebGL2 world renderer, free-fly camera, `.wal` and palette decoding, game data mounting. |
 | `packages/server` | Game server (Node, `ws`). Stub. |
 | `fixtures/maps` | Test map source (`.map`), its compiled `.bsp`, and a golden dump from ericw-tools. |
-| `scripts` | Build ericw-tools and recompile fixtures. |
+| `scripts` | Build ericw-tools, recompile fixtures, the smoke test, and writers for the synthetic pak/zip/`.wal` data tests use. |
 
 ## Development
 
@@ -46,9 +47,24 @@ scripts/build-fixture.sh          # builds .tools/bin on first run
 ## Game data
 
 The repo contains no id Software assets and never will. Quake 2 textures and models
-are not redistributable. Put your own game data under `assets/` (gitignored). Nothing
-may require it: the parser, fixtures, and renderer all work without it, and the
-renderer draws a checker placeholder for any texture it cannot find.
+are not redistributable, and that includes the palette. Nothing may require game
+data: the parser, fixtures, tests, and renderer all work without it, and tests build
+their own synthetic archives and textures.
+
+To see real textures, mount your own `pak0.pak` (or any pak, zip, or pk3) in the
+client, either way:
+
+- the file picker at the bottom of the page (mounts on the running page; several files
+  mount in name order, pak9 before pak10, later ones overriding earlier ones);
+- `?pak=<url>`, repeatable, mounted in URL order before the map loads. Files under the
+  repo's `assets/` (gitignored) are served at `assets/` by `pnpm dev`, so
+  `http://localhost:8000/?pak=assets/pak0.pak` works.
+
+World textures come from `textures/<name>.wal`, the palette from `pics/colormap.pcx`.
+A missing `.wal` draws the checker; a `.wal` with no palette mounted draws a checker at
+the texture's real size. Problems (unreachable URL, corrupt file) are reported in the
+game data line at the bottom of the page and in the console, and never stop the map
+from rendering.
 
 ## License
 

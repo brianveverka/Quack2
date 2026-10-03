@@ -54,12 +54,12 @@ export interface FrameStats {
 
 export class WorldRenderer {
   readonly mesh: WorldMesh;
-  /** Texture names that fell back to the checker placeholder. */
-  readonly missingTextures: readonly string[];
+  /** Texture names drawn as a checker placeholder. */
+  missingTextures: readonly string[] = [];
   private readonly program: WebGLProgram;
   private readonly vao: WebGLVertexArrayObject;
   private readonly indexBuffer: WebGLBuffer;
-  private readonly textures: { tex: WebGLTexture; width: number; height: number }[];
+  private textures: { tex: WebGLTexture; width: number; height: number }[] = [];
   private readonly lightmap: WebGLTexture;
   private readonly uViewProj: WebGLUniformLocation | null;
   private readonly uTexSize: WebGLUniformLocation | null;
@@ -75,8 +75,6 @@ export class WorldRenderer {
   ) {
     const atlas = buildLightmapAtlas(bsp, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number);
     this.mesh = buildWorldMesh(bsp, atlas);
-    const { images, missing } = resolveTextures(this.mesh.textures, textureSource);
-    this.missingTextures = missing;
 
     this.program = linkProgram(gl, VS, FS);
     this.uViewProj = gl.getUniformLocation(this.program, "uViewProj");
@@ -101,8 +99,16 @@ export class WorldRenderer {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
     gl.bindVertexArray(null);
 
-    this.textures = images.map((img) => ({ tex: uploadTexture(gl, img, true), width: img.width, height: img.height }));
+    this.setTextures(textureSource);
     this.lightmap = uploadTexture(gl, atlas, false);
+  }
+
+  /** Replace every surface texture, e.g. after game data is mounted. */
+  setTextures(source: TextureSource): void {
+    const { images, missing } = resolveTextures(this.mesh.textures, source);
+    for (const t of this.textures) this.gl.deleteTexture(t.tex);
+    this.textures = images.map((img) => ({ tex: uploadTexture(this.gl, img, true), width: img.width, height: img.height }));
+    this.missingTextures = missing;
   }
 
   render(view: View, width: number, height: number): FrameStats {
