@@ -5,6 +5,7 @@
 
 import { PLANE_ANYX, PLANE_X } from "./format.js";
 import type { Bsp } from "./parse.js";
+import { faceLightmapBytes, lightmapExtents } from "./surface.js";
 
 const NORMAL_EPSILON = 1e-4;
 /** Distance tolerance for a point lying on or inside a brush plane, in world units. */
@@ -92,6 +93,18 @@ export function checkBspIntegrity(bsp: Bsp): string[] {
     if (ti !== -1) range(`brushside ${i} texinfo`, ti, texinfo.count);
   }
   if (errs.length === 0) {
+    // Needs valid surfedges and texinfo indices, checked above.
+    for (let i = 0; i < faces.count; i++) {
+      const ofs = faces.lightOfs[i]!;
+      if (ofs === -1) continue;
+      const bytes = faceLightmapBytes(bsp, i);
+      if (ofs + bytes > bsp.lighting.length) {
+        const { width, height } = lightmapExtents(bsp, i);
+        errs.push(
+          `face ${i} lightmap ${width}x${height} (${bytes} bytes) at ${ofs} overruns lighting lump of ${bsp.lighting.length}`,
+        );
+      }
+    }
     for (let i = 0; i < brushes.count; i++) {
       const g = brushGeometry(bsp, i);
       if (!g.bounded) errs.push(`brush ${i} is unbounded (an inverted or missing side)`);
