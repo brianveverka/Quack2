@@ -58,7 +58,7 @@ export function buildLightmapAtlas(bsp: Bsp, maxSize = 4096): LightmapAtlas {
       for (let row = 0; row < e.height; row++) {
         let dst = ((y + row) * size + x) * 4;
         for (let col = 0; col < e.width; col++) {
-          // checkBspIntegrity guarantees the map fits; a short read is black, not a crash.
+          // A lightmap past the lump (flagged by checkBspIntegrity, not enforced) reads as black.
           data[dst] = bsp.lighting[src] ?? 0;
           data[dst + 1] = bsp.lighting[src + 1] ?? 0;
           data[dst + 2] = bsp.lighting[src + 2] ?? 0;

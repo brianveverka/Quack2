@@ -19,6 +19,8 @@ camera, checker placeholders, `pnpm smoke`). Remaining:
   non-axial texinfo. Check against a map with rotated or scaled textures.
 
 ## 2. Box trace + pmove
+- `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
+  itself hangs `pointLeaf`. Needed before trace walks untrusted maps.
 - Port `CM_BoxTrace` / `CM_PointContents` against the parsed brushes into `packages/sim`.
 - Port `Pmove` (walk, jump, step, crouch, water) using the player box constants.
 - Test against fixture geometry: spawn points not in solid, walls stop the box.

@@ -88,9 +88,10 @@ try {
   check(spawn.colors > 100, "spawn view shows textured, lit surfaces (>100 distinct colors)");
 
   // Lightmaps reach the screen: the floor in the pillar's shadow is far darker than the
-  // floor beside it (lightmap luxels measured 21 vs 216 on the fixture). Averaging a box
+  // floor beside it (luxel RGB sums 21 vs 243, measured 2026-10-03). Averaging a box
   // spanning several checker cells keeps the 2:1 checker contrast from deciding this.
   const floor = await page.evaluate(() => {
+    window.quack.setView({ origin: [-448, 0, 46], pitch: 0, yaw: 0 });
     const { width, data } = window.quack.readPixels();
     const box = (wx, wy) => {
       const p = window.quack.project(wx, wy, 0);
@@ -105,7 +106,7 @@ try {
       }
       return sum / n;
     };
-    return { shadow: box(-304, 0), lit: box(-256, -112) };
+    return { shadow: box(-312, 0), lit: box(-256, -112) };
   });
   console.log(`  floor brightness: ${JSON.stringify(floor)}`);
   check(floor.lit > 4 * floor.shadow, "lightmap shadow shows on screen (lit floor > 4x shadowed floor)");

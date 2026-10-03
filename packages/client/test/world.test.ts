@@ -153,6 +153,10 @@ describe("PVS face selection", () => {
     expect(visibleFaceMask(novis, mesh, 3).reduce((a, m) => a + m, 0)).toBe(WORLD_FACES);
   });
 
+  it("a cluster past the vis data draws every world face", () => {
+    expect(visibleFaceMask(bsp, mesh, bsp.visibility.numClusters).reduce((a, m) => a + m, 0)).toBe(WORLD_FACES);
+  });
+
   it("the player start's cluster culls faces, and never selects brush-model faces", () => {
     // Measured on the fixture: cluster 6 does not see clusters 4 and 5.
     const mask = visibleFaceMask(bsp, mesh, 6);

@@ -72,12 +72,15 @@ export interface DrawList {
 
 /**
  * Faces potentially visible from `cluster`, as world-model face flags. Cluster -1 (the
- * eye is in solid or outside the map) marks every face, as the engine's novis path does.
+ * eye is in solid or outside the map) or a map without vis marks every face, as the
+ * engine's novis path does.
  */
 export function visibleFaceMask(bsp: Bsp, mesh: WorldMesh, cluster: number): Uint8Array {
   const mask = new Uint8Array(bsp.faces.count);
   const end = mesh.firstFace + mesh.numFaces;
-  if (cluster < 0 || bsp.visibility.numClusters === 0) {
+  // A leaf cluster past the vis data (a corrupt map that warns but still draws) has no
+  // PVS row; draw everything rather than nothing.
+  if (cluster < 0 || cluster >= bsp.visibility.numClusters) {
     mask.fill(1, mesh.firstFace, end);
     return mask;
   }
