@@ -5,13 +5,13 @@ Milestones in order. Each is roughly one session; split further when starting it
 ## 1. Game data and renderer completeness
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps, PVS, inline brush
 models at their entity origin, free-fly camera, `.wal` textures and `?map=` BSPs from
-mounted pak/zip data, checker fallback, `pnpm smoke`).
+mounted pak/zip data, picked archives read by range, checker fallback, `pnpm smoke`).
 Remaining:
 - Brightness is not checked against the engine: GL Quake 2 scales textures by
   `gl_intensity` (default 2) and the lightmap blend differs from a plain multiply.
   Compare a screenshot of a real map against the engine before tuning.
-- Archives are read whole into memory (a full pak0.pak is a few hundred MB). Reading
-  entries lazily from a `Blob` would avoid that for the file picker.
+- Zips with a prepended stub whose offsets were not adjusted (unfixed SFX) and zip64
+  archives (Info-ZIP `-fz`, stdin) are rejected; Python's zipfile opens the former.
 - Brush models are placed at compiled position + entity "origin", but the game moves
   some at spawn: an untargeted func_plat starts lowered (g_func.c SP_func_plat), a
   START_OPEN door or func_water starts open, a func_train snaps to its first

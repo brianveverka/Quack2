@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Zip (and pk3) reader: entries come from the central directory, stored (method 0) and
 // deflate (method 8) are supported, contents are inflated on read and CRC-checked.
-// Zip64, encryption and other methods are rejected per entry, not per archive.
+// Zip64, encryption and other methods are rejected per entry, not per archive. Only the
+// end record and central directory are read up front; entry data is read on demand.
 
-import { ArchiveError, normalizePath, readName, type Archive, type InflateRaw } from "./archive.js";
+import { ArchiveError, normalizePath, readName, readRange, toSource, type Archive, type ArchiveSource, type InflateRaw } from "./archive.js";
 
 const EOCD_SIG = 0x06054b50;
 const CENTRAL_SIG = 0x02014b50;
@@ -50,34 +51,43 @@ interface ZipEntry {
   readonly localOffset: number;
 }
 
+/** Offset of the end record within `tail`, which must end where the file ends. */
 function findEocd(view: DataView): number {
-  const min = Math.max(0, view.byteLength - EOCD_SIZE - MAX_COMMENT);
-  for (let o = view.byteLength - EOCD_SIZE; o >= min; o--) {
+  for (let o = view.byteLength - EOCD_SIZE; o >= 0; o--) {
     if (view.getUint32(o, true) === EOCD_SIG && o + EOCD_SIZE + view.getUint16(o + 20, true) <= view.byteLength) return o;
   }
   throw new ArchiveError("not a zip file (no end of central directory record)");
 }
 
-export function parseZip(bytes: Uint8Array, inflateRaw: InflateRaw): Archive {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const eocd = findEocd(view);
-  const count = view.getUint16(eocd + 10, true);
-  const cdSize = view.getUint32(eocd + 12, true);
-  const cdOffset = view.getUint32(eocd + 16, true);
+export async function parseZip(data: Uint8Array | ArchiveSource, inflateRaw: InflateRaw): Promise<Archive> {
+  const source = toSource(data);
+  const tailStart = Math.max(0, source.size - EOCD_SIZE - MAX_COMMENT);
+  const tail = await readRange(source, tailStart, source.size);
+  const tv = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
+  const e = findEocd(tv);
+  const eocd = tailStart + e;
+  const count = tv.getUint16(e + 10, true);
+  const cdSize = tv.getUint32(e + 12, true);
+  const cdOffset = tv.getUint32(e + 16, true);
   if (count === 0xffff || cdOffset === 0xffffffff) throw new ArchiveError("zip64 archives are not supported");
   if (cdOffset + cdSize > eocd) throw new ArchiveError(`zip central directory out of range (offset ${cdOffset}, size ${cdSize})`);
 
+  // Bounded by cdSize, not the end record: a gap before the end record (or a bogus
+  // offset of 0) would otherwise read most of a picked file.
+  const cd = await readRange(source, cdOffset, cdOffset + cdSize);
+  const view = new DataView(cd.buffer, cd.byteOffset, cd.byteLength);
+  const end = cd.length;
   const entries = new Map<string, ZipEntry>();
-  let o = cdOffset;
+  let o = 0;
   for (let i = 0; i < count; i++) {
-    if (o + CENTRAL_SIZE > eocd || view.getUint32(o, true) !== CENTRAL_SIG) {
+    if (o + CENTRAL_SIZE > end || view.getUint32(o, true) !== CENTRAL_SIG) {
       throw new ArchiveError(`zip central directory entry ${i} is corrupt`);
     }
     const nameLength = view.getUint16(o + 28, true);
     const next = o + CENTRAL_SIZE + nameLength + view.getUint16(o + 30, true) + view.getUint16(o + 32, true);
-    if (next > eocd) throw new ArchiveError(`zip central directory entry ${i} is corrupt`);
+    if (next > end) throw new ArchiveError(`zip central directory entry ${i} is corrupt`);
     const entry: ZipEntry = {
-      name: readName(bytes, o + CENTRAL_SIZE, nameLength),
+      name: readName(cd, o + CENTRAL_SIZE, nameLength),
       flags: view.getUint16(o + 8, true),
       method: view.getUint16(o + 10, true),
       crc: view.getUint32(o + 16, true),
@@ -102,13 +112,13 @@ export function parseZip(bytes: Uint8Array, inflateRaw: InflateRaw): Archive {
     }
     if (e.method !== 0 && e.method !== 8) throw new ArchiveError(`${e.name}: zip compression method ${e.method} is not supported`);
     const lo = e.localOffset;
-    if (lo + LOCAL_SIZE > bytes.length || view.getUint32(lo, true) !== LOCAL_SIG) {
-      throw new ArchiveError(`${e.name}: zip local header is corrupt`);
-    }
+    const local = lo + LOCAL_SIZE > source.size ? undefined : await readRange(source, lo, lo + LOCAL_SIZE);
+    const lv = local && new DataView(local.buffer, local.byteOffset, local.byteLength);
+    if (!lv || lv.getUint32(0, true) !== LOCAL_SIG) throw new ArchiveError(`${e.name}: zip local header is corrupt`);
     // The local header's own name and extra lengths can differ from the central copy.
-    const start = lo + LOCAL_SIZE + view.getUint16(lo + 26, true) + view.getUint16(lo + 28, true);
-    if (start + e.compressedSize > bytes.length) throw new ArchiveError(`${e.name}: zip entry data out of range`);
-    const raw = bytes.subarray(start, start + e.compressedSize);
+    const start = lo + LOCAL_SIZE + lv.getUint16(26, true) + lv.getUint16(28, true);
+    if (start + e.compressedSize > source.size) throw new ArchiveError(`${e.name}: zip entry data out of range`);
+    const raw = await readRange(source, start, start + e.compressedSize);
     let data: Uint8Array;
     if (e.method === 0) {
       if (e.compressedSize !== e.size) throw new ArchiveError(`${e.name}: stored entry sizes differ`);

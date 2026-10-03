@@ -86,9 +86,9 @@ async function main(): Promise<void> {
   const params = new URLSearchParams(location.search);
   const fs = new GameFs();
   const mountErrors: string[] = [];
-  const mount = (name: string, bytes: Uint8Array) => {
+  const mount = async (name: string, data: Uint8Array | Blob) => {
     try {
-      fs.mount(name, openGameArchive(bytes));
+      fs.mount(name, await openGameArchive(data));
     } catch (e) {
       mountErrors.push(`${name}: ${errorMessage(e)}`);
     }
@@ -107,7 +107,7 @@ async function main(): Promise<void> {
     }),
   );
   for (const f of fetched) {
-    if ("bytes" in f) mount(f.url, f.bytes);
+    if ("bytes" in f) await mount(f.url, f.bytes);
     else mountErrors.push(`${f.url}: ${f.error}`);
   }
 
@@ -179,16 +179,8 @@ async function main(): Promise<void> {
     picker.value = "";
     picking = picking
       .then(async () => {
-        for (const file of files) {
-          let bytes: Uint8Array;
-          try {
-            bytes = new Uint8Array(await file.arrayBuffer());
-          } catch (e) {
-            mountErrors.push(`${file.name}: ${errorMessage(e)}`);
-            continue;
-          }
-          mount(file.name, bytes);
-        }
+        // Only the directory is read here; entries are read from the File as needed.
+        for (const file of files) await mount(file.name, file);
         await applyGameData();
       })
       .catch((e: unknown) => console.warn("mounting picked files failed", e));

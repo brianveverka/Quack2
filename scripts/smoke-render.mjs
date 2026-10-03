@@ -323,6 +323,15 @@ try {
   await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
   const enabled = await page.evaluate(() => !document.getElementById("pak").disabled);
   check(/id="pak"[^>]*disabled/.test(html) && enabled, "file picker ships disabled and is enabled once the world is up");
+  // A slice of a File is a plain Blob, so this counts only reads of a whole picked file.
+  await page.evaluate(() => {
+    window.wholeFileReads = 0;
+    const read = File.prototype.arrayBuffer;
+    File.prototype.arrayBuffer = function () {
+      window.wholeFileReads++;
+      return read.call(this);
+    };
+  });
   await page.setInputFiles("#pak", [
     { name: "pak10.zip", mimeType: "application/zip", buffer: Buffer.from(SYNTHETIC["/data/synthetic.zip"]) },
     { name: "pak9.pak", mimeType: "application/octet-stream", buffer: Buffer.from(SYNTHETIC["/data/synthetic.pak"]) },
@@ -334,6 +343,8 @@ try {
     JSON.stringify(picked) === JSON.stringify({ archives: ["pak9.pak", "pak10.zip"], missing: ["quack/trim"] }),
     "file picker mounts in numeric name order and re-textures the running world",
   );
+  const wholeFileReads = await page.evaluate(() => window.wholeFileReads);
+  check(wholeFileReads === 0, `picked files are read by range, not through File.arrayBuffer (${wholeFileReads} calls)`);
 
   check(errors.length === 0, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
 } finally {

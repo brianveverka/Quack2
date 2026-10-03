@@ -81,7 +81,7 @@ describe("loadWalTextures", () => {
 
   it("inflates through DecompressionStream", async () => {
     const zip = writeZip({ "a.wal": zipped });
-    expect(await openGameArchive(zip).read("a.wal")).toEqual(zipped);
+    expect(await (await openGameArchive(zip)).read("a.wal")).toEqual(zipped);
     expect(await inflateRaw(new Uint8Array([3, 0]), 0)).toEqual(new Uint8Array(0));
   });
 
@@ -92,7 +92,7 @@ describe("loadWalTextures", () => {
     const v = new DataView(zip.buffer);
     const cd = v.getUint32(zip.length - 22 + 16, true);
     v.setUint32(cd + 24, 10, true); // central directory claims 10 bytes
-    await expect(openGameArchive(zip).read("bomb.wal")).rejects.toThrow(/inflated to 11 bytes, expected 10/);
+    await expect((await openGameArchive(zip)).read("bomb.wal")).rejects.toThrow(/inflated to 11 bytes, expected 10/);
   });
 
   it("gives truncated deflate data a readable error", async () => {
@@ -103,8 +103,8 @@ describe("loadWalTextures", () => {
 
   it("decodes found textures, leaves missing ones to the fallback, reports broken ones", async () => {
     const fs = new GameFs();
-    fs.mount("pak0.pak", openGameArchive(writePak(files)));
-    fs.mount("pak1.zip", openGameArchive(writeZip({ [walPath("TEST/Zipped")]: zipped })));
+    fs.mount("pak0.pak", await openGameArchive(writePak(files)));
+    fs.mount("pak1.zip", await openGameArchive(writeZip({ [walPath("TEST/Zipped")]: zipped })));
     const t = await loadWalTextures(fs, names);
     expect(t.palette).toBe(true);
     expect(t.loaded).toEqual(["test/half", "test/zipped"]);
@@ -117,7 +117,7 @@ describe("loadWalTextures", () => {
 
   it("without a palette, draws checkers at each .wal's real size", async () => {
     const fs = new GameFs();
-    fs.mount("nopal.pak", openGameArchive(writePak({ [walPath("test/half")]: wal })));
+    fs.mount("nopal.pak", await openGameArchive(writePak({ [walPath("test/half")]: wal })));
     const t = await loadWalTextures(fs, ["test/half"]);
     expect(t.palette).toBe(false);
     expect(t.loaded).toEqual([]);
@@ -128,7 +128,7 @@ describe("loadWalTextures", () => {
 
   it("reports a corrupt palette and carries on", async () => {
     const fs = new GameFs();
-    fs.mount("bad.pak", openGameArchive(writePak({ [PALETTE_PATH]: pcx.subarray(0, 300), [walPath("test/half")]: wal })));
+    fs.mount("bad.pak", await openGameArchive(writePak({ [PALETTE_PATH]: pcx.subarray(0, 300), [walPath("test/half")]: wal })));
     const t = await loadWalTextures(fs, ["test/half"]);
     expect(t.palette).toBe(false);
     expect(t.errors).toEqual([expect.stringMatching(/^pics\/colormap\.pcx: /)]);
@@ -154,34 +154,34 @@ describe("loadMap", () => {
     };
     return { urls, fetchUrl };
   };
-  const mounted = () => {
+  const mounted = async () => {
     const fs = new GameFs();
-    fs.mount("pak0.pak", openGameArchive(writePak({ "maps/packed.bsp": packed, "maps/both.bsp": packed })));
-    fs.mount("pak1.pak", openGameArchive(writePak({ "pics/colormap.pcx": pcx })));
+    fs.mount("pak0.pak", await openGameArchive(writePak({ "maps/packed.bsp": packed, "maps/both.bsp": packed })));
+    fs.mount("pak1.pak", await openGameArchive(writePak({ "pics/colormap.pcx": pcx })));
     return fs;
   };
 
   it("reads a path from the mounted archives without fetching, case-insensitively", async () => {
     const { urls, fetchUrl } = server();
-    const m = await loadMap(mounted(), "Maps/Packed.BSP", fetchUrl);
+    const m = await loadMap(await mounted(), "Maps/Packed.BSP", fetchUrl);
     expect([text(m), m.source, urls]).toEqual(["bsp from the pak", "pak0.pak", []]);
   });
 
   it("prefers the archive copy over the same path on the server", async () => {
     const { urls, fetchUrl } = server();
-    const m = await loadMap(mounted(), "maps/both.bsp", fetchUrl);
+    const m = await loadMap(await mounted(), "maps/both.bsp", fetchUrl);
     expect([text(m), m.source, urls]).toEqual(["bsp from the pak", "pak0.pak", []]);
   });
 
   it("falls back to fetching a path the archives lack", async () => {
     const { urls, fetchUrl } = server();
-    const m = await loadMap(mounted(), "maps/served.bsp", fetchUrl);
+    const m = await loadMap(await mounted(), "maps/served.bsp", fetchUrl);
     expect([text(m), m.source, urls]).toEqual(["bsp from the server", "maps/served.bsp", ["maps/served.bsp"]]);
   });
 
   it("only fetches a URL with a scheme, even when an archive has that path", async () => {
     const { urls, fetchUrl } = server();
-    const e = await loadMap(mounted(), "http://x/maps/packed.bsp", fetchUrl).catch((x: unknown) => x);
+    const e = await loadMap(await mounted(), "http://x/maps/packed.bsp", fetchUrl).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(MapLoadError);
     expect((e as Error).message).toBe("Could not load http://x/maps/packed.bsp: HTTP 404");
     expect(urls).toEqual(["http://x/maps/packed.bsp"]);
@@ -189,7 +189,7 @@ describe("loadMap", () => {
 
   it("names the searched archives and the HTTP failure when a path is in neither", async () => {
     const { fetchUrl } = server();
-    await expect(loadMap(mounted(), "maps/absent.bsp", fetchUrl)).rejects.toThrow(
+    await expect(loadMap(await mounted(), "maps/absent.bsp", fetchUrl)).rejects.toThrow(
       new MapLoadError("Could not load maps/absent.bsp: not in pak0.pak, pak1.pak and HTTP 404"),
     );
     await expect(loadMap(new GameFs(), "maps/absent.bsp", fetchUrl)).rejects.toThrow("Could not load maps/absent.bsp: HTTP 404");
@@ -206,7 +206,7 @@ describe("loadMap", () => {
     // Corrupt the deflated data (it follows the 30-byte local header and the name).
     zip.fill(0xff, 30 + "maps/bad.bsp".length, 30 + "maps/bad.bsp".length + 4);
     const fs = new GameFs();
-    fs.mount("bad.zip", openGameArchive(zip));
+    fs.mount("bad.zip", await openGameArchive(zip));
     const { urls, fetchUrl } = server();
     await expect(loadMap(fs, "maps/bad.bsp", fetchUrl)).rejects.toThrow(/^Could not load maps\/bad\.bsp from bad\.zip: ./);
     expect(urls).toEqual([]);

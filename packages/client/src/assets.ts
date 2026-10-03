@@ -5,7 +5,7 @@
 // archives, no palette, or a broken .wal each degrade to checker placeholders. Maps are
 // looked up in the same GameFs before falling back to a fetch.
 
-import { GameFs, openArchive, type Archive } from "@quack2/sim";
+import { GameFs, blobSource, openArchive, type Archive } from "@quack2/sim";
 import { checkerTexture, type TextureImage, type TextureSource } from "./textures.js";
 import { PALETTE_PATH, decodeWal, pcxPalette, walToRgba } from "./wal.js";
 
@@ -32,8 +32,9 @@ export async function inflateRaw(data: Uint8Array, size: number): Promise<Uint8A
   return out.subarray(0, Math.min(length, size + 1));
 }
 
-export function openGameArchive(bytes: Uint8Array): Archive {
-  return openArchive(bytes, inflateRaw);
+/** Bytes (a ?pak= fetch) are read in place; a Blob (a picked File) is read by range, never whole. */
+export function openGameArchive(data: Uint8Array | Blob): Promise<Archive> {
+  return openArchive(data instanceof Uint8Array ? data : blobSource(data), inflateRaw);
 }
 
 export function walPath(name: string): string {
