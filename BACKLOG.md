@@ -4,21 +4,25 @@ Milestones in order. Each is roughly one session; split further when starting it
 
 ## 1. Game data and renderer completeness
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps, PVS, inline brush
-models at their entity origin, free-fly camera, `.wal` textures and `?map=` BSPs from
-mounted pak/zip data, checker fallback, `pnpm smoke`).
+models at their entity origin and spawn angles, free-fly camera, `.wal` textures and
+`?map=` BSPs from mounted pak/zip data, picked archives read by range, checker fallback,
+`pnpm smoke`).
 Remaining:
 - Brightness is not checked against the engine: GL Quake 2 scales textures by
   `gl_intensity` (default 2) and the lightmap blend differs from a plain multiply.
   Compare a screenshot of a real map against the engine before tuning.
-- Archives are read whole into memory (a full pak0.pak is a few hundred MB). Reading
-  entries lazily from a `Blob` would avoid that for the file picker.
-- Brush models are placed at compiled position + entity "origin", but the game moves
+- Zips with a prepended stub whose offsets were not adjusted (unfixed SFX) and zip64
+  archives (Info-ZIP `-fz`, stdin) are rejected; Python's zipfile opens the former.
+- Brush models are placed by their spawn "origin" and angles, but the game moves
   some at spawn: an untargeted func_plat starts lowered (g_func.c SP_func_plat), a
-  START_OPEN door or func_water starts open, a func_train snaps to its first
-  path_corner. Needs entity spawn state, with movers.
-- Entity "angle"/"angles" rotation is not applied. func_wall, func_object,
-  func_conveyor, func_rotating, target_character and turret_breach keep it at spawn
-  (doors, buttons, water, plats and trains clear it).
+  START_OPEN door or func_water starts open (a START_OPEN func_door_rotating starts
+  turned to its open angles), a func_train snaps to its first path_corner, a
+  turret_breach (and its turret_base) turns from its spawn angles into its
+  minpitch/maxpitch and minyaw/maxyaw range over the first seconds
+  (turret_breach_think). Needs entity spawn state, with movers.
+- Entity keys match case sensitively; the game's ED_ParseField uses Q_stricmp, so a
+  map with "Origin" or "Angle" places the entity differently here, and one with
+  "Model" is not drawn.
 - Brush models are drawn every frame with no PVS or frustum culling. Correct, but
   wasted draws on maps with many doors.
 - Only light style 0 is drawn; styles 1-3 (switchable and animated lights) are ignored.
@@ -40,6 +44,9 @@ Remaining:
 - Authoritative server in `packages/server` over `ws`, fixed tick.
 - Client prediction and reconciliation using the shared pmove.
 - Snapshot delta compression, entity interpolation.
+- Entity angle precision: the engine sends angles as one byte (MSG_WriteAngle, 360/256
+  degree steps, truncated), so brush models draw up to one step off their exact
+  angles, which the renderer uses now. Decide whether to match it.
 
 ## 4. Weapons
 - Hitscan and projectile weapons, damage, armor, item pickups and respawn.

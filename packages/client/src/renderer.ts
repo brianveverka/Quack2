@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // WebGL2 world renderer: one static vertex buffer for every model, a world index buffer
 // rebuilt when the eye changes cluster, a static index buffer for the brush models drawn
-// at their entity origins, one draw per texture per model.
+// at their entity origins and angles, one draw per texture per model.
 
 import { pointLeaf, type Bsp } from "@quack2/sim";
 import type { BrushModelInstance } from "./bmodels.js";
 import { buildLightmapAtlas } from "./lightmap.js";
-import { fovY, multiply, perspective, viewMatrix } from "./math.js";
+import { fovY, modelMatrix, multiply, perspective, viewMatrix, type Mat4 } from "./math.js";
 import { resolveTextures, type TextureImage, type TextureSource } from "./textures.js";
 import {
   VERTEX_FLOATS,
@@ -24,14 +24,14 @@ layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec2 aST;
 layout(location = 2) in vec2 aLM;
 uniform mat4 uViewProj;
-uniform vec3 uOrigin;
+uniform mat4 uModel;
 uniform vec2 uTexSize;
 out vec2 vUV;
 out vec2 vLM;
 void main() {
   vUV = aST / uTexSize;
   vLM = aLM;
-  gl_Position = uViewProj * vec4(aPos + uOrigin, 1.0);
+  gl_Position = uViewProj * uModel * vec4(aPos, 1.0);
 }`;
 
 const FS = `#version 300 es
@@ -50,6 +50,7 @@ export const CLEAR_COLOR = [64, 0, 64] as const;
 export const FOV_X = 90;
 const NEAR = 4;
 const FAR = 16384;
+const IDENTITY = modelMatrix([0, 0, 0], [0, 0, 0]);
 
 export interface View {
   readonly origin: readonly [number, number, number];
@@ -68,7 +69,8 @@ export interface FrameStats {
 }
 
 interface InstanceDraws {
-  readonly origin: readonly [number, number, number];
+  /** Model to world: entity angles, then origin. */
+  readonly model: Mat4;
   /** Ranges in the brush model index buffer. */
   readonly draws: readonly DrawRange[];
 }
@@ -85,7 +87,7 @@ export class WorldRenderer {
   private textures: { tex: WebGLTexture; width: number; height: number }[] = [];
   private readonly lightmap: WebGLTexture;
   private readonly uViewProj: WebGLUniformLocation | null;
-  private readonly uOrigin: WebGLUniformLocation | null;
+  private readonly uModel: WebGLUniformLocation | null;
   private readonly uTexSize: WebGLUniformLocation | null;
   /** View-projection of the last rendered frame. */
   viewProj: Float32Array = new Float32Array(16);
@@ -103,7 +105,7 @@ export class WorldRenderer {
 
     this.program = linkProgram(gl, VS, FS);
     this.uViewProj = gl.getUniformLocation(this.program, "uViewProj");
-    this.uOrigin = gl.getUniformLocation(this.program, "uOrigin");
+    this.uModel = gl.getUniformLocation(this.program, "uModel");
     this.uTexSize = gl.getUniformLocation(this.program, "uTexSize");
     gl.useProgram(this.program);
     gl.uniform1i(gl.getUniformLocation(this.program, "uTex"), 0);
@@ -138,7 +140,7 @@ export class WorldRenderer {
     for (const inst of brushModels) {
       const { base, list } = lists.get(inst.model)!;
       if (list.draws.length === 0) continue;
-      this.instances.push({ origin: inst.origin, draws: list.draws.map((d) => ({ ...d, first: d.first + base })) });
+      this.instances.push({ model: modelMatrix(inst.origin, inst.angles), draws: list.draws.map((d) => ({ ...d, first: d.first + base })) });
     }
     this.brushIndexBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.brushIndexBuffer);
@@ -188,7 +190,7 @@ export class WorldRenderer {
     // The element array binding is VAO state, so both buffers are bound with the VAO bound.
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
     if (rebuild) gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, this.drawList.indices, gl.DYNAMIC_DRAW);
-    gl.uniform3f(this.uOrigin, 0, 0, 0);
+    gl.uniformMatrix4fv(this.uModel, false, IDENTITY);
     this.drawRanges(this.drawList.draws);
     let draws = this.drawList.draws.length;
     // Brush models are not PVS culled (the engine's server drops entities outside the
@@ -196,7 +198,7 @@ export class WorldRenderer {
     // in front of it is visible from the eye, so it is in the PVS and drawn.
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.brushIndexBuffer);
     for (const inst of this.instances) {
-      gl.uniform3f(this.uOrigin, inst.origin[0], inst.origin[1], inst.origin[2]);
+      gl.uniformMatrix4fv(this.uModel, false, inst.model);
       this.drawRanges(inst.draws);
       draws += inst.draws.length;
     }

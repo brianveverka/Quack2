@@ -57,7 +57,8 @@ To see real textures, mount your own `pak0.pak` (or any pak, zip, or pk3) in the
 client, either way:
 
 - the file picker at the bottom of the page (mounts on the running page; several files
-  mount in name order, pak9 before pak10, later ones overriding earlier ones);
+  mount in name order, pak9 before pak10, later ones overriding earlier ones; a picked
+  file is not loaded whole: its directory is read on mount, entries as needed);
 - `?pak=<url>`, repeatable, mounted in URL order before the map loads. Files under the
   repo's `assets/` (gitignored) are served at `assets/` by `pnpm dev`, so
   `http://localhost:8000/?pak=assets/pak0.pak` works.

@@ -22,6 +22,50 @@ export interface Archive {
   read(path: string): Promise<Uint8Array | undefined>;
 }
 
+/**
+ * Random access to an archive's bytes. The parsers read the header and directory once
+ * and each entry's range on demand, so a picked File is never loaded whole.
+ */
+export interface ArchiveSource {
+  readonly size: number;
+  /** Bytes [start, end). May share memory with the source; do not mutate. */
+  slice(start: number, end: number): Promise<Uint8Array>;
+}
+
+/** The parts of a Blob (or File) a source needs; structural so the sim stays free of DOM types. */
+export interface BlobLike {
+  readonly size: number;
+  slice(start: number, end: number): { arrayBuffer(): Promise<ArrayBuffer> };
+}
+
+/** A source over bytes already in memory; slices are views, not copies. */
+export function bytesSource(bytes: Uint8Array): ArchiveSource {
+  return { size: bytes.length, slice: (start, end) => Promise.resolve(bytes.subarray(start, end)) };
+}
+
+export function blobSource(blob: BlobLike): ArchiveSource {
+  return { size: blob.size, slice: async (start, end) => new Uint8Array(await blob.slice(start, end).arrayBuffer()) };
+}
+
+export function toSource(data: Uint8Array | ArchiveSource): ArchiveSource {
+  return data instanceof Uint8Array ? bytesSource(data) : data;
+}
+
+/**
+ * Exactly the bytes [start, end). A short read means the file shrank after it was
+ * opened, which a picked File can do; Blob.slice would otherwise clamp silently.
+ */
+export async function readRange(source: ArchiveSource, start: number, end: number): Promise<Uint8Array> {
+  if (start < 0 || end < start || end > source.size) {
+    throw new ArchiveError(`read of bytes ${start}-${end} is outside the ${source.size}-byte archive`);
+  }
+  const bytes = await source.slice(start, end);
+  if (bytes.length !== end - start) {
+    throw new ArchiveError(`read of bytes ${start}-${end} returned ${bytes.length} bytes; did the file change?`);
+  }
+  return bytes;
+}
+
 export function normalizePath(path: string): string {
   return path
     .replace(/\\/g, "/")
