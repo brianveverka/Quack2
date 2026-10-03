@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// World model (model 0) mesh: one vertex per face corner, triangle fans, and per-cluster
-// index lists from the PVS. DOM-free so it is testable under Node.
+// Mesh of every model's faces (the world, model 0, and the inline brush models), in
+// model space: one vertex per face corner, triangle fans, per-cluster index lists for
+// the world from the PVS, and per-model index lists. DOM-free so it is testable under Node.
 
 import { SURF_NODRAW, clusterPvs, faceVertexIndices, texCoord, type Bsp } from "@quack2/sim";
 import { lightmapUv, type LightmapAtlas } from "./lightmap.js";
@@ -22,9 +23,17 @@ export interface WorldMesh {
   readonly numFaces: number;
 }
 
+/** A model's face range, trimmed to the face lump so a corrupt map that warns still draws. */
+export function modelFaces(bsp: Bsp, model: number): { first: number; end: number } {
+  const n = bsp.faces.count;
+  const start = bsp.models.firstFace[model] ?? 0;
+  const end = Math.min(start + Math.max(bsp.models.numFaces[model] ?? 0, 0), n);
+  const first = Math.min(Math.max(start, 0), n);
+  return { first, end: Math.max(end, first) };
+}
+
 export function buildWorldMesh(bsp: Bsp, atlas: LightmapAtlas): WorldMesh {
-  const firstFace = bsp.models.firstFace[0] ?? 0;
-  const numFaces = bsp.models.numFaces[0] ?? 0;
+  const world = modelFaces(bsp, 0);
   const n = bsp.faces.count;
   const faceTexture = new Int32Array(n).fill(-1);
   const faceFirstVertex = new Uint32Array(n);
@@ -33,10 +42,31 @@ export function buildWorldMesh(bsp: Bsp, atlas: LightmapAtlas): WorldMesh {
   const textureIndex = new Map<string, number>();
   const verts: number[] = [];
   const pos = bsp.vertexes.position;
+  // Model face ranges never overlap in compiler output. In a corrupt map that overlaps,
+  // a face belongs to the lowest model claiming it, here and in modelFaceMask.
+  const seen = new Uint8Array(n);
 
-  for (let f = firstFace; f < firstFace + numFaces; f++) {
+  for (let m = 0; m < bsp.models.count; m++) {
+    const { first, end } = modelFaces(bsp, m);
+    for (let f = first; f < end; f++) {
+      if (seen[f]) continue;
+      seen[f] = 1;
+      addFace(f);
+    }
+  }
+  return {
+    vertices: new Float32Array(verts),
+    textures,
+    faceTexture,
+    faceFirstVertex,
+    faceNumVertices,
+    firstFace: world.first,
+    numFaces: world.end - world.first,
+  };
+
+  function addFace(f: number): void {
     const ti = bsp.faces.texinfo[f]!;
-    if (bsp.texinfo.flags[ti]! & SURF_NODRAW) continue;
+    if (bsp.texinfo.flags[ti]! & SURF_NODRAW) return;
     const name = bsp.texinfo.texture[ti]!;
     let tex = textureIndex.get(name);
     if (tex === undefined) {
@@ -54,7 +84,18 @@ export function buildWorldMesh(bsp: Bsp, atlas: LightmapAtlas): WorldMesh {
       verts.push(x, y, z, s, t, lu, lv);
     }
   }
-  return { vertices: new Float32Array(verts), textures, faceTexture, faceFirstVertex, faceNumVertices, firstFace, numFaces };
+}
+
+/** Every face of one model, as face flags for buildDrawList. */
+export function modelFaceMask(bsp: Bsp, model: number): Uint8Array {
+  const mask = new Uint8Array(bsp.faces.count);
+  const { first, end } = modelFaces(bsp, model);
+  mask.fill(1, first, end);
+  for (let m = 0; m < model; m++) {
+    const earlier = modelFaces(bsp, m);
+    mask.fill(0, Math.max(earlier.first, first), Math.min(earlier.end, end));
+  }
+  return mask;
 }
 
 export interface DrawRange {
@@ -102,7 +143,7 @@ export function visibleFaceMask(bsp: Bsp, mesh: WorldMesh, cluster: number): Uin
 export function buildDrawList(mesh: WorldMesh, mask: Uint8Array): DrawList {
   const perTexture: number[][] = mesh.textures.map(() => []);
   let visibleFaces = 0;
-  for (let f = mesh.firstFace; f < mesh.firstFace + mesh.numFaces; f++) {
+  for (let f = 0; f < mask.length; f++) {
     const tex = mesh.faceTexture[f]!;
     if (!mask[f] || tex < 0) continue;
     visibleFaces++;

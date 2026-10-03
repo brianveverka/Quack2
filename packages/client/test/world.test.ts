@@ -7,28 +7,70 @@ import { FlyCamera } from "../src/camera.js";
 import { buildLightmapAtlas, lightmapUv, type LightmapAtlas } from "../src/lightmap.js";
 import { fovY, multiply, perspective, transformPoint, viewMatrix } from "../src/math.js";
 import { CHECKER_SIZE, checkerTexture, resolveTextures } from "../src/textures.js";
-import { VERTEX_FLOATS, buildDrawList, buildWorldMesh, visibleFaceMask } from "../src/world.js";
+import { VERTEX_FLOATS, buildDrawList, buildWorldMesh, modelFaceMask, modelFaces, visibleFaceMask } from "../src/world.js";
 
 const bsp = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
 const atlas = buildLightmapAtlas(bsp);
 const mesh = buildWorldMesh(bsp, atlas);
 const WORLD_FACES = 105; // model 0 of the fixture; faces 105..110 are the func_wall
+const ALL_FACES = 111;
 
 describe("world mesh", () => {
-  it("covers model 0 only, one vertex per face corner, three textures", () => {
+  it("covers every model, one vertex per face corner, three textures", () => {
+    expect(bsp.faces.count).toBe(ALL_FACES);
     expect(mesh.firstFace).toBe(0);
     expect(mesh.numFaces).toBe(WORLD_FACES);
     let corners = 0;
-    for (let f = 0; f < WORLD_FACES; f++) corners += bsp.faces.numEdges[f]!;
+    for (let f = 0; f < ALL_FACES; f++) corners += bsp.faces.numEdges[f]!;
     expect(mesh.vertices.length).toBe(corners * VERTEX_FLOATS);
     expect([...mesh.textures].sort()).toEqual(["quack/floor", "quack/trim", "quack/wall"]);
-    expect(Array.from(mesh.faceTexture.subarray(WORLD_FACES))).toEqual([-1, -1, -1, -1, -1, -1]);
+    // The func_wall (model 1) is all trim, through the same texture list as the world.
+    const trim = mesh.textures.indexOf("quack/trim");
+    expect(Array.from(mesh.faceTexture.subarray(WORLD_FACES))).toEqual(Array(6).fill(trim));
+  });
+
+  it("keeps brush model vertices in model space (the func_wall's compiled box)", () => {
+    const xs = [], ys = [], zs = [];
+    for (let f = WORLD_FACES; f < ALL_FACES; f++) {
+      for (let i = 0; i < mesh.faceNumVertices[f]!; i++) {
+        const o = (mesh.faceFirstVertex[f]! + i) * VERTEX_FLOATS;
+        xs.push(mesh.vertices[o]!), ys.push(mesh.vertices[o + 1]!), zs.push(mesh.vertices[o + 2]!);
+      }
+    }
+    expect([Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys), Math.min(...zs), Math.max(...zs)]).toEqual([
+      -384, -320, 128, 192, 0, 48,
+    ]);
+  });
+
+  it("emits each face once when model face ranges overlap", () => {
+    const firstFace = Int32Array.from(bsp.models.firstFace);
+    const numFaces = Int32Array.from(bsp.models.numFaces);
+    // Model 1 also claims the last world face, and runs past the face lump.
+    firstFace[1] = WORLD_FACES - 1;
+    numFaces[1] = 100;
+    const bad = { ...bsp, models: { ...bsp.models, firstFace, numFaces } };
+    const m = buildWorldMesh(bad, atlas);
+    expect(m.vertices.length).toBe(mesh.vertices.length);
+    // The shared face belongs to the world, so the brush model does not draw it again.
+    expect(modelFaceMask(bad, 1).reduce((a, v) => a + v, 0)).toBe(ALL_FACES - WORLD_FACES);
+    expect(modelFaceMask(bad, 1)[WORLD_FACES - 1]).toBe(0);
+  });
+
+  it("trims a model face range that starts before the face lump", () => {
+    const firstFace = Int32Array.from(bsp.models.firstFace);
+    const numFaces = Int32Array.from(bsp.models.numFaces);
+    firstFace[1] = -5;
+    numFaces[1] = 10;
+    const bad = { ...bsp, models: { ...bsp.models, firstFace, numFaces } };
+    expect(modelFaces(bad, 1)).toEqual({ first: 0, end: 5 });
+    firstFace[1] = -50;
+    expect(modelFaces(bad, 1)).toEqual({ first: 0, end: 0 });
   });
 
   it("winds every triangle clockwise seen from the face's front (gl.frontFace(CW))", () => {
     const v = mesh.vertices;
     const at = (i: number) => [v[i * VERTEX_FLOATS]!, v[i * VERTEX_FLOATS + 1]!, v[i * VERTEX_FLOATS + 2]!];
-    for (let f = 0; f < WORLD_FACES; f++) {
+    for (let f = 0; f < ALL_FACES; f++) {
       const p = bsp.faces.planeNum[f]!;
       const sign = bsp.faces.side[f] ? -1 : 1;
       const n = [0, 1, 2].map((k) => bsp.planes.normal[p * 3 + k]! * sign);
@@ -74,7 +116,7 @@ describe("lightmap atlas", () => {
     // Luxel i is sampled at texture-space textureMin + 16 i; a texel centre is at +0.5 in
     // atlas space. Corners then span [0.5, size - 0.5] luxels and bilinear filtering never
     // reads a neighbouring face's luxels.
-    for (let f = 0; f < WORLD_FACES; f++) {
+    for (let f = 0; f < ALL_FACES; f++) {
       const r = atlas.rects[f]!;
       const o = mesh.faceFirstVertex[f]! * VERTEX_FLOATS;
       for (let i = 0; i < mesh.faceNumVertices[f]!; i++) {
@@ -173,6 +215,15 @@ describe("PVS face selection", () => {
       next += d.count;
     }
     expect(next).toBe(list.indices.length);
+  });
+
+  it("a brush model's mask selects its own faces only", () => {
+    const mask = modelFaceMask(bsp, 1);
+    expect(Array.from(mask.subarray(0, WORLD_FACES)).every((m) => m === 0)).toBe(true);
+    const list = buildDrawList(mesh, mask);
+    expect(list.visibleFaces).toBe(6);
+    // Six quads, one texture.
+    expect(list.draws).toEqual([{ texture: mesh.textures.indexOf("quack/trim"), first: 0, count: 6 * 2 * 3 }]);
   });
 });
 

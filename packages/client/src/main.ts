@@ -5,8 +5,9 @@
 // at any time and re-textures the world. Click to capture the mouse; WASD to fly,
 // Space/C up/down, Shift fast.
 
-import { GameFs, checkBspIntegrity, entityVec3, parseBsp, parseEntities, type Bsp } from "@quack2/sim";
+import { GameFs, checkBspIntegrity, entityVec3, parseBsp, parseEntities, type BspEntity } from "@quack2/sim";
 import { errorMessage, loadWalTextures, openGameArchive } from "./assets.js";
+import { brushModelInstances } from "./bmodels.js";
 import { FlyCamera } from "./camera.js";
 import { transformPoint } from "./math.js";
 import { WorldRenderer, type FrameStats, type View } from "./renderer.js";
@@ -32,6 +33,8 @@ export interface QuackDebug {
   assetErrors: string[];
   /** Drawable faces in the world model: what a view with no PVS culling draws. */
   worldFaces?: number;
+  /** Brush model instances placed from the entity string, e.g. ["func_wall *1 at 0 0 0"]. */
+  brushModels?: readonly string[];
   integrityErrors?: readonly string[];
   view(): View;
   setView(view: View): void;
@@ -47,8 +50,7 @@ declare global {
   }
 }
 
-function spawnPoint(bsp: Bsp): FlyCamera {
-  const ents = parseEntities(bsp.entityString);
+function spawnPoint(ents: readonly BspEntity[]): FlyCamera {
   const spawn =
     ents.find((e) => e.classname === "info_player_start") ?? ents.find((e) => e.classname === "info_player_deathmatch");
   const o = (spawn && entityVec3(spawn, "origin")) ?? [0, 0, 0];
@@ -118,7 +120,11 @@ async function main(): Promise<void> {
     console.warn(`${mapUrl}: ${debug.integrityErrors.length} integrity problems`, debug.integrityErrors.slice(0, 10));
   }
 
-  const renderer = new WorldRenderer(gl, bsp, noTextures);
+  const entities = parseEntities(bsp.entityString);
+  const brush = brushModelInstances(bsp, entities);
+  if (brush.errors.length > 0) console.warn(`${mapUrl}: ${brush.errors.length} bad brush model references`, brush.errors);
+  debug.brushModels = brush.instances.map((b) => `${b.classname} *${b.model} at ${b.origin.join(" ")}`);
+  const renderer = new WorldRenderer(gl, bsp, noTextures, brush.instances);
   debug.missingTextures = renderer.missingTextures;
   const dataStatus = document.getElementById("data");
   // Debug fields change together at the end, so a reader never sees archives mounted
@@ -168,8 +174,9 @@ async function main(): Promise<void> {
       })
       .catch((e: unknown) => console.warn("mounting picked files failed", e));
   });
-  debug.worldFaces = renderer.mesh.faceTexture.filter((t) => t >= 0).length;
-  const camera = spawnPoint(bsp);
+  const { faceTexture, firstFace, numFaces } = renderer.mesh;
+  debug.worldFaces = faceTexture.subarray(firstFace, firstFace + numFaces).filter((t) => t >= 0).length;
+  const camera = spawnPoint(entities);
 
   const keys = new Set<string>();
   addEventListener("keydown", (e) => keys.add(e.code));

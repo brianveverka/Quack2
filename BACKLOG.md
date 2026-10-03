@@ -3,8 +3,9 @@
 Milestones in order. Each is roughly one session; split further when starting it.
 
 ## 1. Game data and renderer completeness
-The WebGL2 world renderer is in `packages/client` (faces, lightmaps, PVS, free-fly
-camera, `.wal` textures from mounted pak/zip data, checker fallback, `pnpm smoke`).
+The WebGL2 world renderer is in `packages/client` (faces, lightmaps, PVS, inline brush
+models at their entity origin, free-fly camera, `.wal` textures from mounted pak/zip
+data, checker fallback, `pnpm smoke`).
 Remaining:
 - `?map=` only fetches a URL; it does not look inside mounted archives, so
   `maps/q2dm1.bsp` from a mounted pak0 cannot be loaded yet.
@@ -13,8 +14,15 @@ Remaining:
   Compare a screenshot of a real map against the engine before tuning.
 - Archives are read whole into memory (a full pak0.pak is a few hundred MB). Reading
   entries lazily from a `Blob` would avoid that for the file picker.
-- Inline brush models (`*1`.. on func_wall, doors, plats) are not drawn; the fixture's
-  func_wall (model 1) is invisible.
+- Brush models are placed at compiled position + entity "origin", but the game moves
+  some at spawn: an untargeted func_plat starts lowered (g_func.c SP_func_plat), a
+  START_OPEN door or func_water starts open, a func_train snaps to its first
+  path_corner. Needs entity spawn state, with movers.
+- Entity "angle"/"angles" rotation is not applied. func_wall, func_object,
+  func_conveyor, func_rotating, target_character and turret_breach keep it at spawn
+  (doors, buttons, water, plats and trains clear it).
+- Brush models are drawn every frame with no PVS or frustum culling. Correct, but
+  wasted draws on maps with many doors.
 - Only light style 0 is drawn; styles 1-3 (switchable and animated lights) are ignored.
 - Surface flags: SURF_SKY, SURF_WARP, SURF_TRANS33/66 draw as ordinary opaque faces
   (NODRAW is skipped). Needs a sky box, warp shader, and a sorted translucent pass.

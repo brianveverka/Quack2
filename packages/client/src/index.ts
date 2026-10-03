@@ -7,4 +7,5 @@ export * from "./renderer.js";
 export * from "./textures.js";
 export * from "./wal.js";
 export * from "./assets.js";
+export * from "./bmodels.js";
 export * from "./world.js";

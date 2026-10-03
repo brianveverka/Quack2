@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Writers for synthetic game data: pak, zip, .wal and a palette-only colormap.pcx.
+// Writers for synthetic game data: pak, zip, .wal, a palette-only colormap.pcx, and a
+// BSP with its entity string replaced.
 // Tests and the smoke test build every archive and texture with these, so nothing
 // depends on id Software data. Node only (zip deflate uses node:zlib).
 import { deflateRawSync } from "node:zlib";
@@ -135,4 +136,20 @@ export function syntheticPalette() {
   const p = new Uint8Array(768);
   for (let i = 0; i < 256; i++) p.set([i, 255 - i, (i * 37) & 255], i * 3);
   return p;
+}
+
+/**
+ * Copy of a BSP whose entity lump (lump 0) is `entities`: the new lump is appended,
+ * NUL-terminated, and the header pointed at it. Every other lump is unchanged.
+ */
+export function withEntityString(bsp, entities) {
+  const text = ascii(entities);
+  const offset = (bsp.length + 3) & ~3;
+  const out = new Uint8Array(offset + text.length + 1);
+  out.set(bsp);
+  out.set(text, offset);
+  const view = new DataView(out.buffer);
+  view.setInt32(8, offset, true);
+  view.setInt32(12, text.length + 1, true);
+  return out;
 }
