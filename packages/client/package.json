@@ -1,0 +1,21 @@
+{
+  "name": "@quack2/client",
+  "version": "0.0.0",
+  "private": true,
+  "license": "GPL-2.0-or-later",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+    "build": "node build.mjs",
+    "dev": "node build.mjs --serve"
+  },
+  "dependencies": {
+    "@quack2/sim": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  // No DOM and no Node types: the sim runs unchanged in the browser and on the server.
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": []
+  },
+  "include": ["src"]
+}

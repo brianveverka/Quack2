@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+*.log
+.tools/
+
+# Game data (pak files, textures, models, sounds). Never committed: id Software
+# assets are not redistributable, and community maps arrive at runtime.
+assets/

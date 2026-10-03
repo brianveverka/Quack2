@@ -124,3 +124,37 @@ For each unit of work:
 
 **What gets fixed now:** decide by coupling, not timing. Caused by this change, or blocks
 the next one: fix now. Belongs to code that's about to be replaced: defer.
+
+## Project
+
+Quack2: a browser arena shooter that loads Quake 2 BSP (IBSP v38) maps from an open
+community map pool. pnpm workspace, TypeScript strict, vitest.
+
+### Commands
+- `pnpm install` - install (Node >= 22, pnpm 10).
+- `pnpm test` - vitest, all packages.
+- `pnpm typecheck` - `tsc` per package; sim is checked twice (src without DOM/Node, tests with Node).
+- `pnpm check` - typecheck then test. Run before every commit.
+- `pnpm build` / `pnpm dev` - bundle the client with esbuild into `packages/client/dist`
+  (fixture BSPs copied to `dist/maps`); `dev` also serves it on :8000 and rebuilds on change.
+- `pnpm smoke` - `scripts/smoke-render.mjs`: builds, renders the fixture in headless
+  Chromium via Playwright, checks pixels and PVS stats, writes screenshots. Run after
+  renderer changes; not part of `check`.
+- `scripts/build-ericw-tools.sh` - build the pinned ericw-tools into `.tools/bin` (needs
+  cmake, a C++ compiler, `libtbb-dev`, `libembree-dev`). Idempotent.
+- `scripts/build-fixture.sh [name]` - compile `fixtures/maps/<name>.map` to `.bsp` and
+  regenerate `<name>.golden.json`. Output is byte-identical across runs; if the `.bsp`
+  changes, the expected counts in `packages/sim/test/bsp.test.ts` must be re-measured.
+
+### Constraints
+- No id Software assets in the repo, ever: no pak files, textures, models, sounds, or
+  maps derived from them. `assets/` is gitignored for local game data. Fixture maps are
+  original geometry with `quack/*` texture names.
+- Missing textures are never fatal, in the compiler pipeline, the parser, or the renderer.
+- `packages/sim` uses no DOM and no Node-only APIs; `tsconfig.json` there enforces it
+  with `lib: ["ES2022"]` and `types: []`. Node APIs are allowed only in `packages/sim/test`.
+- All coordinates are float. Integer fields on disk (node/leaf bounds) are widened to
+  Float32Array at parse time.
+- The player box (stock 32x32x56) is defined once, in `packages/sim/src/constants.ts`.
+- License GPL-2.0-or-later. Later work ports pmove and trace from the Quake 2 source;
+  keep SPDX headers on every source file.
