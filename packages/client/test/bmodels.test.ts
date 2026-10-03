@@ -3,14 +3,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseBsp, parseEntities } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
-import { brushModelInstances, visibleAtSpawn } from "../src/bmodels.js";
+import { brushModelInstances, entityAngles, visibleAtSpawn } from "../src/bmodels.js";
 
 const bsp = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
 
 describe("brush model instances", () => {
   it("places the fixture's func_wall (model 1) at the origin, nothing else", () => {
     expect(brushModelInstances(bsp, parseEntities(bsp.entityString))).toEqual({
-      instances: [{ model: 1, origin: [0, 0, 0], classname: "func_wall" }],
+      instances: [{ model: 1, origin: [0, 0, 0], angles: [0, 0, 0], classname: "func_wall" }],
       errors: [],
     });
   });
@@ -22,9 +22,42 @@ describe("brush model instances", () => {
       { "classname" "misc_explobox" "model" "models/objects/barrels/tris.md2" "origin" "1 2 3" }
     `);
     expect(brushModelInstances(bsp, ents)).toEqual({
-      instances: [{ model: 1, origin: [16, -32, 8], classname: "func_door" }],
+      instances: [{ model: 1, origin: [16, -32, 8], angles: [0, 0, 0], classname: "func_door" }],
       errors: [],
     });
+  });
+
+  it("keeps spawn angles only for classes whose spawn function keeps them", () => {
+    const ents = parseEntities(`
+      { "classname" "func_wall" "model" "*1" "angle" "90" }
+      { "classname" "func_rotating" "model" "*1" "angles" "10 20 30" }
+      { "classname" "turret_base" "model" "*1" "angle" "45" }
+      { "classname" "func_door" "model" "*1" "angle" "90" }
+      { "classname" "func_door_rotating" "model" "*1" "angles" "0 90 0" }
+      { "classname" "func_plat" "model" "*1" "angle" "180" }
+      { "classname" "func_train" "model" "*1" "angle" "180" }
+    `);
+    expect(brushModelInstances(bsp, ents).instances.map((b) => [b.classname, b.angles])).toEqual([
+      ["func_wall", [0, 90, 0]],
+      ["func_rotating", [10, 20, 30]],
+      ["turret_base", [0, 45, 0]],
+      ["func_door", [0, 0, 0]],
+      ["func_door_rotating", [0, 0, 0]],
+      ["func_plat", [0, 0, 0]],
+      ["func_train", [0, 0, 0]],
+    ]);
+  });
+
+  it('reads "angle" and "angles"', () => {
+    const angles = (src: string) => entityAngles(parseEntities(`{ ${src} }`)[0]!);
+    expect(angles(`"classname" "func_wall"`)).toEqual([0, 0, 0]);
+    expect(angles(`"angle" "90"`)).toEqual([0, 90, 0]);
+    expect(angles(`"angle" " -22.5e1x"`)).toEqual([0, -225, 0]); // atof: leading number only
+    expect(angles(`"angle" "east"`)).toEqual([0, 0, 0]);
+    expect(angles(`"angles" "1 2 3"`)).toEqual([1, 2, 3]);
+    expect(angles(`"angles" "1 2"`)).toEqual([0, 0, 0]); // malformed: none, as for "origin"
+    expect(angles(`"angle" "90" "angles" "1 2 3"`)).toEqual([1, 2, 3]); // the later key wins
+    expect(angles(`"angles" "1 2 3" "angle" "90"`)).toEqual([0, 90, 0]);
   });
 
   it("reports references to models the map does not have", () => {

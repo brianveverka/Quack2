@@ -6,15 +6,35 @@ export type Mat4 = Float32Array;
 
 const DEG = Math.PI / 180;
 
-/** forward, right, up for (pitch, yaw) in degrees, roll 0, as AngleVectors in q_shared.c. */
-export function angleVectors(pitch: number, yaw: number) {
+/** forward, right, up for (pitch, yaw, roll) in degrees, as AngleVectors in q_shared.c. */
+export function angleVectors(pitch: number, yaw: number, roll = 0) {
   const sp = Math.sin(pitch * DEG), cp = Math.cos(pitch * DEG);
   const sy = Math.sin(yaw * DEG), cy = Math.cos(yaw * DEG);
+  const sr = Math.sin(roll * DEG), cr = Math.cos(roll * DEG);
   return {
     forward: [cp * cy, cp * sy, -sp] as const,
-    right: [sy, -cy, 0] as const,
-    up: [sp * cy, sp * sy, cp] as const,
+    right: [-sr * sp * cy + cr * sy, -sr * sp * sy - cr * cy, -sr * cp] as const,
+    up: [cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp] as const,
   };
+}
+
+/**
+ * Model-to-world matrix of a brush entity: rotate by its angles, then translate to its
+ * origin. The GL renderer negates pitch and roll around R_RotateForEntity ("stupid quake
+ * bug", gl_rsurf.c R_DrawBrushModel), which makes the model axes forward, -right and up
+ * of AngleVectors: the same frame the collision code (CM_TransformedBoxTrace) uses.
+ * The engine's client draws angles after the network has rounded them to 360/256
+ * degree steps (MSG_WriteAngle); these are the exact angles, as server collision sees them.
+ */
+export function modelMatrix(origin: readonly [number, number, number], angles: readonly [number, number, number]): Mat4 {
+  const { forward: f, right: r, up: u } = angleVectors(angles[0], angles[1], angles[2]);
+  // prettier-ignore
+  return new Float32Array([
+    f[0], f[1], f[2], 0,
+    -r[0], -r[1], -r[2], 0,
+    u[0], u[1], u[2], 0,
+    origin[0], origin[1], origin[2], 1,
+  ]);
 }
 
 /** OpenGL perspective projection, depth to [-1, 1]. */
