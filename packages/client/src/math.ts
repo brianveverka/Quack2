@@ -24,7 +24,8 @@ export function angleVectors(pitch: number, yaw: number, roll = 0) {
  * bug", gl_rsurf.c R_DrawBrushModel), which makes the model axes forward, -right and up
  * of AngleVectors: the same frame the collision code (CM_TransformedBoxTrace) uses.
  * The engine's client draws angles after the network has rounded them to 360/256
- * degree steps (MSG_WriteAngle); these are the exact angles, as server collision sees them.
+ * degree steps (MSG_WriteAngle): the doors `BrushMotion` steps are drawn with those,
+ * every other instance with its exact angles, as server collision sees them.
  */
 export function modelMatrix(origin: readonly [number, number, number], angles: readonly [number, number, number]): Mat4 {
   const { forward: f, right: r, up: u } = angleVectors(angles[0], angles[1], angles[2]);

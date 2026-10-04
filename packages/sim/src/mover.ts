@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Linear brush movers stepped at the game's 10 Hz frame, ported from id's game source:
+// Brush movers stepped at the game's 10 Hz frame, ported from id's game source:
 // Move_Calc and its thinks, the accelerative move (Think_AccelMove and the plat_
-// functions it calls), the func_door state functions and Think_CalcMoveSpeed
-// (game/g_func.c), and the move and think order of SV_Physics_Pusher and SV_RunThink
-// (game/g_phys.c). Shared so the server and the client step movers the same way.
+// functions it calls), AngleMove_Calc and its thinks for a func_door_rotating, the
+// func_door state functions and Think_CalcMoveSpeed (game/g_func.c), and the move and
+// think order of SV_Physics_Pusher and SV_RunThink (game/g_phys.c). Shared so the
+// server and the client step movers the same way.
 //
 // Fields the C keeps as float are rounded with Math.fround where it stores them, and
 // float-only arithmetic is rounded at each operation; the C's double intermediates stay
-// double, so this matches SSE builds (see BACKLOG.md on x87). Not modeled yet: rotating
-// movers (AngleMove_Calc), and anything that blocks a push (that needs the box trace).
+// double, so this matches SSE builds (see BACKLOG.md on x87). Not modeled yet: anything
+// that blocks a push (that needs the box trace).
 
 /** Seconds per game frame (g_local.h); level.time is framenum * FRAMETIME. */
 export const FRAMETIME = 0.1;
@@ -21,16 +22,35 @@ export type Vec3f = [number, number, number];
 export type MoverState = "top" | "bottom" | "up" | "down";
 
 /** The think a mover runs when level.time reaches `nextthink`. */
-export type MoverThink = "moveBegin" | "moveFinal" | "moveDone" | "doorGoDown" | "thinkAccelMove";
+export type MoverThink =
+  | "moveBegin"
+  | "moveFinal"
+  | "moveDone"
+  | "doorGoDown"
+  | "thinkAccelMove"
+  | "angleMoveBegin"
+  | "angleMoveFinal"
+  | "angleMoveDone";
 
-export interface LinearMover {
+export interface BrushMover {
+  /**
+   * A func_door_rotating: door_go_up and door_go_down turn it with AngleMove_Calc
+   * between `startAngles` and `endAngles`, where any other door moves with Move_Calc.
+   */
+  readonly rotating: boolean;
   /** s.origin: where the brush model is now. */
   readonly origin: Vec3f;
   readonly velocity: Vec3f;
+  /** s.angles and avelocity, in degrees and degrees per second. */
+  readonly angles: Vec3f;
+  readonly avelocity: Vec3f;
+  /** moveinfo.start_angles (pos1) and end_angles (pos2) of a rotating door. */
+  readonly startAngles: Vec3f;
+  readonly endAngles: Vec3f;
   /** moveinfo.start_origin (pos1) and end_origin (pos2). */
   readonly startOrigin: Vec3f;
   readonly endOrigin: Vec3f;
-  /** moveinfo.distance: how far pos2 lies from pos1 along the move direction. */
+  /** moveinfo.distance: how far pos2 lies from pos1 along the move direction (a rotating door's "distance" in degrees). */
   distance: number;
   speed: number;
   accel: number;
@@ -60,8 +80,14 @@ export interface LinearMover {
   nextthink: number;
 }
 
-export interface LinearMoverInit {
+export interface BrushMoverInit {
+  /** Default false. */
+  readonly rotating?: boolean;
   readonly origin: readonly [number, number, number];
+  /** Default 0 0 0, as are `startAngles` and `endAngles`. */
+  readonly angles?: readonly [number, number, number];
+  readonly startAngles?: readonly [number, number, number];
+  readonly endAngles?: readonly [number, number, number];
   readonly startOrigin: readonly [number, number, number];
   readonly endOrigin: readonly [number, number, number];
   readonly distance: number;
@@ -75,10 +101,15 @@ export interface LinearMoverInit {
 
 const f3 = (v: readonly [number, number, number]): Vec3f => [Math.fround(v[0]), Math.fround(v[1]), Math.fround(v[2])];
 
-export function linearMover(init: LinearMoverInit): LinearMover {
+export function brushMover(init: BrushMoverInit): BrushMover {
   return {
+    rotating: init.rotating ?? false,
     origin: f3(init.origin),
     velocity: [0, 0, 0],
+    angles: f3(init.angles ?? [0, 0, 0]),
+    avelocity: [0, 0, 0],
+    startAngles: f3(init.startAngles ?? [0, 0, 0]),
+    endAngles: f3(init.endAngles ?? [0, 0, 0]),
     startOrigin: f3(init.startOrigin),
     endOrigin: f3(init.endOrigin),
     distance: Math.fround(init.distance),
@@ -139,12 +170,12 @@ export function calcMoveSpeed(team: readonly MoveSpeeds[]): void {
 }
 
 /**
- * door_go_up for a linear door. `current` says whether the game is running this
- * mover's team now (level.current_entity is its master): a door going up from its own
- * think starts moving this frame, one sent up by another entity's use starts the next
- * frame (Move_Calc defers Move_Begin). Targets and portals are the caller's.
+ * door_go_up. `current` says whether the game is running this mover's team now
+ * (level.current_entity is its master): a door going up from its own think starts
+ * moving this frame, one sent up by another entity's use starts the next frame
+ * (Move_Calc and AngleMove_Calc defer their Begin). Targets and portals are the caller's.
  */
-export function doorGoUp(m: LinearMover, levelTime: number, current: boolean): void {
+export function doorGoUp(m: BrushMover, levelTime: number, current: boolean): void {
   if (m.state === "up") return;
   if (m.state === "top") {
     // Reset the top wait time.
@@ -152,16 +183,18 @@ export function doorGoUp(m: LinearMover, levelTime: number, current: boolean): v
     return;
   }
   m.state = "up";
-  moveCalc(m, m.endOrigin, "doorHitTop", levelTime, current);
+  if (m.rotating) angleMoveCalc(m, "doorHitTop", levelTime, current);
+  else moveCalc(m, m.endOrigin, "doorHitTop", levelTime, current);
 }
 
-/** door_go_down for a linear door; `current` as for `doorGoUp`. */
-export function doorGoDown(m: LinearMover, levelTime: number, current: boolean): void {
+/** door_go_down; `current` as for `doorGoUp`. */
+export function doorGoDown(m: BrushMover, levelTime: number, current: boolean): void {
   m.state = "down";
-  moveCalc(m, m.startOrigin, "doorHitBottom", levelTime, current);
+  if (m.rotating) angleMoveCalc(m, "doorHitBottom", levelTime, current);
+  else moveCalc(m, m.startOrigin, "doorHitBottom", levelTime, current);
 }
 
-function moveCalc(m: LinearMover, dest: Vec3f, endfunc: LinearMover["endfunc"], levelTime: number, current: boolean): void {
+function moveCalc(m: BrushMover, dest: Vec3f, endfunc: BrushMover["endfunc"], levelTime: number, current: boolean): void {
   m.velocity.fill(0);
   for (let i = 0; i < 3; i++) m.dir[i] = Math.fround(dest[i]! - m.origin[i]!);
   m.remainingDistance = vectorNormalize(m.dir);
@@ -189,7 +222,7 @@ function vectorNormalize(v: Vec3f): number {
   return length;
 }
 
-function moveBegin(m: LinearMover, levelTime: number): void {
+function moveBegin(m: BrushMover, levelTime: number): void {
   if (m.speed * FRAMETIME >= m.remainingDistance) {
     moveFinal(m, levelTime);
     return;
@@ -201,7 +234,7 @@ function moveBegin(m: LinearMover, levelTime: number): void {
   m.think = "moveFinal";
 }
 
-function moveFinal(m: LinearMover, levelTime: number): void {
+function moveFinal(m: BrushMover, levelTime: number): void {
   if (m.remainingDistance === 0) {
     moveDone(m, levelTime);
     return;
@@ -211,13 +244,73 @@ function moveFinal(m: LinearMover, levelTime: number): void {
   m.nextthink = Math.fround(levelTime + FRAMETIME);
 }
 
-function moveDone(m: LinearMover, levelTime: number): void {
+function moveDone(m: BrushMover, levelTime: number): void {
   m.velocity.fill(0);
+  endfunc(m, levelTime);
+}
+
+function endfunc(m: BrushMover, levelTime: number): void {
   if (m.endfunc === "doorHitTop") doorHitTop(m, levelTime);
   else if (m.endfunc === "doorHitBottom") m.state = "bottom";
 }
 
-function doorHitTop(m: LinearMover, levelTime: number): void {
+/** AngleMove_Calc: unlike Move_Calc it has no accelerative move. */
+function angleMoveCalc(m: BrushMover, endfunc: BrushMover["endfunc"], levelTime: number, current: boolean): void {
+  m.avelocity.fill(0);
+  m.endfunc = endfunc;
+  if (current) {
+    angleMoveBegin(m, levelTime);
+  } else {
+    m.nextthink = Math.fround(levelTime + FRAMETIME);
+    m.think = "angleMoveBegin";
+  }
+}
+
+/** The angles still to turn: to end_angles going up, else to start_angles. */
+function angleDelta(m: BrushMover): Vec3f {
+  const dest = m.state === "up" ? m.endAngles : m.startAngles;
+  return [0, 1, 2].map((i) => Math.fround(dest[i]! - m.angles[i]!)) as Vec3f;
+}
+
+function angleMoveBegin(m: BrushMover, levelTime: number): void {
+  const destdelta = angleDelta(m);
+  const len = vectorLength(destdelta);
+  const traveltime = Math.fround(len / m.speed);
+  if (traveltime < FRAMETIME) {
+    angleMoveFinal(m, levelTime);
+    return;
+  }
+  // traveltime / FRAMETIME is double, so a traveltime of 0.9f floors to 8 frames.
+  const frames = Math.fround(Math.floor(traveltime / FRAMETIME));
+  vectorScale(destdelta, 1.0 / traveltime, m.avelocity);
+  m.nextthink = Math.fround(levelTime + frames * FRAMETIME);
+  m.think = "angleMoveFinal";
+}
+
+function angleMoveFinal(m: BrushMover, levelTime: number): void {
+  const move = angleDelta(m);
+  if (!move[0] && !move[1] && !move[2]) {
+    angleMoveDone(m, levelTime);
+    return;
+  }
+  vectorScale(move, 1.0 / FRAMETIME, m.avelocity);
+  m.think = "angleMoveDone";
+  m.nextthink = Math.fround(levelTime + FRAMETIME);
+}
+
+function angleMoveDone(m: BrushMover, levelTime: number): void {
+  m.avelocity.fill(0);
+  endfunc(m, levelTime);
+}
+
+/** q_shared.c VectorLength: the sum of squares is a float, its sqrt stored as one. */
+function vectorLength(v: Vec3f): number {
+  let length = 0;
+  for (let i = 0; i < 3; i++) length = Math.fround(length + Math.fround(v[i]! * v[i]!));
+  return Math.fround(Math.sqrt(length));
+}
+
+function doorHitTop(m: BrushMover, levelTime: number): void {
   m.state = "top";
   if (m.toggle) return;
   if (m.wait >= 0) {
@@ -231,7 +324,7 @@ function accelerationDistance(target: number, rate: number): number {
   return Math.fround(Math.fround(target * Math.fround(Math.fround(target / rate) + 1)) / 2);
 }
 
-function calcAcceleratedMove(m: LinearMover): void {
+function calcAcceleratedMove(m: BrushMover): void {
   m.moveSpeed = m.speed;
   if (m.remainingDistance < m.accel) {
     m.currentSpeed = m.remainingDistance;
@@ -249,7 +342,7 @@ function calcAcceleratedMove(m: LinearMover): void {
   m.decelDistance = decelDist;
 }
 
-function accelerate(m: LinearMover): void {
+function accelerate(m: BrushMover): void {
   // Decelerating?
   if (m.remainingDistance <= m.decelDistance) {
     if (m.remainingDistance < m.decelDistance) {
@@ -293,7 +386,7 @@ function accelerate(m: LinearMover): void {
 }
 
 /** Think_AccelMove: the team has moved a frame, so set the speed for the next. */
-function thinkAccelMove(m: LinearMover, levelTime: number): void {
+function thinkAccelMove(m: BrushMover, levelTime: number): void {
   m.remainingDistance = Math.fround(m.remainingDistance - m.currentSpeed);
   // Starting, or restarted after door_blocked sends it back through Move_Calc (blocking
   // is not modeled).
@@ -318,12 +411,14 @@ function vectorScale(v: Vec3f, scale: number, out: Vec3f): void {
 /**
  * One game frame of SV_Physics_Pusher for a team (master first) at `levelTime`: every
  * moving member is pushed by velocity * FRAMETIME, clamped to 1/8 unit as SV_Push does,
- * then each member runs its think if due (SV_RunThink). Nothing blocks a push here.
+ * and turned by avelocity * FRAMETIME, which is not clamped; then each member runs its
+ * think if due (SV_RunThink). Nothing blocks a push here.
  */
-export function stepPusher(team: readonly LinearMover[], levelTime: number): void {
+export function stepPusher(team: readonly BrushMover[], levelTime: number): void {
   for (const m of team) {
     const v = m.velocity;
-    if (!v[0] && !v[1] && !v[2]) continue;
+    const av = m.avelocity;
+    if (!v[0] && !v[1] && !v[2] && !av[0] && !av[1] && !av[2]) continue;
     for (let i = 0; i < 3; i++) {
       const move = Math.fround(v[i]! * FRAMETIME_F);
       // temp is a float in the C, stored after each step.
@@ -331,11 +426,12 @@ export function stepPusher(team: readonly LinearMover[], levelTime: number): voi
       temp = Math.fround(temp + (temp > 0 ? 0.5 : -0.5));
       m.origin[i] = Math.fround(m.origin[i]! + Math.fround(0.125 * Math.trunc(temp)));
     }
+    for (let i = 0; i < 3; i++) m.angles[i] = Math.fround(m.angles[i]! + Math.fround(av[i]! * FRAMETIME_F));
   }
   for (const m of team) runThink(m, levelTime);
 }
 
-function runThink(m: LinearMover, levelTime: number): void {
+function runThink(m: BrushMover, levelTime: number): void {
   const thinktime = m.nextthink;
   if (thinktime <= 0 || thinktime > levelTime + 0.001) return;
   m.nextthink = 0;
@@ -350,10 +446,16 @@ function runThink(m: LinearMover, levelTime: number): void {
       return moveDone(m, levelTime);
     case "thinkAccelMove":
       return thinkAccelMove(m, levelTime);
+    case "angleMoveBegin":
+      return angleMoveBegin(m, levelTime);
+    case "angleMoveFinal":
+      return angleMoveFinal(m, levelTime);
+    case "angleMoveDone":
+      return angleMoveDone(m, levelTime);
     case "doorGoDown":
       // Run from the door's own think, so its master is level.current_entity: unless
       // it is a team slave, whose think runs inside its master's SV_Physics_Pusher with
-      // the master current too. Either way Move_Begin runs now.
+      // the master current too. Either way Move_Begin (AngleMove_Begin) runs now.
       return doorGoDown(m, levelTime, true);
   }
 }

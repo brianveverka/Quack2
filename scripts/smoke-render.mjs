@@ -67,6 +67,14 @@ SYNTHETIC["/data/door.bsp"] = withEntityString(fixtureBsp, `${doorEntities}{\n"c
 for (const z of [10, 42]) {
   SYNTHETIC[`/data/door-at-${z}.bsp`] = withEntityString(fixtureBsp, fixtureEntities.replace('"model" "*1"', `"model" "*1"\n"origin" "0 0 ${z}"`));
 }
+// Rotating door: the func_wall made a func_door_rotating (90 degrees of yaw at 100 a
+// second about the world origin) that a trigger_always sends round in the second settle
+// frame. The func_wall placed at the angles it is drawn with at 150 ms and at 250 ms.
+const rotatingEntities = fixtureEntities.replace('"classname" "func_wall"', '"classname" "func_door_rotating"\n"targetname" "smokedoor"');
+SYNTHETIC["/data/door-rotating.bsp"] = withEntityString(fixtureBsp, `${rotatingEntities}{\n"classname" "trigger_always"\n"target" "smokedoor"\n}\n`);
+for (const yaw of ["4.921875", "14.765625"]) {
+  SYNTHETIC[`/data/door-yaw-${yaw}.bsp`] = withEntityString(fixtureBsp, fixtureEntities.replace('"model" "*1"', `"model" "*1"\n"angles" "0 ${yaw} 0"`));
+}
 // Culling: the func_wall at its compiled spot, again at the south spot, and again outside
 // the map, where its box touches only solid leafs (no PVS cluster, and area 0, which
 // the server's area test drops before the PVS one is reached).
@@ -456,6 +464,36 @@ try {
   check(doorFrames.every((d) => !d.moving.error && !d.placed.error && d.moving.stats.brushModels === 1), "the moving door is drawn at every time");
   check(doorRestTop > 0.02, "the door's frames at rest and at the top differ");
   check(doorFrames.every((d) => d.diff === 0), "the moving door draws as a func_wall placed where brushOrigins puts it: at rest, z 10 at 150 ms, z 42 at 400 ms");
+
+  // Rotating door: brushAngles steps it as AngleMove_Calc does (frame 4 at 10 degrees,
+  // frame 5 at 20, sent in 360/256 degree steps: 9.84375 and 19.6875) and blends them;
+  // its origin stays. Each frame draws as the func_wall turned to those angles.
+  await page.goto(`${ORIGIN}/?map=data/door-rotating.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const rotatingMotion = await page.evaluate(() => ({
+    brushModels: window.quack.brushModels,
+    angles: [0, 150, 250, 1000].map((ms) => window.quack.brushAngles(ms)),
+    origins: [0, 150].map((ms) => window.quack.brushOrigins(ms)),
+  }));
+  console.log(`  rotating door: ${JSON.stringify(rotatingMotion)}`);
+  check(
+    JSON.stringify(rotatingMotion.brushModels) === JSON.stringify(["func_door_rotating *1 at 0 0 0"]) &&
+      JSON.stringify(rotatingMotion.angles) === JSON.stringify([[[0, 0, 0]], [[0, 4.921875, 0]], [[0, 14.765625, 0]], [[0, 90, 0]]]) &&
+      JSON.stringify(rotatingMotion.origins) === JSON.stringify([[[0, 0, 0]], [[0, 0, 0]]]),
+    "a rotating door the settle frames send round turns in brushAngles: at rest, 4.921875 at 150 ms, 14.765625 at 250 ms, 90 by 1000 ms",
+  );
+  const rotatingFrames = [];
+  for (const [ms, ref] of [[0, "maps/test_arena.bsp"], [150, "data/door-yaw-4.921875.bsp"], [250, "data/door-yaw-14.765625.bsp"]]) {
+    const [moving, placed] = [await doorFrame("data/door-rotating.bsp", ms), await doorFrame(ref, ms)];
+    rotatingFrames.push({ ms, moving, placed, diff: changed(moving.frame, placed.frame) });
+  }
+  const rotatingRestTurned = changed(rotatingFrames[0].moving.frame, rotatingFrames[2].moving.frame);
+  console.log(
+    `  rotating door drawn: ${rotatingFrames.map((d) => `${d.ms} ms ${d.diff.toFixed(4)} off its placed wall (brush models ${d.moving.stats.brushModels})`).join(", ")}; rest to 250 ms changes ${rotatingRestTurned.toFixed(3)}`,
+  );
+  check(rotatingFrames.every((d) => !d.moving.error && !d.placed.error && d.moving.stats.brushModels === 1), "the rotating door is drawn at every time");
+  check(rotatingRestTurned > 0.02, "the rotating door's frames at rest and turned differ");
+  check(rotatingFrames.every((d) => d.diff === 0), "the rotating door draws as a func_wall turned to the angles brushAngles gives: at rest, 4.921875 at 150 ms, 14.765625 at 250 ms");
 
   // Culling never changes a pixel: each view renders the same with culling off. From the
   // north spot the south wall is beside the view and the one outside the map is in no
