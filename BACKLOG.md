@@ -28,7 +28,9 @@ turrets turned to rest in their pitch/yaw range with their teams under a MOVETYP
 or STOP master), the doors the settle frames send moving drawn moving (linear ones
 accelerating as Think_AccelMove does when accel or decel differs from speed, rotating ones
 turning as AngleMove_Calc does, their angles sent in 360/256 degree steps and blended by
-LerpAngle), also in teams with other members (`doorMovers`, stepped at the 10 Hz game
+LerpAngle), also in teams with other members, and the plats in no team a use there
+sends down (Use_Plat, accelerating as Think_AccelMove does; the sim also has plat_go_up
+and plat_hit_top's 3 s return) (`brushMovers`, stepped at the 10 Hz game
 frame by `BrushMotion` and blended as CL_AddPacketEntities does, re-linked each frame
 they move or turn), culled by area, PVS and
 frustum, free-fly camera at the spawn spot and yaw SelectSpawnPoint gives the first
@@ -36,8 +38,14 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- The mover lacks the plat, train and button endfuncs (plat_hit_top/bottom, train_wait,
-  button_wait/done); only door endfuncs run.
+- The mover lacks the button endfuncs (button_fire, button_wait, button_return,
+  button_done): a func_button a settle-frame use fires is drawn where it spawned. Build
+  button movers in `brushMovers` as the plats are (`platMover`): SP_func_button's
+  "speed" defaults to 40 and is not doubled, "accel" and "decel" default to it.
+- The mover lacks the train endfuncs (train_next, train_wait as a think, train_resume):
+  trains are placed at the corner `settleSpawnFrames` leaves them and never move. Needs
+  a path_corner lookup the sim can step (Move_Calc to the corner less the train's mins),
+  shared with `trainNext`/`trainWait` in bmodels.ts.
 - Nothing blocks a push (needs the box trace, milestone 2): no door_blocked, and
   Think_AccelMove's restart of a blocked move (current_speed 0) never happens.
 - A door team master with a negative "speed" makes Think_CalcMoveSpeed's time -0 when a
@@ -85,13 +93,17 @@ Remaining:
   fixture (360 placements, 5 origins by yaw 0..355, 2026-10-04); a larger map can send
   a door the server would not.
 - turret_breach_think sets every team member's avelocity[1] to the breach's each frame,
-  overriding a func_door_rotating teammate's own turn; `doorMovers` seeds such a door
+  overriding a func_door_rotating teammate's own turn; `brushMovers` seeds such a door
   with the breach's at-rest yaw, but the mover does not model the override, so the door
   turns its yaw back to its start or end angles as it moves. The seed is also the yaw
   at rest, not after the two settle frames: a slow breach reaches it later in the game.
 - A func_door_secret the settle frames open never moves, so its portals stay open: in
   the game it moves out and back (door_secret_move1..6) and door_secret_done closes
   them (door_use_areaportals false) unless its "wait" is -1, about 5 s after by default.
+- A func_plat in a team is left out of `brushMovers` and drawn where it spawned: a
+  door_use reaching it runs door_go_up on it (Move_Calc to its pos2, the bottom, with
+  door_hit_top), Think_CalcMoveSpeed reads its moveinfo.distance 0, and a slave plat's
+  think runs in its master's slot. Model these with the button and train movers.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

@@ -8,7 +8,7 @@
 
 import { DEATHMATCH_LIGHTSTYLES, GameFs, checkBspIntegrity, lightStyleValues, entityVec3, parseBsp, parseEntities, type BspEntity } from "@quack2/sim";
 import { MapLoadError, errorMessage, loadMap, loadSkyImages, loadWalTextures, openGameArchive } from "./assets.js";
-import { brushModelInstances, doorMovers, entityAngles, openAreaPortals, playerSpawnSpot } from "./bmodels.js";
+import { brushModelInstances, brushMovers, entityAngles, openAreaPortals, playerSpawnSpot } from "./bmodels.js";
 import { FlyCamera } from "./camera.js";
 import { transformPoint } from "./math.js";
 import { BrushMotion } from "./movers.js";
@@ -42,7 +42,7 @@ export interface QuackDebug {
   brushModels?: readonly string[];
   /**
    * The origin each brush model instance (in `brushModels` order) has at level time `ms`
-   * (default now) as the client would draw it: the doors `BrushMotion` steps (at rest
+   * (default now) as the client would draw it: the doors and plats `BrushMotion` steps (at rest
    * or not, at the network's 1/8 unit), the rest where `brushModels` says. Each frame is
    * drawn with these at its level time.
    */
@@ -183,7 +183,7 @@ async function main(): Promise<void> {
   let levelTime: number | undefined;
   const openPortals = openAreaPortals(entities);
   debug.openPortals = [...openPortals].sort((a, b) => a - b);
-  const motion = new BrushMotion(() => doorMovers(bsp, entities), openPortals);
+  const motion = new BrushMotion(() => brushMovers(bsp, entities), openPortals);
   const now = (ms: number | undefined) => ms ?? levelTime ?? performance.now() - levelStart;
   const posesAt = (ms: number | undefined) => motion.posesAt(now(ms));
   debug.openPortalsAt = (ms) => [...motion.openPortalsAt(now(ms))].sort((a, b) => a - b);
