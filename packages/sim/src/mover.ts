@@ -9,8 +9,11 @@
 //
 // Fields the C keeps as float are rounded with Math.fround where it stores them, and
 // float-only arithmetic is rounded at each operation; the C's double intermediates stay
-// double, so this matches SSE builds (see BACKLOG.md on x87). Not modeled yet: anything
-// that blocks a push (that needs the box trace).
+// double, so this matches SSE builds (see BACKLOG.md on x87). A float the C tests for truth
+// is compared with 0 here, so NaN counts as true as it does there. Not modeled yet:
+// anything that blocks a push (that needs the box trace).
+
+import { cInt } from "./cint.js";
 
 /** Seconds per game frame (g_local.h); level.time is framenum * FRAMETIME. */
 export const FRAMETIME = 0.1;
@@ -296,7 +299,7 @@ function moveCalc(m: BrushMover, dest: Vec3f, endfunc: BrushMover["endfunc"], le
 function vectorNormalize(v: Vec3f): number {
   const sq = Math.fround(Math.fround(Math.fround(v[0] * v[0]) + Math.fround(v[1] * v[1])) + Math.fround(v[2] * v[2]));
   const length = Math.fround(Math.sqrt(sq));
-  if (length) {
+  if (length !== 0) {
     const ilength = Math.fround(1 / length);
     for (let i = 0; i < 3; i++) v[i] = Math.fround(v[i]! * ilength);
   }
@@ -385,7 +388,8 @@ function angleMoveBegin(m: BrushMover, levelTime: number): void {
 
 function angleMoveFinal(m: BrushMover, levelTime: number): void {
   const move = angleDelta(m);
-  if (!move[0] && !move[1] && !move[2]) {
+  // VectorCompare with vec3_origin: a NaN angle is not equal.
+  if (move[0] === 0 && move[1] === 0 && move[2] === 0) {
     angleMoveDone(m, levelTime);
     return;
   }
@@ -464,7 +468,7 @@ function accelerate(m: BrushMover): void {
   // Decelerating?
   if (m.remainingDistance <= m.decelDistance) {
     if (m.remainingDistance < m.decelDistance) {
-      if (m.nextSpeed) {
+      if (m.nextSpeed !== 0) {
         m.currentSpeed = m.nextSpeed;
         m.nextSpeed = 0;
         return;
@@ -530,7 +534,9 @@ function vectorScale(v: Vec3f, scale: number, out: Vec3f): void {
  * One game frame of SV_Physics_Pusher for a team (master first) at `levelTime`: every
  * moving member is pushed by velocity * FRAMETIME, clamped to 1/8 unit as SV_Push does,
  * and turned by avelocity * FRAMETIME, which is not clamped; then each member runs its
- * think if due (SV_RunThink). Nothing blocks a push here.
+ * think if due (SV_RunThink). Nothing blocks a push here. A NaN velocity counts as moving
+ * and, like an infinite one, moves INT_MIN / 8 units on that axis (`cInt`): a team whose
+ * speeds Think_CalcMoveSpeed made infinite or NaN steps by about -2.7e8 a frame.
  *
  * Returns the members whose think ran door_hit_bottom this frame, in the order they ran:
  * the caller closes their area portals (door_use_areaportals). A think that leaves a
@@ -542,13 +548,13 @@ export function stepPusher(team: readonly BrushMover[], levelTime: number): Brus
   for (const m of team) {
     const v = m.velocity;
     const av = m.avelocity;
-    if (!v[0] && !v[1] && !v[2] && !av[0] && !av[1] && !av[2]) continue;
+    if (v[0] === 0 && v[1] === 0 && v[2] === 0 && av[0] === 0 && av[1] === 0 && av[2] === 0) continue;
     for (let i = 0; i < 3; i++) {
       const move = Math.fround(v[i]! * FRAMETIME_F);
       // temp is a float in the C, stored after each step.
       let temp = Math.fround(move * 8.0);
       temp = Math.fround(temp + (temp > 0 ? 0.5 : -0.5));
-      m.origin[i] = Math.fround(m.origin[i]! + Math.fround(0.125 * Math.trunc(temp)));
+      m.origin[i] = Math.fround(m.origin[i]! + Math.fround(0.125 * cInt(temp)));
     }
     for (let i = 0; i < 3; i++) m.angles[i] = Math.fround(m.angles[i]! + Math.fround(av[i]! * FRAMETIME_F));
   }

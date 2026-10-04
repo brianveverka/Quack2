@@ -666,3 +666,78 @@ describe("train mover", () => {
     expect([m.nextthink, [...m.velocity]]).toEqual([0, [0, 0, 0]]);
   });
 });
+
+describe("teams Think_CalcMoveSpeed gives non-finite speeds", () => {
+  // From a gcc (SSE) build of Think_CalcMoveSpeed, door_go_up/down, Move_Calc,
+  // AngleMove_Calc and their thinks, Think_AccelMove, SV_Push's clamp and SV_RunThink:
+  // a master with a negative speed and a member at no distance make the team's time -0.
+  const team = (third: Partial<BrushMoverInit>): BrushMover[] => {
+    const t = [
+      door({ distance: 42, endOrigin: [0, 0, 42], speed: -100, accel: -100, decel: -100 }),
+      door({ distance: 0, endOrigin: [0, 0, 0], speed: 40, accel: 40, decel: 40 }),
+      door({ distance: 58, endOrigin: [58, 0, 0], speed: 100, accel: 100, decel: 100, ...third }),
+    ];
+    calcMoveSpeed(t);
+    for (const m of t) doorGoUp(m, levelTimeAt(2), false);
+    return t;
+  };
+  const step = Math.fround(-2147483648 / 8);
+
+  it("pushes an infinite velocity INT_MIN / 8 on every axis, as an SSE build's (int) gives", () => {
+    const t = team({});
+    expect(t[0]!.speed).toBe(-Infinity);
+    const r: { o: number[][]; s: string[] }[] = [];
+    for (let f = 3; f <= 37; f++) {
+      stepPusher(t, levelTimeAt(f));
+      r[f] = { o: t.map((m) => [...m.origin]), s: t.map((m) => m.state) };
+    }
+    const all = (v: number): number[] => [v, v, v];
+    // -Infinity along the move, NaN (-Infinity * 0) on the other axes: both move.
+    expect(r[4]!.o).toEqual([all(step), [0, 0, 0], all(step)]);
+    expect(r[4]!.s).toEqual(["up", "top", "up"]);
+    expect(r[5]!.o).toEqual([all(2 * step), [0, 0, 0], all(2 * step)]);
+    expect(r[5]!.s).toEqual(["top", "top", "top"]);
+    // Going down moves further the same way, and is home at STATE_BOTTOM.
+    expect(r[35]!.s).toEqual(["down", "bottom", "down"]);
+    expect(r[36]!.o[0]).toEqual(all(3 * step));
+    expect(r[37]!.o).toEqual([all(4 * step), [0, 0, 0], all(4 * step)]);
+    expect(r[37]!.s).toEqual(["bottom", "bottom", "bottom"]);
+  });
+
+  it("moves a member whose accel gives Think_AccelMove a NaN velocity", () => {
+    // accel 50 (not its speed) times the infinite ratio is -Infinity.
+    const t = team({ accel: 50 });
+    expect([t[2]!.speed, t[2]!.accel]).toEqual([-Infinity, -Infinity]);
+    stepPusher(t, levelTimeAt(3));
+    stepPusher(t, levelTimeAt(4));
+    expect(t[2]!.velocity.every(Number.isNaN)).toBe(true);
+    expect([...t[2]!.origin]).toEqual([step, step, step]);
+    stepPusher(t, levelTimeAt(5));
+    expect([...t[2]!.origin]).toEqual([2 * step, 2 * step, 2 * step]);
+    expect(t[2]!.state).toBe("top");
+  });
+
+  it("turns a rotating member at no distance to NaN angles, and AngleMove_Final reads them as unfinished", () => {
+    // Not reachable from spawn: SP_func_door_rotating makes a "distance" of 0 90.
+    const t = [door({ distance: 42, endOrigin: [0, 0, 42], speed: 100, accel: 100, decel: 100 }), door({ rotating: true, distance: 0, endOrigin: [0, 0, 0] })];
+    calcMoveSpeed(t);
+    for (const m of t) doorGoUp(m, levelTimeAt(2), false);
+    stepPusher(t, levelTimeAt(3));
+    stepPusher(t, levelTimeAt(4));
+    expect(t[1]!.angles.every(Number.isNaN)).toBe(true);
+    // A NaN move is not vec3_origin to VectorCompare, so AngleMove_Done is a frame later.
+    expect(t[1]!.state).toBe("up");
+    stepPusher(t, levelTimeAt(5));
+    expect(t[1]!.state).toBe("top");
+  });
+
+  it("normalizes a NaN direction to NaN on every axis, as VectorNormalize's if (length) does", () => {
+    // Not reachable from spawn: a NaN origin, as the C would treat it.
+    const d = door({ distance: 42, endOrigin: [0, 0, 42] });
+    d.origin[0] = Number.NaN;
+    doorGoUp(d, levelTimeAt(2), false);
+    stepPusher([d], levelTimeAt(3));
+    stepPusher([d], levelTimeAt(4));
+    expect([...d.origin]).toEqual([Number.NaN, step, step]);
+  });
+});

@@ -6,7 +6,7 @@
 // CL_AddPacketEntities (client/cl_ents.c) do; and the area portals open in each frame,
 // which door_hit_bottom closes. DOM-free.
 
-import { levelTimeAt, stepPusher } from "@quack2/sim";
+import { cInt, levelTimeAt, stepPusher } from "@quack2/sim";
 import type { MovingBrush } from "./bmodels.js";
 
 type Vec3 = [number, number, number];
@@ -22,10 +22,12 @@ const SETTLE_FRAMES = 2;
 
 /**
  * A float coordinate after the network: MSG_WriteCoord writes (int)(f*8) as a short,
- * MSG_ReadCoord reads it back times 1/8 into a float.
+ * MSG_ReadCoord reads it back times 1/8 into a float. Past int's range (int) gives
+ * INT_MIN on SSE builds (`cInt`), whose low 16 bits are 0; win32's _ftol wraps instead
+ * (see BACKLOG.md on which build is the reference).
  */
 export function networkCoord(f: number): number {
-  return Math.fround(((Math.trunc(Math.fround(f * 8)) << 16) >> 16) * (1 / 8));
+  return Math.fround(((cInt(Math.fround(f * 8)) << 16) >> 16) * (1 / 8));
 }
 
 /**

@@ -53,6 +53,12 @@ describe("brush model boxes", () => {
     expect(instanceBox(bsp, wall([0, -320, 0]))).toEqual({ mins: [-385, -193, -1], maxs: [-319, -127, 49] });
   });
 
+  it("counts a NaN angle as turned, as the C's if (angles[0] || ...) does", () => {
+    const r = Math.hypot(385, 193, 49);
+    expect(instanceBox(bsp, wall([0, 0, 0], [0, Number.NaN, 0]))).toEqual({ mins: [-r, -r, -r], maxs: [r, r, r] });
+    expect(linkBox(bsp, wall([0, 0, 0], [Number.NaN, 0, 0]))).toEqual({ mins: [-386, -386, -386], maxs: [386, 386, 386] });
+  });
+
   it("rotated: a cube of the bounds' corner radius around the origin, enclosing every vertex", () => {
     const r = Math.hypot(385, 193, 49);
     expect(instanceBox(bsp, wall([0, 192, 0], [0, 90, 0]))).toEqual({ mins: [-r, 192 - r, -r], maxs: [r, 192 + r, r] });

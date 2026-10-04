@@ -257,6 +257,22 @@ describe("door movers", () => {
     expect(movers.map((m) => m.state)).toEqual(["top", "top"]);
   });
 
+  it("links a team with a negative speed where SV_Push's INT_MIN / 8 steps leave it", () => {
+    // The master's speed -200 over the button's distance 0 makes the team's time -0.
+    const m = motion(`
+      { "classname" "worldspawn" }
+      { "classname" "trigger_always" "target" "d" }
+      { "classname" "func_door" "model" "*1" "targetname" "d" "angle" "-1" "speed" "-100" "team" "t" }
+      { "classname" "func_button" "model" "*1" "team" "t" }
+      { "classname" "func_door" "model" "*1" "angle" "0" "team" "t" }
+    `);
+    const step = -268435456;
+    expect(origins(m.linkedPoses(200))).toEqual({ 2: [step, step, step], 4: [step, step, step] });
+    expect(origins(m.linkedPoses(300))).toEqual({ 2: [2 * step, 2 * step, 2 * step], 4: [2 * step, 2 * step, 2 * step] });
+    // Sent as (short)INT_MIN, 0.
+    expect(at(m, 250)).toEqual({ 2: [0, 0, 0], 4: [0, 0, 0] });
+  });
+
   it("leaves out a team with a linear door that has no model, or a freed master", () => {
     const teams = brushMovers(
       bsp,
@@ -483,6 +499,11 @@ describe("network coordinates", () => {
   it("truncates to 1/8 unit and wraps at 16 bits, as MSG_WriteCoord and MSG_ReadCoord do", () => {
     // gcc mirror: (short)(int)(f*8) * (1.0/8).
     expect([2.762, -2.3, 4096, -4096.1, 0.12, -0.12].map(networkCoord)).toEqual([2.75, -2.25, -4096, -4096, 0, 0]);
+  });
+
+  it("sends 0 past int's range, where an SSE build's (int) gives INT_MIN", () => {
+    // gcc (SSE) mirror as above. -536870848 * 8 wraps to 512 in ToInt32.
+    expect([-536870848, Math.fround(-268435456 + 8.5), Number.NaN, -Infinity, Infinity].map(networkCoord)).toEqual([0, 16, 0, 0, 0]);
   });
 });
 

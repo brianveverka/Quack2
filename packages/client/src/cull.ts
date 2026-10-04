@@ -32,7 +32,8 @@ export interface Pose {
 export function instanceBox(bsp: Bsp, inst: BrushModelInstance): Box {
   const { mins, maxs } = modelBounds(bsp, inst.model);
   const o = inst.origin;
-  if (inst.angles[0] || inst.angles[1] || inst.angles[2]) {
+  // C truthiness: a NaN angle counts as turned.
+  if (inst.angles[0] !== 0 || inst.angles[1] !== 0 || inst.angles[2] !== 0) {
     const r = Math.hypot(...[0, 1, 2].map((k) => Math.max(Math.abs(mins[k]!), Math.abs(maxs[k]!))));
     return { mins: [o[0] - r, o[1] - r, o[2] - r], maxs: [o[0] + r, o[1] + r, o[2] + r] };
   }
@@ -47,7 +48,8 @@ export function instanceBox(bsp: Bsp, inst: BrushModelInstance): Box {
 export function linkBox(bsp: Bsp, inst: BrushModelInstance): Box {
   const { mins, maxs } = modelBounds(bsp, inst.model);
   const o = inst.origin;
-  if (inst.angles[0] || inst.angles[1] || inst.angles[2]) {
+  // C truthiness: a NaN angle counts as turned.
+  if (inst.angles[0] !== 0 || inst.angles[1] !== 0 || inst.angles[2] !== 0) {
     const r = Math.max(...mins.map(Math.abs), ...maxs.map(Math.abs)) + 1;
     return { mins: [o[0] - r, o[1] - r, o[2] - r], maxs: [o[0] + r, o[1] + r, o[2] + r] };
   }

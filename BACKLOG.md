@@ -44,18 +44,6 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- Nothing blocks a push (needs the box trace, milestone 2): no door_blocked or
-  train_blocked, and
-  Think_AccelMove's restart of a blocked move (current_speed 0) never happens.
-- A door team master with a negative "speed" makes Think_CalcMoveSpeed's time -0 when a
-  member has no distance (a button, a wall, a door whose lip equals its size): the
-  linear doors' speeds go -Infinity and `stepPusher` sends their moving axis to
-  -Infinity and the others to NaN. `linkedPoses` hands those to the renderer's
-  re-link; the drawn origins come out 0 0 0 through `networkCoord`. The same team with
-  a door whose "accel" or "decel" is negative gives it -Infinity there, so Think_AccelMove sets
-  a NaN velocity: `stepPusher` reads NaN as at rest and leaves the door where it is, while
-  SV_Push's velocity test reads NaN as moving and (int) of NaN gives INT_MIN on x86. The
-  C is undefined in both ((int) of NaN or Inf in SV_Push); decide on a guard.
 - Only func_areaportal, doors, func_door_secret, trigger_relay, func_train, func_wall and
   func_object uses are modeled in the settle frames (and a train's pathtarget at a
   corner it reaches at once), and a door's or relay's own "delay" always defers its
@@ -68,7 +56,13 @@ Remaining:
   sys_win.c WinMain), which rounds the C's `double` steps to a 24-bit mantissa too
   (unless a GL driver resets it mid-frame; see `lightmapExtents`).
   Ports that follow the C's double (warp.ts, renderer.ts, skyimage.ts, bmodels.ts) match
-  SSE builds instead; decide which build is the reference, then audit them.
+  SSE builds instead; decide which build is the reference, then audit them. Its game
+  DLL and exe also convert (int) with MSVC's _ftol (game.dsp and quake2.dsp have no
+  /QIfist): a 64-bit fistp whose low 32 bits are kept, so 0 for NaN and the infinities
+  (and past 2^63) and the value wrapped to 32 bits past int's range, where SSE builds
+  give INT_MIN (`cInt`, in `stepPusher` and `networkCoord`). A door team whose speeds
+  Think_CalcMoveSpeed makes infinite or NaN then stays put in SV_Push on win32 and moves
+  INT_MIN / 8 units an axis a frame on SSE. Not measured on an MSVC build.
 - A func_train that is a team slave runs its thinks (func_train_find, train_next) at its
   own entity slot in `settleSpawnFrames`; the game runs them in its master's slot, and
   only under a MOVETYPE_PUSH or STOP master (SV_Physics_Pusher). Under a NONE master the
@@ -138,6 +132,20 @@ Remaining:
 - Port `CM_BoxTrace` / `CM_PointContents` against the parsed brushes into `packages/sim`.
 - Port `Pmove` (walk, jump, step, crouch, water) using the player box constants.
 - Test against fixture geometry: spawn points not in solid, walls stop the box.
+- Nothing blocks a push: no door_blocked, plat_blocked or train_blocked, and
+  Think_AccelMove's restart of a blocked move (current_speed 0) never happens. SV_Push
+  finds a block with SV_TestEntityPosition, a box trace against the world and solid
+  entities, the pusher among them; on one SV_Physics_Pusher bumps the team's nextthinks
+  and runs none of its thinks that frame. Without clients or monsters the obstacles are
+  items, func_objects, target_blaster bolts and what a target_spawner spawns
+  (misc_explobox frees itself in deathmatch; gibs and debris are SOLID_NOT, never linked,
+  so SV_Push skips them). door_blocked, plat_blocked, train_blocked and
+  door_secret_blocked free them (T_Damage, BecomeExplosion1) without turning the move
+  back, while rotating_blocked and turret_blocked only damage, so an item stays and
+  blocks a func_rotating or turret every frame. Only a client or monster obstacle sends
+  a door back (door_go_up/down, unless DOOR_CRUSHER or a negative "wait") or a plat
+  (plat_go_up/down), restarting Move_Calc or AngleMove_Calc, which needs pmove. Where
+  items rest needs droptofloor's trace too.
 - With the trace: a team under a MOVETYPE_TOSS master (misc_gib_*, or a spawnflags-0
   func_object from its third frame) takes the master's origin each frame the master starts
   off the ground (SV_Physics_Toss), so its brush models leave their spawn origin; `settleTurrets`
