@@ -410,13 +410,13 @@ const DOOR_TOGGLE = 32;
  */
 const SECOND_FRAME_DUE = Math.fround(2 * FRAMETIME) + 0.001;
 /**
- * Uses run in the settle frames at most, and how deeply they may nest; the rest are
+ * Uses one trigger_always may set off, and how deeply they may nest; the rest are
  * dropped. A trigger_relay loop recurses until the game crashes, and three relays that
  * each target all of them branch at every level, so the depth limit alone would not end
  * the walk.
  */
-const MAX_USES = 10000;
-const MAX_USE_DEPTH = 64;
+const MAX_USES = 100000;
+const MAX_USE_DEPTH = 256;
 
 /** What fires targets: a map entity, or a DelayedUse (index -1) carrying a trigger's target and killtarget. */
 interface User {
@@ -430,6 +430,8 @@ interface User {
 /** Game state the settle frames' use chains read and change. */
 interface Settle {
   entities: readonly BspEntity[];
+  /** Entity indices by lowercased "targetname", in entity order. */
+  byTargetname: Map<string, number[]>;
   /** Entities a killtarget freed. */
   freed: Set<number>;
   /** Team members, master first, by master index. */
@@ -437,11 +439,13 @@ interface Settle {
   slaves: Set<number>;
   /** moveinfo.state of the entities used so far; the rest are at `spawnState`. */
   moveState: Map<number, MoveState>;
+  /** Plats Use_Plat sent down: Move_Calc gave them a think, so later uses return. */
+  platsMoving: Set<number>;
   /** Use_Areaportal's per-entity toggle (ent->count). */
   portalCount: Map<number, number>;
   /** gi.SetAreaPortalState writes, last one wins; portals never written stay closed. */
   portals: Map<number, boolean>;
-  /** Uses left before MAX_USES cuts the walk off. */
+  /** Uses left for the current trigger_always before MAX_USES cuts the walk off. */
   budget: number;
   depth: number;
 }
@@ -471,18 +475,22 @@ function moveState(s: Settle, index: number): MoveState {
   return s.moveState.get(index) ?? spawnState(s.entities[index]!);
 }
 
-/** The classname an entity has after its spawn function ran: SP_func_water and SP_func_door_secret rename themselves func_door. */
+/**
+ * The classname an entity has after its spawn function ran: SP_func_water and
+ * SP_func_door_secret rename themselves func_door. (A func_door_secret team member only
+ * fires targets as a door after a DOOR_TOGGLE master sent it down, and its first
+ * door_go_up at STATE_TOP already gave it a null think the server errors on; kept for
+ * fidelity.)
+ */
 function liveClassname(ent: BspEntity): string {
   return ent.classname === "func_water" || ent.classname === "func_door_secret" ? "func_door" : (ent.classname ?? "");
 }
 
 /** G_Find on "targetname": in-game entities not freed, matched case insensitively, in entity order (worldspawn included). */
 function* findTargets(s: Settle, name: string): Generator<number> {
-  for (let i = 0; i < s.entities.length; i++) {
-    const t = s.entities[i]!;
+  for (const i of s.byTargetname.get(asciiLower(name)) ?? []) {
     // Checked as the scan reaches each entity, so a killtarget freeing one ahead skips it.
-    if (t.targetname === undefined || s.freed.has(i) || !inGame(t)) continue;
-    if (stricmpEqual(t.targetname, name)) yield i;
+    if (!s.freed.has(i)) yield i;
   }
 }
 
@@ -528,8 +536,9 @@ function useTargets(s: Settle, user: User): void {
 }
 
 /**
- * An entity's use function, for the classes whose use changes area portals now. The rest
- * (trains, plats, buttons, func_wall and others) are not modeled and do nothing here.
+ * An entity's use function, for the classes whose use changes area portals now or the
+ * moveinfo.state door_go_up reads. The rest (trains, func_wall and others) are not
+ * modeled and do nothing here.
  */
 function use(s: Settle, index: number): void {
   if (s.budget <= 0 || s.depth >= MAX_USE_DEPTH) return;
@@ -565,6 +574,20 @@ function useOne(s: Settle, index: number): void {
     }
     case "trigger_relay":
       useTargets(s, userOf(s, index));
+      return;
+    // These change no portal, but door_go_up reads the state they leave.
+    case "func_button": {
+      // button_use -> button_fire: returns if up or at the top, else starts up.
+      const state = moveState(s, index);
+      if (state !== "up" && state !== "top") s.moveState.set(index, "up");
+      return;
+    }
+    case "func_plat":
+      // Use_Plat returns once Move_Calc has given the plat a think, else plat_go_down.
+      if (!s.platsMoving.has(index)) {
+        s.platsMoving.add(index);
+        s.moveState.set(index, "down");
+      }
       return;
   }
 }
@@ -631,7 +654,27 @@ export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
     teams.set(members[0]!, members);
     members.slice(1).forEach((i) => slaves.add(i));
   }
-  const s: Settle = { entities, freed: new Set(), teams, slaves, moveState: new Map(), portalCount: new Map(), portals: new Map(), budget: MAX_USES, depth: 0 };
+  const byTargetname = new Map<string, number[]>();
+  entities.forEach((e, i) => {
+    if (e.targetname === undefined || !inGame(e)) return;
+    const key = asciiLower(e.targetname);
+    const list = byTargetname.get(key);
+    if (list) list.push(i);
+    else byTargetname.set(key, [i]);
+  });
+  const s: Settle = {
+    entities,
+    byTargetname,
+    freed: new Set(),
+    teams,
+    slaves,
+    moveState: new Map(),
+    platsMoving: new Set(),
+    portalCount: new Map(),
+    portals: new Map(),
+    budget: MAX_USES,
+    depth: 0,
+  };
   entities.forEach((door, i) => {
     if (door.classname !== "func_door" && door.classname !== "func_door_rotating") return;
     if (!inGame(door) || slaves.has(i)) return;
@@ -643,6 +686,7 @@ export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
     if (i === 0 || e.classname !== "trigger_always" || !inGame(e)) return;
     const delay = Math.fround(atof(e.delay ?? "0"));
     if (Math.max(delay, Math.fround(0.2)) > SECOND_FRAME_DUE) return;
+    s.budget = MAX_USES;
     useTargets(s, { index: -1, classname: "DelayedUse", target: e.target, killtarget: e.killtarget, delay: 0 });
   });
   return new Set([...s.portals].filter(([, open]) => open).map(([p]) => p));

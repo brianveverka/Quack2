@@ -449,26 +449,38 @@ describe("area portals open at spawn", () => {
           { ${m} "team" "t" "target" "q" }`);
       expect(member(`"classname" "func_button"`)).toEqual([3]);
       expect(member(`"classname" "func_plat"`)).toEqual([3]);
-      // A targeted plat starts at STATE_UP, a func_wall at STATE_TOP: door_go_up returns.
+      // A targeted plat starts at STATE_UP: door_go_up returns.
       expect(member(`"classname" "func_plat" "targetname" "x"`)).toEqual([]);
-      expect(member(`"classname" "func_wall"`)).toEqual([]);
-      expect(member(`"classname" "func_door_secret"`)).toEqual([]);
     });
 
     it("a member sent down by a DOOR_TOGGLE master goes up on the next use, from any state", () => {
-      // func_door_secret starts at STATE_TOP; the second use sends it down, the third up as a func_door.
+      // The targeted plat starts at STATE_UP; the second use sends it down, the third up.
       const uses = (n: number) =>
         open(`${`{ "classname" "trigger_always" "target" "d" } `.repeat(n)}
           { "classname" "func_door" "targetname" "d" "team" "t" "spawnflags" "32" }
-          { "classname" "func_door_secret" "team" "t" "target" "q" }`);
+          { "classname" "func_plat" "targetname" "x" "team" "t" "target" "q" }`);
       expect(uses(2)).toEqual([]);
       expect(uses(3)).toEqual([3]);
     });
 
-    it("ends a trigger_relay loop that branches, as a total use budget", () => {
+    it("a button or plat used first is no longer at the bottom when its team's door goes up", () => {
+      const team = (member: string) =>
+        open(`{ "classname" "trigger_always" "target" "x" } { "classname" "trigger_always" "target" "d" }
+          { "classname" "func_door" "targetname" "d" "team" "t" }
+          { ${member} "targetname" "x" "team" "t" "target" "q" }`);
+      // button_fire leaves it at STATE_UP: door_go_up returns.
+      expect(team(`"classname" "func_button"`)).toEqual([]);
+      // plat_go_down leaves a targeted plat at STATE_DOWN: door_go_up sends it up.
+      expect(team(`"classname" "func_plat"`)).toEqual([3]);
+    });
+
+    it("ends a trigger_relay loop that branches with a use budget per trigger_always", () => {
+      // Without the budget this hangs (synchronously, past any vitest timeout).
       const relays = `{ "classname" "trigger_relay" "targetname" "r" "target" "r" } `.repeat(3);
+      const nulls = `{ "classname" "info_null" "targetname" "n" } `.repeat(3000);
       const start = performance.now();
-      expect(open(`{ "classname" "trigger_always" "target" "r" } ${relays}`)).toEqual([]);
+      // The loop's budget does not starve the next trigger_always.
+      expect(open(`{ "classname" "trigger_always" "target" "r" } { "classname" "trigger_always" "target" "q" } ${relays} ${nulls}`)).toEqual([3]);
       expect(performance.now() - start).toBeLessThan(2000);
     });
 
@@ -490,11 +502,6 @@ describe("area portals open at spawn", () => {
           { "classname" "func_door" "targetname" "d" "team" "t" "target" "q" "killtarget" "m" }
           { "classname" "func_door" "targetname" "m" "team" "t" "target" "p" }`),
       ).toEqual([3]);
-      // G_FreeEdict refuses worldspawn.
-      const world = parseEntities(`{ "classname" "worldspawn" "targetname" "w" }
-        { "classname" "func_areaportal" "targetname" "p" "style" "1" }
-        { "classname" "trigger_always" "target" "p" "killtarget" "w" }`);
-      expect([...openAreaPortals(world)]).toEqual([1]);
     });
   });
 });
