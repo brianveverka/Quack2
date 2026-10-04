@@ -6,24 +6,24 @@ order (see CLAUDE.md, Orchestration).
 ## 1. Game data and renderer completeness
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps sized in float as
 the win32 CalcSurfaceExtents does, with the deathmatch light styles animated at 10 Hz
-and a face's lightmap composed again only as it is drawn, as ref_gl rebuilds it,
-warped surfaces moved per vertex as EmitWaterPolys does, SURF_FLOWING scrolled on warps
-and on unwarped opaque faces (DrawGLFlowingPoly) but not unwarped translucent ones,
-translucent surfaces blended in R_DrawAlphaSurfaces' order, no lightmap on sky, warp or translucent faces, the
-worldspawn sky box drawn where the world's sky faces bound it (R_DrawSkyBox, with
-skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS (with R_SetupFrame's
-second view cluster 16 units below or above the eye), area portals (closed except those
-the two settle frames open: START_OPEN doors, and trigger_always firing portals, doors,
-secret doors and relays) culling world leafs and brush models, the world walked per
-frame as R_RecursiveWorldNode does (R_CullBox on nodes and leafs, so the sky box is
-bounded by the sky faces in view), inline brush models where the game has them after
-spawn (untargeted plats lowered, START_OPEN doors open, trains at their first
-path_corner or a teleport one after it, also when a trigger_always uses them, turrets
-turned to rest in their pitch/yaw range with their teams under a MOVETYPE_PUSH or STOP
-master), culled by area, PVS and frustum, free-fly camera at the spawn spot and yaw
-SelectSpawnPoint gives the first deathmatch player, `.wal` textures and `?map=`
-BSPs from mounted pak/zip data (zip64 and self-extractor stubs included), picked
-archives read by range, checker fallback, `pnpm smoke`).
+and a face's lightmap composed again only as it is drawn, as ref_gl rebuilds it, warped
+surfaces moved per vertex as EmitWaterPolys does, SURF_FLOWING scrolled on warps and on
+unwarped opaque faces (DrawGLFlowingPoly) but not unwarped translucent ones, translucent
+surfaces blended in R_DrawAlphaSurfaces' order, no lightmap on sky, warp or translucent
+faces, the worldspawn sky box drawn where the world's sky faces bound it (R_DrawSkyBox,
+with skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS (with
+R_SetupFrame's second view cluster 16 units below or above the eye), area portals
+(closed except those the two settle frames open: START_OPEN doors, and trigger_always
+firing portals, doors, secret doors and relays) culling world leafs and brush models,
+the world walked per frame as R_RecursiveWorldNode does (R_CullBox on nodes and leafs,
+so the sky box is bounded by the sky faces in view), inline brush models where the game
+has them after spawn (untargeted plats lowered, START_OPEN doors open, trains at their
+first path_corner or a teleport one after it, also when a trigger_always uses them,
+turrets turned to rest in their pitch/yaw range with their teams under a MOVETYPE_PUSH
+or STOP master), culled by area, PVS and frustum, free-fly camera at the spawn spot and
+yaw SelectSpawnPoint gives the first deathmatch player, `.wal` textures and `?map=` BSPs
+from mounted pak/zip data (zip64 and self-extractor stubs included), picked archives
+read by range, checker fallback, `pnpm smoke`).
 Remaining:
 - Translucent faces of brush models move with their entity here; ref_gl draws the alpha
   chain with the world matrix, so they stay at their compiled spot. Kept as intended
