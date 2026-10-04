@@ -42,8 +42,9 @@ export interface QuackDebug {
   brushModels?: readonly string[];
   /**
    * The origin each brush model instance (in `brushModels` order) has at level time `ms`
-   * (default now) as the client would draw it: moving doors per `BrushMotion`, the rest
-   * where `brushModels` says. The renderer does not draw them moving yet.
+   * (default now) as the client would draw it: the linear doors `BrushMotion` steps (at
+   * rest or not, at the network's 1/8 unit), the rest where `brushModels` says. The
+   * renderer does not draw them moving yet.
    */
   brushOrigins(ms?: number): [number, number, number][];
   integrityErrors?: readonly string[];

@@ -28,7 +28,11 @@ export function networkCoord(f: number): number {
  * from the frame before towards the one at servertime ceil(t / 100) * 100, by
  * lerpfrac = 1 - (servertime - t) * 0.01; cl.time and servertime are integer ms, so t is
  * floored. At t = 0 that is the second settle frame, where the map loads.
- * Assumes every frame arrives on time, as on a local server.
+ * Assumes every frame arrives on time, as on a local server, and that every door is
+ * sent every frame. The server sends only what the client's PVS holds, and a door coming
+ * back into it arrives as a new entity whose prev origin is its old_origin: for a team
+ * slave that is where the master's push already left it, so that frame the game snaps
+ * the slave where this lerps it.
  */
 export class BrushMotion {
   private teams: readonly (readonly MovingDoor[])[] = [];
@@ -58,8 +62,10 @@ export class BrushMotion {
     return out;
   }
 
-  /** The drawn origin of every moving entity at `ms`, by entity index. */
+  /** The drawn origin of every moving entity at `ms`, by entity index; the arrays are the caller's. */
   originsAt(ms: number): Map<number, Vec3> {
+    // Stepping to an infinite time never ends.
+    if (!Number.isFinite(ms)) throw new RangeError(`level time ${ms} ms is not finite`);
     const time = Math.max(0, Math.floor(ms));
     const serverframe = Math.ceil(time / 100);
     const target = SETTLE_FRAMES + serverframe;
@@ -71,7 +77,7 @@ export class BrushMotion {
       this.prev = this.cur;
       this.cur = this.snapshot();
     }
-    if (this.framenum === SETTLE_FRAMES) return new Map(this.cur);
+    if (this.framenum === SETTLE_FRAMES) return new Map([...this.cur].map(([e, o]) => [e, [...o] as Vec3]));
     const frac = Math.fround(1 - (serverframe * 100 - time) * 0.01);
     const out = new Map<number, Vec3>();
     for (const [entity, cur] of this.cur) {

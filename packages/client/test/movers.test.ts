@@ -92,6 +92,34 @@ describe("door movers", () => {
     expect(at(m, 10000)).toEqual({ 2: [0, 0, 0] });
   });
 
+  it("records a door's move before the targets it fires: a toggle door its own targets use again goes up, then down", () => {
+    // door_go_up's Move_Calc runs before G_UseTargets, whose relay uses the door again:
+    // DOOR_TOGGLE at STATE_UP then sends it down, from where it already is.
+    const m = motion(`
+      { "classname" "worldspawn" }
+      { "classname" "trigger_always" "target" "d" }
+      { "classname" "func_door" "model" "*1" "targetname" "d" "target" "r" "angle" "-1" "spawnflags" "32" }
+      { "classname" "trigger_relay" "targetname" "r" "target" "d" }
+    `);
+    expect(at(m, 0)).toEqual({ 2: [0, 0, 0] });
+    expect(at(m, 5000)).toEqual({ 2: [0, 0, 0] });
+    const [door] = doorMovers(bsp, parseEntities(`
+      { "classname" "worldspawn" }
+      { "classname" "trigger_always" "target" "d" }
+      { "classname" "func_door" "model" "*1" "targetname" "d" "target" "r" "angle" "-1" "spawnflags" "32" }
+      { "classname" "trigger_relay" "targetname" "r" "target" "d" }
+    `))[0]!;
+    expect(door!.mover.state).toBe("down");
+  });
+
+  it("refuses a level time that is not finite, and hands out its own arrays", () => {
+    const m = motion(TEAM);
+    expect(() => m.originsAt(Infinity)).toThrow(RangeError);
+    expect(() => m.originsAt(Number.NaN)).toThrow(RangeError);
+    m.originsAt(0).get(2)![2] = 99;
+    expect(at(m, 0)).toEqual({ 2: [0, 0, 0], 3: [0, 0, 0] });
+  });
+
   it("takes func_water's speed (default 25, not doubled) and no team speed matching", () => {
     const teams = doorMovers(
       bsp,
