@@ -11,8 +11,9 @@ surfaces moved per vertex as EmitWaterPolys does, SURF_FLOWING scrolled on warps
 unwarped opaque faces (DrawGLFlowingPoly) but not unwarped translucent ones, translucent
 surfaces blended in R_DrawAlphaSurfaces' order (a brush model's moving with its entity,
 where ref_gl draws them at their compiled spot), no lightmap on sky, warp or translucent
-faces, the worldspawn sky box drawn where the world's sky faces bound it (R_DrawSkyBox,
-with skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS (with
+faces, SURF_NODRAW faces drawn like any other (ref_gl has no NODRAW test), the
+worldspawn sky box drawn where the world's sky faces bound it (R_DrawSkyBox, with
+skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS (with
 R_SetupFrame's second view cluster 16 units below or above the eye), area portals
 (closed except those the two settle frames open: START_OPEN doors, and trigger_always
 firing portals, doors, secret doors and relays) culling world leafs and brush models,
@@ -26,9 +27,6 @@ yaw SelectSpawnPoint gives the first deathmatch player, `.wal` textures and `?ma
 from mounted pak/zip data (zip64 and self-extractor stubs included), picked archives
 read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- `buildWorldMesh` drops SURF_NODRAW faces; ref_gl has no NODRAW test, so a SKY|NODRAW
-  face a compiler emits would bound the sky box there and not here. Check whether qbsp
-  or ericw-tools emit such faces before changing it.
 - The world walk (`walkWorld`, `WorldDraws.update`) runs every frame and allocates its
   marks and face lists each time; the opaque index list is rebuilt and uploaded whenever
   the walked face set changes. Measured 2026-10-04 in Node 22 on the fixture (25 nodes,
