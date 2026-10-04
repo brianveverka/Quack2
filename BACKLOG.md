@@ -66,6 +66,10 @@ Remaining:
   slave never thinks and stays at its spawn origin; under a TOSS master it takes the
   master's origin (SV_Physics_Toss). `PUSHER_CLASSES` in bmodels.ts has the master
   rule `settleTurrets` uses.
+- Malformed entity lumps: when the first entity is not worldspawn, InitBodyQue never runs,
+  so entities 1-8 land in the body-queue slots G_FreeEdict refuses to free, and stay in
+  the game whatever `inGame` says (spawn spots, teams, targets). ED_ParseEdict also ends
+  an entity on any key starting with "}", quoted or not; `parseEntities` does not.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
