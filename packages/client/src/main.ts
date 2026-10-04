@@ -3,15 +3,16 @@
 // loads a BSP (?map=<path or url>, default the bundled test arena; a path in the mounted
 // archives wins over the same path on the server), spawns a free-fly camera at the
 // player start, and renders until the page closes. The file picker mounts more archives
-// at any time and re-textures the world. Click to capture the mouse; WASD to fly,
+// at any time and re-textures the world and the sky. Click to capture the mouse; WASD to fly,
 // Space/C up/down, Shift fast.
 
 import { DEATHMATCH_LIGHTSTYLES, GameFs, checkBspIntegrity, lightStyleValues, entityVec3, parseBsp, parseEntities, type BspEntity } from "@quack2/sim";
-import { MapLoadError, errorMessage, loadMap, loadWalTextures, openGameArchive } from "./assets.js";
+import { MapLoadError, errorMessage, loadMap, loadSkyImages, loadWalTextures, openGameArchive } from "./assets.js";
 import { brushModelInstances } from "./bmodels.js";
 import { FlyCamera } from "./camera.js";
 import { transformPoint } from "./math.js";
 import { WorldRenderer, type FrameStats, type View } from "./renderer.js";
+import { skySettings, type SkySettings } from "./sky.js";
 import { noTextures } from "./textures.js";
 
 /** Eye height above the player origin (Q2 viewheight while standing). */
@@ -51,6 +52,8 @@ export interface QuackDebug {
   setLevelTime(ms: number | undefined): void;
   /** Faces whose lightmap the last frame uploaded because a light style changed. */
   lightmapUploads: number;
+  /** The worldspawn sky as R_SetSky gets it, and the env/ images that loaded (the rest draw r_notexture). */
+  sky?: SkySettings & { readonly loaded: readonly string[] };
 }
 
 declare global {
@@ -162,6 +165,9 @@ async function main(): Promise<void> {
   const styleValues = lightStyleValues(DEATHMATCH_LIGHTSTYLES, 0);
   const renderer = new WorldRenderer(gl, bsp, noTextures, brush.instances, styleValues);
   debug.missingTextures = renderer.missingTextures;
+  const sky = skySettings(entities);
+  renderer.setSky(sky, []);
+  debug.sky = { ...sky, loaded: [] };
   const dataStatus = document.getElementById("data");
   // Debug fields change together at the end, so a reader never sees archives mounted
   // but their textures not yet applied.
@@ -169,20 +175,30 @@ async function main(): Promise<void> {
     const errors = [...mountErrors];
     let palette = false;
     let status = "none mounted, checker textures";
+    let skyLoaded: readonly string[] = [];
     if (fs.names.length > 0) {
-      const t = await loadWalTextures(fs, renderer.mesh.textures);
+      const [t, s] = await Promise.all([loadWalTextures(fs, renderer.mesh.textures), loadSkyImages(fs, sky.name)]);
       renderer.setTextures(t.source);
+      renderer.setSky(sky, s.images);
       palette = t.palette;
-      errors.push(...t.errors);
+      skyLoaded = s.loaded;
+      errors.push(...t.errors, ...s.errors);
       status = `${fs.names.join(", ")}: ${t.loaded.length} of ${renderer.mesh.textures.length} textures`;
       if (!t.palette) status += ", no palette (pics/colormap.pcx) so checkers";
+      status += `, ${s.loaded.length} of 6 sky images`;
     }
     if (errors.length > 0) {
       status += `; ${errors.length} problems, see console`;
       console.warn(`game data: ${errors.length} problems`, errors);
     }
     if (dataStatus) dataStatus.textContent = status;
-    Object.assign(debug, { archives: fs.names, palette, assetErrors: errors, missingTextures: renderer.missingTextures });
+    Object.assign(debug, {
+      archives: fs.names,
+      palette,
+      assetErrors: errors,
+      missingTextures: renderer.missingTextures,
+      sky: { ...sky, loaded: skyLoaded },
+    });
   };
   await applyGameData();
   // Picks mount on top of everything already mounted, in name order (pak0 before pak1).

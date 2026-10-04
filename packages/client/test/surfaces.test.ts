@@ -13,6 +13,7 @@ import {
   buildDrawList,
   buildOrderedDraws,
   buildWorldMesh,
+  eyePlaneSide,
   modelFaceMask,
   visibleFaceMask,
   worldAlphaOrder,
@@ -60,6 +61,61 @@ describe("unlit surfaces", () => {
     expect([0, 1, 2, 3, 4].map((f) => atlas.rects[f]!.lit)).toEqual([false, false, false, false, true]);
     // They sample the fullbright block.
     expect(lightmapUv(atlas, 2, 0, 0)).toEqual(lightmapUv(atlas, 2, 1000, -1000));
+  });
+});
+
+describe("sky faces", () => {
+  const sky: Record<number, number> = {};
+  // World faces 0-9, one of them also warped, and one face of brush model 1.
+  for (let f = 0; f < 10; f++) sky[f] = SURF_SKY;
+  sky[3] = SURF_SKY | SURF_WARP;
+  sky[105] = SURF_SKY;
+  const bsp = flagged(sky);
+  const mesh = buildWorldMesh(bsp, buildLightmapAtlas(bsp));
+
+  it("are left out of the world's draws and listed apart, sky before translucent", () => {
+    const world = buildDrawList(mesh, visibleFaceMask(bsp, mesh, -1), true);
+    expect(world.sky).toEqual([...Array(10).keys()]);
+    expect(world.visibleFaces).toBe(WORLD_FACES);
+    expect(world.draws.every((d) => !(d.flags & SURF_SKY))).toBe(true);
+    const drawn = world.draws.reduce((a, d) => a + d.count, 0);
+    const all = buildDrawList(mesh, visibleFaceMask(bsp, mesh, -1));
+    const skyIndices = [...Array(10).keys()].reduce((a, f) => {
+      let n = 0;
+      for (let p = mesh.faceFirstPoly[f]!; p < mesh.faceFirstPoly[f]! + mesh.faceNumPolys[f]!; p++) n += (mesh.polyNumVertices[p]! - 2) * 3;
+      return a + n;
+    }, 0);
+    expect(drawn).toBe(all.indices.length - skyIndices);
+    expect(all.sky).toEqual([]);
+    // A sky face that is also translucent is still a sky face, as SURF_SKY is tested first.
+    const both = flagged({ 0: SURF_SKY | SURF_TRANS33 });
+    const bothMesh = buildWorldMesh(both, buildLightmapAtlas(both));
+    const list = buildDrawList(bothMesh, visibleFaceMask(both, bothMesh, -1), true);
+    expect(list.sky).toEqual([0]);
+    expect(list.translucent).toEqual([]);
+  });
+
+  it("of brush models draw as opaque faces", () => {
+    const brush = buildDrawList(mesh, modelFaceMask(bsp, 1));
+    expect(brush.sky).toEqual([]);
+    expect(brush.draws.some((d) => d.flags & SURF_SKY)).toBe(true);
+  });
+
+  it("face the eye by eyePlaneSide, as worldAlphaOrder decides", () => {
+    for (const eye of [
+      [0, 0, 64],
+      [-200, 150, 30],
+    ] as const) {
+      // Faces and nodes use only qbsp's positive-normal planes, where an axial type is exact.
+      for (const p of new Set(bsp.faces.planeNum)) {
+        const n = bsp.planes.normal;
+        const d = eye[0] * n[p * 3]! + eye[1] * n[p * 3 + 1]! + eye[2] * n[p * 3 + 2]! - bsp.planes.dist[p]!;
+        expect(eyePlaneSide(bsp, p, eye)).toBe(d >= 0 ? 0 : 1);
+      }
+    }
+    // On the plane counts as in front (R_RecursiveWorldNode's dot >= 0).
+    const p = [...Array(bsp.planes.count).keys()].find((i) => bsp.planes.type[i] === 2)!;
+    expect(eyePlaneSide(bsp, p, [0, 0, bsp.planes.dist[p]!])).toBe(0);
   });
 });
 

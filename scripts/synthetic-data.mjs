@@ -181,6 +181,86 @@ export function writePalettePcx(palette) {
   return out;
 }
 
+/**
+ * A TGA as Quake 2's LoadTGA reads it: `pixel(x, y)` is [r, g, b] or [r, g, b, a] with y = 0
+ * the top row as the engine shows it. LoadTGA puts the first file row at the bottom
+ * whatever the origin bit says, so file rows are written bottom-up; `topOrigin` only sets
+ * the bit (the image then still decodes the same). RLE writes one run or raw packet per
+ * stretch of up to 128 pixels, continuing across rows as LoadTGA allows.
+ */
+export function writeTga(width, height, pixel, { bits = 24, rle = false, topOrigin = false } = {}) {
+  const bpp = bits / 8;
+  const stream = [];
+  for (let y = height - 1; y >= 0; y--) {
+    for (let x = 0; x < width; x++) {
+      const [r, g, b, a = 255] = pixel(x, y);
+      stream.push(bpp === 4 ? [b, g, r, a] : [b, g, r]);
+    }
+  }
+  const body = [];
+  if (!rle) {
+    for (const px of stream) body.push(...px);
+  } else {
+    let i = 0;
+    while (i < stream.length) {
+      let run = 1;
+      while (i + run < stream.length && run < 128 && stream[i + run].join() === stream[i].join()) run++;
+      if (run > 1) {
+        body.push(0x80 | (run - 1), ...stream[i]);
+        i += run;
+        continue;
+      }
+      let raw = 1;
+      while (i + raw < stream.length && raw < 128 && stream[i + raw].join() !== stream[i + raw - 1].join()) raw++;
+      body.push(raw - 1);
+      for (let k = 0; k < raw; k++) body.push(...stream[i + k]);
+      i += raw;
+    }
+  }
+  const out = new Uint8Array(18 + body.length);
+  const view = new DataView(out.buffer);
+  out[2] = rle ? 10 : 2;
+  view.setUint16(12, width, true);
+  view.setUint16(14, height, true);
+  out[16] = bits;
+  out[17] = (bpp === 4 ? 8 : 0) | (topOrigin ? 0x20 : 0);
+  out.set(body, 18);
+  return out;
+}
+
+/**
+ * An 8-bit RLE PCX of palette indices `pixel(x, y)` (y = 0 the top row), runs of up to 63
+ * within a row, with the synthetic palette appended (the engine ignores it for skies).
+ */
+export function writePcx(width, height, pixel) {
+  const body = [];
+  for (let y = 0; y < height; y++) {
+    let x = 0;
+    while (x < width) {
+      const v = pixel(x, y);
+      let run = 1;
+      while (x + run < width && run < 63 && pixel(x + run, y) === v) run++;
+      if (run > 1 || (v & 0xc0) === 0xc0) body.push(0xc0 | run, v);
+      else body.push(v);
+      x += run;
+    }
+  }
+  const out = new Uint8Array(128 + body.length + 769);
+  const view = new DataView(out.buffer);
+  out[0] = 0x0a;
+  out[1] = 5;
+  out[2] = 1;
+  out[3] = 8;
+  view.setUint16(8, width - 1, true);
+  view.setUint16(10, height - 1, true);
+  view.setUint16(66, width, true);
+  out[65] = 1;
+  out.set(body, 128);
+  out[128 + body.length] = 0x0c;
+  out.set(syntheticPalette(), 129 + body.length);
+  return out;
+}
+
 /** A made-up palette: index i is (i, 255 - i, (i * 37) & 255). Callers overwrite the indices they test. */
 export function syntheticPalette() {
   const p = new Uint8Array(768);

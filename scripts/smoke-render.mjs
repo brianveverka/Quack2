@@ -10,14 +10,16 @@
 // arrive, and that ?map= finds a BSP packed into a mounted pak. A copy of the map with
 // every face on an animated light style checks lightmaps are uploaded as styles change.
 // Copies with surface flags set check warps move with level time and draw unlit, and
-// translucent faces blend with what is behind them at their alpha.
+// translucent faces blend with what is behind them at their alpha. A copy whose walls and
+// ceiling are sky checks the sky box: r_notexture without data, each side's synthetic
+// image in its direction and orientation with it, and skyrotate.
 // Usage: node scripts/smoke-render.mjs [outdir]   (default packages/client/dist/smoke)
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { syntheticPalette, withEntityString, writePak, writePalettePcx, writeWal, writeZip } from "./synthetic-data.mjs";
+import { syntheticPalette, withEntityString, writePak, writePalettePcx, writeTga, writeWal, writeZip } from "./synthetic-data.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const dist = join(root, "packages/client/dist");
@@ -90,6 +92,24 @@ for (const [name, flags] of [["trans33", SURF_TRANS33], ["trans66", SURF_TRANS66
   SYNTHETIC[`/data/${name}.bsp`] = withTextureFlags(fixtureBsp, "quack/trim", flags);
   SYNTHETIC[`/data/${name}-moved.bsp`] = withTextureFlags(SYNTHETIC["/data/moved.bsp"], "quack/trim", flags);
 }
+// Walls and ceiling (quack/wall) are sky. "sky.bsp" uses the default unit1_ sky; the
+// rotating copy turns it 90 degrees a second about +z.
+const SURF_SKY = 0x4;
+SYNTHETIC["/data/sky.bsp"] = withTextureFlags(fixtureBsp, "quack/wall", SURF_SKY);
+SYNTHETIC["/data/sky-rotate.bsp"] = withEntityString(
+  SYNTHETIC["/data/sky.bsp"],
+  fixtureEntities.replace('"classname" "worldspawn"', '"classname" "worldspawn"\n"sky" "spin_"\n"skyrotate" "90"\n"skyaxis" "0 0 1"'),
+);
+// One solid colour per side, except rt (seen looking along +x), whose quadrants differ
+// so its orientation shows: top left, top right, bottom left, bottom right.
+const SKY_COLORS = { bk: [0, 255, 255], lf: [255, 0, 255], ft: [255, 128, 0], up: [128, 255, 128], dn: [64, 64, 64] };
+const RT_QUADRANTS = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0]];
+const skyImages = (name) => ({
+  [`env/${name}rt.tga`]: writeTga(16, 16, (x, y) => RT_QUADRANTS[(y < 8 ? 0 : 2) + (x < 8 ? 0 : 1)], { rle: true }),
+  ...Object.fromEntries(Object.entries(SKY_COLORS).map(([side, rgb]) => [`env/${name}${side}.tga`, writeTga(16, 16, () => rgb)])),
+});
+SYNTHETIC["/data/sky.pak"] = writePak({ ...skyImages("unit1_"), ...skyImages("spin_") });
+if (!SYNTHETIC["/data/sky-rotate.bsp"]) throw new Error("no sky-rotate map");
 // The moved map packed at a path the server does not have, so only the pak can supply it.
 SYNTHETIC["/data/maps.pak"] = writePak({
   "maps/packed.bsp": SYNTHETIC["/data/moved.bsp"],
@@ -462,6 +482,77 @@ try {
   // dropped the destination would still land only about 4.7 apart: the bound is 1.5.
   check(Math.abs(a33 - a66) < 1.5, "translucent faces blend at 0.33 and 0.66 alpha over what is behind them");
   check(a33 >= opaque - 1, "translucent faces draw unlit");
+
+  // Sky: the walls and ceiling are not drawn; the box is, behind them. Directions from an
+  // eye in the west half's open space, each well inside one box side and one quadrant.
+  const SKY_EYE = { origin: [-256, -128, 128], pitch: 0, yaw: 0 };
+  const skyAt = (view, dirs, ms) =>
+    page.evaluate(
+      ({ view, dirs, ms }) => {
+        window.quack.setView(view);
+        window.quack.setLevelTime(ms);
+        const { width, height, data } = window.quack.readPixels();
+        let clear = 0;
+        for (let i = 0; i < data.length; i += 4) if (data[i] === 64 && data[i + 1] === 0 && data[i + 2] === 64) clear++;
+        const colors = dirs.map(([x, y, z]) => {
+          const p = window.quack.project(view.origin[0] + x * 100, view.origin[1] + y * 100, view.origin[2] + z * 100);
+          if (!p || p[0] < 0 || p[1] < 0 || p[0] >= width || p[1] >= height) return null;
+          const i = (Math.floor(p[1]) * width + Math.floor(p[0])) * 4;
+          return [data[i], data[i + 1], data[i + 2]];
+        });
+        return { stats: window.quack.stats, sky: window.quack.sky, clear, colors };
+      },
+      { view, dirs, ms },
+    );
+  const loadMap = async (query) => {
+    await page.goto(`${ORIGIN}/?${query}`);
+    await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+    return page.evaluate(() => window.quack.error);
+  };
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  // Left/right is +y/-y looking along +x; up/down is +z/-z. Picked clear of the pillars
+  // (trim) that stand in this view.
+  const RT_DIRS = [[1, 0.6, 0.6], [1, -0.6, 0.6], [1, 0.5, -0.12], [1, -0.75, -0.35]];
+  const SIDE_VIEWS = [
+    ["bk", { ...SKY_EYE, yaw: 90 }, [0, 1, 0.1]],
+    ["lf", { ...SKY_EYE, yaw: 180 }, [-1, 0, 0.1]],
+    ["ft", { ...SKY_EYE, yaw: 270 }, [0, -1, 0.1]],
+    ["up", { ...SKY_EYE, pitch: -89 }, [0.05, 0, 1]],
+  ];
+  const noSkyError = await loadMap("map=data/sky.bsp");
+  const bare = await skyAt(SKY_EYE, RT_DIRS, 0);
+  await page.screenshot({ path: join(outDir, "sky-notexture.png") });
+  console.log(`  sky, no data: ${JSON.stringify(bare)}`);
+  check(!noSkyError && bare.sky?.name === "unit1_" && bare.sky.loaded.length === 0, "sky.bsp loads with the default unit1_ sky and no images");
+  check(bare.stats.skyPolygons > 0 && bare.stats.skySides > 0 && bare.clear === 0, "world sky faces bound a sky box that covers them (no background pixels)");
+  check(
+    bare.colors.every((c) => c && c[1] === 0 && c[2] === 0),
+    "without sky images the box draws r_notexture (red on black) where the sky faces are",
+  );
+
+  const skyError = await loadMap("pak=data/sky.pak&map=data/sky.bsp");
+  const rt = await skyAt(SKY_EYE, RT_DIRS, 0);
+  await page.screenshot({ path: join(outDir, "sky-rt.png") });
+  console.log(`  sky rt: ${JSON.stringify(rt)}`);
+  check(!skyError && rt.sky.loaded.length === 6 && rt.clear === 0, "sky images load from the pak");
+  check(same(rt.colors, RT_QUADRANTS), "looking along +x shows rt, upright and unmirrored (quadrants in place)");
+  const sides = [];
+  for (const [side, view, dir] of SIDE_VIEWS) {
+    const r = await skyAt(view, [dir], 0);
+    sides.push([side, r.colors[0]]);
+    if (side === "up") await page.screenshot({ path: join(outDir, "sky-up.png") });
+  }
+  console.log(`  sky sides: ${JSON.stringify(sides)}`);
+  check(sides.every(([side, c]) => same(c, SKY_COLORS[side])), "+y shows bk, -x lf, -y ft, up up (R_SetSky suffixes through skytexorder)");
+
+  const rotError = await loadMap("pak=data/sky.pak&map=data/sky-rotate.bsp");
+  const still0 = await skyAt({ ...SKY_EYE, yaw: 90 }, [[0, 1, 0.1]], 0);
+  const turned = await skyAt({ ...SKY_EYE, yaw: 90 }, [[-0.25, 1, 0.25], [0.25, 1, 0.25]], 1000);
+  console.log(`  sky rotate: ${JSON.stringify({ still0, turned })}`);
+  check(!rotError && turned.sky.rotate === 90 && same(turned.sky.axis, [0, 0, 1]), "skyrotate and skyaxis reach R_SetSky");
+  check(same(still0.colors[0], SKY_COLORS.bk) && still0.stats.skySides === 6, "a rotating sky draws all six sides, unturned at level time 0");
+  // 90 degrees counterclockwise about +z after 1 s: rt now faces +y, its left edge toward -x.
+  check(same(turned.colors, RT_QUADRANTS.slice(0, 2)), "after 1 s at 90 degrees a second about +z, rt faces +y");
 
   // Game data: ?pak= mounts in order; 404s are reported, in URL order, and skipped.
   await page.goto(`${ORIGIN}/?pak=data/absent-1.pak&pak=data/synthetic.pak&pak=data/absent-2.pak&pak=data/synthetic.zip`);

@@ -2,10 +2,13 @@
 // Game data in the browser: archives the user supplies (file picker or ?pak= URL) are
 // mounted into a GameFs, and world textures are decoded from it up front so the
 // renderer's synchronous TextureSource can serve them. Nothing here is required: no
-// archives, no palette, or a broken .wal each degrade to checker placeholders. Maps are
-// looked up in the same GameFs before falling back to a fetch.
+// archives, no palette, or a broken .wal each degrade to checker placeholders, and a
+// missing or broken sky image to r_notexture. Maps are looked up in the same GameFs
+// before falling back to a fetch.
 
 import { GameFs, blobSource, openArchive, type Archive } from "@quack2/sim";
+import { SKY_SUFFIXES } from "./sky.js";
+import { decodePcx, decodeTga, pcxToRgba, uploadImage } from "./skyimage.js";
 import { checkerTexture, type TextureImage, type TextureSource } from "./textures.js";
 import { PALETTE_PATH, decodeWal, pcxPalette, walToRgba } from "./wal.js";
 
@@ -92,6 +95,81 @@ export async function loadWalTextures(fs: GameFs, names: readonly string[]): Pro
   loaded.sort();
   errors.sort();
   return { source: (name) => images.get(name), palette: palette !== undefined, loaded, errors };
+}
+
+export interface SkyImages {
+  /**
+   * Six images in R_SetSky's suffix order (rt, bk, lf, ft, up, dn), sized as GL_Upload32
+   * uploads them; undefined where none loaded, which the renderer draws as r_notexture.
+   */
+  readonly images: readonly (TextureImage | undefined)[];
+  /** Paths that loaded. */
+  readonly loaded: readonly string[];
+  /** Non-fatal problems: unreadable entries, corrupt images, a .pcx with no palette mounted. */
+  readonly errors: readonly string[];
+}
+
+/** MAX_QPATH: R_SetSky's Com_sprintf keeps at most 63 characters of the path. */
+const MAX_QPATH = 64;
+
+/**
+ * R_SetSky's images for `name`: per side env/<name><suffix>.tga, else .pcx. The engine
+ * tries only one of the two (.pcx with the paletted texture extension, else .tga) and
+ * draws r_notexture without it; trying both is this client's choice. A corrupt .tga is
+ * reported and the .pcx tried. A path cut short by MAX_QPATH loads by whatever its cut
+ * end is, as GL_FindImage picks the loader from the last four characters: if that is
+ * not .tga or .pcx (or the cut path is under five characters), nothing loads.
+ */
+export async function loadSkyImages(fs: GameFs, name: string): Promise<SkyImages> {
+  const errors: string[] = [];
+  const loaded: string[] = [];
+  let palette: Promise<Uint8Array | undefined> | undefined;
+  const readPalette = async () => {
+    try {
+      const pcx = await fs.read(PALETTE_PATH);
+      return pcx && pcxPalette(pcx);
+    } catch (e) {
+      errors.push(`${PALETTE_PATH}: ${errorMessage(e)}`);
+      return undefined;
+    }
+  };
+  const load = async (path: string): Promise<TextureImage | undefined> => {
+    const ext = path.length < 5 ? "" : path.slice(-4);
+    if (ext !== ".tga" && ext !== ".pcx") return undefined;
+    let bytes;
+    try {
+      bytes = await fs.read(path);
+      if (!bytes) return undefined;
+      let img: TextureImage;
+      if (ext === ".tga") {
+        img = decodeTga(bytes);
+      } else {
+        const pcx = decodePcx(bytes);
+        const pal = await (palette ??= readPalette());
+        if (!pal) {
+          errors.push(`${path}: no palette (${PALETTE_PATH}) to map it through`);
+          return undefined;
+        }
+        img = pcxToRgba(pcx, pal);
+      }
+      loaded.push(path);
+      return uploadImage(img);
+    } catch (e) {
+      errors.push(`${path}: ${errorMessage(e)}`);
+      return undefined;
+    }
+  };
+  const images = await Promise.all(
+    SKY_SUFFIXES.map(async (suffix) => {
+      const base = `env/${name}${suffix}`;
+      const tga = `${base}.tga`.slice(0, MAX_QPATH - 1);
+      const pcx = `${base}.pcx`.slice(0, MAX_QPATH - 1);
+      return (await load(tga)) ?? (pcx === tga ? undefined : await load(pcx));
+    }),
+  );
+  loaded.sort();
+  errors.sort();
+  return { images, loaded, errors };
 }
 
 /** A loaded BSP and where it came from: a mounted archive's name, or the fetched URL. */

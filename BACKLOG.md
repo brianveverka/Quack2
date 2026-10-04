@@ -7,20 +7,19 @@ order (see CLAUDE.md, Orchestration).
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps with the deathmatch
 light styles animated at 10 Hz, warped surfaces moved per vertex as EmitWaterPolys does,
 translucent surfaces blended in R_DrawAlphaSurfaces' order, no lightmap on sky, warp or
-translucent faces, PVS, inline brush models where the game has them after
-spawn (untargeted plats lowered, START_OPEN doors open, trains at their first
-path_corner or a teleport one after it, turrets turned to rest in their pitch/yaw range
-with their teams), culled by PVS and frustum, free-fly camera, `.wal` textures and
-`?map=` BSPs from mounted pak/zip data (zip64 and self-extractor stubs included), picked
-archives read by range, checker fallback, `pnpm smoke`).
+translucent faces, the worldspawn sky box drawn where the world's sky faces bound it
+(R_DrawSkyBox, with skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS,
+inline brush models where the game has them after spawn (untargeted plats lowered,
+START_OPEN doors open, trains at their first path_corner or a teleport one after it,
+turrets turned to rest in their pitch/yaw range with their teams), culled by PVS and
+frustum, free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data
+(zip64 and self-extractor stubs included), picked archives read by range, checker
+fallback, `pnpm smoke`).
 Remaining:
-- Sky: SURF_SKY faces draw as their own texture, unlit. ref_gl draws none of them: it
-  clips them to per-side sky bounds (R_AddSkySurface) and draws the worldspawn "sky" box
-  there (R_DrawSkyBox: env/<sky>{rt,bk,lf,ft,up,dn}, .tga then .pcx, "skyrotate",
-  "skyaxis"). Sky images are game data, so it needs a no-data fallback (the engine
-  draws r_notexture).
 - No area portal (areabits) culling, for the world or brush models (the server also
-  drops entities behind a closed door's area portal); no frustum culling of the world.
+  drops entities behind a closed door's area portal); no frustum culling of the world,
+  so the sky box's bounds also take sky faces outside the view, and can cover pixels
+  the engine leaves undrawn.
   The engine's second view cluster near water surfaces (R_MarkLeaves `viewcluster2`) is
   not handled either.
 - The world's PVS is the eye's own cluster; brush models use a fat PVS reaching past
@@ -64,6 +63,9 @@ Remaining:
   has both 0.
 - The alpha pass walks the whole world BSP every frame a translucent face is in the PVS;
   ref_gl skips nodes outside the PVS and frustum. Measure on a large map.
+- `buildWorldMesh` drops SURF_NODRAW faces; ref_gl has no NODRAW test, so a SKY|NODRAW
+  face a compiler emits would bound the sky box there and not here. Check whether qbsp
+  or ericw-tools emit such faces before changing it.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
