@@ -1,6 +1,7 @@
 # Backlog
 
-Milestones in order. Each is roughly one session; split further when starting it.
+Milestones in order; each bullet is roughly one session. Chain sessions take them in
+order (see CLAUDE.md, Orchestration).
 
 ## 1. Game data and renderer completeness
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps, PVS, inline brush

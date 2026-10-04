@@ -7,7 +7,8 @@
 - Sessions here usually run in a cloud sandbox on a fresh clone. Nothing outside the
   repo exists: no local machine, no homelab, no user-level skills or settings.
 - Commit finished units of work without asking. Once the review loop is done, push the
-  task branch, open its PR and enable auto-merge without asking (see Git workflow);
+  task branch, open its PR, mark it ready and enable auto-merge without asking (see
+  Git workflow and Orchestration);
   unpushed work is lost when the sandbox goes away. A branch the session harness assigns
   is used as the task branch instead of creating one.
 - Never push to `main`. Never force-push.
@@ -41,7 +42,8 @@
 - End every session with a paste-ready prompt for the next one, not a summary. It must
   be self-contained: the task in one line, what is done and verified, what is not, the
   exact files and paths, the next concrete step, and any live state the next session
-  must not assume. Never "continue where we left off".
+  must not assume. Never "continue where we left off". In a chain (see Orchestration)
+  the prompt is passed to the next session instead of printed.
 
 ## Source of truth
 - Documentation and code comments describe **current state and intent**; keep them
@@ -78,8 +80,9 @@
 - Read the relevant files and propose the approach before changing code.
 - Ask first for anything that changes live behavior or cannot be undone: deploys,
   anything visible to other people or machines beyond the task branch and its PR, deleting
-  data, or committing in a repo the session was not asked to commit in. Opening the PR and
-  enabling squash auto-merge are pre-approved; any other merge is not.
+  data, or committing in a repo the session was not asked to commit in. Opening the PR, marking
+  it ready, enabling squash auto-merge, the green squash merge in Orchestration and
+  spawning the next chain session are pre-approved; any other merge is not.
 - Deletions: count first, abort if the count is surprising, never delete on a wildcard.
 - Check the clock before anything time-sensitive.
 
@@ -128,6 +131,79 @@ For each unit of work:
 **What gets fixed now:** decide by coupling, not timing. Caused by this change, or blocks
 the next one: fix now. Belongs to code that's about to be replaced: defer.
 
+## Orchestration
+Brian is involved only when a decision is his to make. Sessions do the work, review it,
+merge it and start the next session themselves.
+
+### Within a session: delegate the implementation
+- After reading and sizing, split the task into parts with clear interfaces (a module
+  and its tests, a smoke case, a reference-source summary). Hand each independent part
+  to a subagent (`Agent`, `isolation: "worktree"`) with a self-contained brief: goal,
+  files, the interface it must meet, the checks that must pass, and what not to touch.
+- Parts that depend on each other's measured output stay serial; tightly coupled work
+  stays with the lead. Never split one function across agents.
+- The lead integrates the results into the task branch, runs `pnpm check` (and
+  `pnpm smoke` for renderer changes), and runs the Review loop on the integrated commit.
+  Subagents never commit to the task branch, push, or open PRs.
+
+### Between sessions: the chain
+A chain session runs unattended. Where another rule says to propose, offer or ask
+before acting, it decides in-session and records the reasoning in the commit message
+and PR body instead: an approach is proposed in the PR body, a new idea is parked in
+BACKLOG.md, and a task bigger than one session is split, its first part done and the
+rest parked. Parked work goes where it belongs in milestone order: the rest of a split
+replaces its bullet in place, a new idea goes at the end of its milestone. Only
+Escalation stops it.
+
+The work item is the first bullet under the first numbered milestone (`## 1. ...`) in
+BACKLOG.md that has any, unless the prompt names another. The session deletes that
+bullet in the same PR and updates the milestone's intro to match; a milestone left with
+no bullets is deleted whole. An item the sandbox cannot do (it needs game data, a real
+machine, or Brian) moves to a `## Needs Brian` section at the end of BACKLOG.md with the
+reason, and the session takes the next one.
+
+After step 6 of the Review loop:
+1. Push. Find the branch's PR (`list_pull_requests` by head; the harness may already
+   have opened it as a draft), else open it. Mark it ready (`update_pull_request` with
+   `draft: false`; CI re-runs on `ready_for_review`), then enable squash auto-merge
+   while `check` is pending. GitHub refuses auto-merge on a draft.
+2. If auto-merge is refused with "clean status": when `check` is green on the PR's
+   current head with no review thread open, squash-merge it (`merge_pull_request`,
+   `SQUASH`); when it is pending, wait for it and decide again; when it is red, fix it.
+3. Subscribe to the PR (`subscribe_pr_activity`) and drive it to merged: fix CI and
+   review findings on the same branch. On a conflict, merge `main` in, run `pnpm check`
+   (and `pnpm smoke` for renderer changes) and push. The merge should wake the
+   session; as a fallback, keep one `send_later` check-in armed, 50 minutes out, that
+   reads the PR (`pull_request_read`) and re-arms itself until the PR is merged or the
+   chain escalates.
+4. When it has merged, first check that no session titled `Quack2 session <N+1>`
+   exists (`list_sessions`, tag `quack2-chain`); a second wake must not spawn twice.
+   Then spawn the next session with `create_session`: this repo as `source_url`, title
+   `Quack2 session <N+1>: <item>`, tag `quack2-chain`, no `permission_mode` (the child
+   inherits this session's), and the next-session prompt (see Session shape) as
+   `prompt`, starting with `Quack2 session <N+1> (chain)`. N is this session's number,
+   from its prompt, or else one more than the highest `Quack2 session <N>` title in
+   `list_sessions`. Confirm it started (`get_session` `status_bucket` is not
+   `failed`), unsubscribe from the PR, cancel the pending check-in, and end with the
+   child's session id.
+5. If no numbered milestone has bullets left, send `PushNotification` saying the
+   backlog is done. If `create_session` is refused (the platform caps a chain's depth)
+   or the child fails, do not retry: send `PushNotification` saying so and end with the
+   paste-ready prompt.
+
+### Escalation: when the chain stops for Brian
+Stop the chain (do not spawn) and escalate for:
+- a design choice with lasting consequences that the code, the docs, the engine source
+  and the Constraints do not settle (data layout, matching an engine quirk versus exact
+  values, a public interface other milestones will build on);
+- CI still red, or a BROKEN review finding still open, after two fix rounds;
+- anything Consent and blast radius says to ask first about, other than what this
+  section and the chain steps pre-approve.
+To escalate: send `PushNotification` with the question in one line, then ask with
+`AskUserQuestion` (options, recommendation first) and wait; where that tool is not
+available, end the turn with the question as text. On the answer, continue and resume
+the chain. Everything else is decided in-session and does not stop the chain.
+
 ## Git workflow
 - Never commit directly to `main`.
 - For each task, branch off an up-to-date `main`: `git checkout main && git pull`, then
@@ -136,15 +212,18 @@ the next one: fix now. Belongs to code that's about to be replaced: defer.
 - Make focused commits with clear messages.
 - When the task is done: push the branch, open a PR with `gh pr create` (a real title,
   and a body summarizing what changed and why), then run `gh pr merge --auto --squash`.
+  A draft PR must be marked ready first.
 - If CI checks fail, fix them on the same branch and push again. Never bypass checks or
   merge with `--admin`.
 - After the merge, switch back to `main` and pull.
 - Where `gh` is not authenticated (cloud sessions), use the GitHub MCP equivalents:
-  `create_pull_request`, then `enable_pr_auto_merge` with `SQUASH`.
+  `create_pull_request`, `update_pull_request` with `draft: false`, then
+  `enable_pr_auto_merge` with `SQUASH`.
 - `main` is protected and requires the CI `check` job (as of 2026-10-03), so auto-merge
   waits for it. Enable auto-merge right after opening the PR, while `check` is still
   pending. If GitHub refuses with "clean status" (nothing pending: checks already passed,
-  or the requirement has lapsed), stop and ask the user to merge.
+  or the requirement has lapsed), squash-merge it when Orchestration step 2 allows (in
+  any session, chained or not); otherwise stop and ask the user to merge.
 
 ## Project
 
