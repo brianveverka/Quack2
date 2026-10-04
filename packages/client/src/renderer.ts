@@ -28,7 +28,7 @@ import { fovY, modelMatrix, multiply, perspective, viewMatrix, type Mat4 } from 
 import { addSkyPolygon, clearSkyBounds, newSkyBounds, skyBoxQuads, skyMatrix, type SkySettings } from "./sky.js";
 import { notexture } from "./skyimage.js";
 import { resolveTextures, type TextureImage, type TextureSource } from "./textures.js";
-import { TURBSIN } from "./warp.js";
+import { TURBSIN, flowingScroll } from "./warp.js";
 import {
   SURF_TRANSLUCENT,
   VERTEX_FLOATS,
@@ -52,7 +52,8 @@ import {
 // would take 256 uniform vectors, all WebGL2 guarantees). int() truncates as the C cast
 // does and `& 255` wraps negatives as two's complement does. Here the argument is
 // evaluated in single precision, the engine's in double, so a vertex near a table step
-// can pick the neighbouring entry.
+// can pick the neighbouring entry. uScroll is in st units on a warp (EmitWaterPolys adds
+// it before the 1/64) and in texture widths otherwise (v[3] + scroll in gl_rsurf.c).
 const VS = `#version 300 es
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec2 aST;
@@ -77,7 +78,7 @@ void main() {
     float t = aST.y + turb(aST.x * 0.125 + uTime);
     vUV = vec2(s, t) * (1.0 / 64.0);
   } else {
-    vUV = aST / uTexSize;
+    vUV = vec2(aST.x / uTexSize.x + uScroll, aST.y / uTexSize.y);
   }
   vLM = aLM;
   gl_Position = uViewProj * uModel * vec4(aPos, 1.0);
@@ -222,7 +223,10 @@ export class WorldRenderer {
   private alphaDraws: DrawRange[] = [];
   /** Level time in seconds, r_newrefdef.time, for warps. */
   private time = 0;
-  private scroll = 0;
+  /** EmitWaterPolys' SURF_FLOWING scroll this frame. */
+  private warpScroll = 0;
+  /** DrawGLFlowingPoly's scroll this frame, for unwarped opaque faces. */
+  private flowScroll = 0;
   /** View-projection of the last rendered frame. */
   viewProj: Float32Array = new Float32Array(16);
   private cluster = Number.NaN;
@@ -506,7 +510,8 @@ export class WorldRenderer {
     gl.uniformMatrix4fv(this.uModel, false, IDENTITY);
     gl.uniform1f(this.uTime, this.time);
     // EmitWaterPolys' scroll for SURF_FLOWING warps, computed as the C does in double.
-    this.scroll = -64 * (this.time * 0.5 - Math.trunc(this.time * 0.5));
+    this.warpScroll = -64 * (this.time * 0.5 - Math.trunc(this.time * 0.5));
+    this.flowScroll = flowingScroll(this.time);
     this.drawRanges(world.draws);
     let draws = world.draws.length;
     // R_DrawWorld ends with the sky box, before any entity.
@@ -624,7 +629,9 @@ export class WorldRenderer {
       gl.bindTexture(gl.TEXTURE_2D, t.tex);
       gl.uniform2f(this.uTexSize, t.width, t.height);
       gl.uniform1i(this.uWarp, d.flags & SURF_WARP ? 1 : 0);
-      gl.uniform1f(this.uScroll, d.flags & SURF_FLOWING ? this.scroll : 0);
+      // Unwarped translucent faces go through DrawGLPoly, which does not scroll.
+      const scroll = d.flags & SURF_WARP ? this.warpScroll : d.flags & SURF_TRANSLUCENT ? 0 : this.flowScroll;
+      gl.uniform1f(this.uScroll, d.flags & SURF_FLOWING ? scroll : 0);
       // R_DrawAlphaSurfaces tests TRANS33 first.
       gl.uniform1f(this.uAlpha, d.flags & SURF_TRANS33 ? 0.33 : d.flags & SURF_TRANS66 ? 0.66 : 1);
       gl.drawElements(gl.TRIANGLES, d.count, gl.UNSIGNED_INT, d.first * 4);

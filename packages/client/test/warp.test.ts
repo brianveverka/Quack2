@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { describe, expect, it } from "vitest";
-import { SUBDIVIDE_SIZE, TURBSIN, subdivideWarpPolygon, warpTexCoord, type WarpPoly } from "../src/warp.js";
+import { SUBDIVIDE_SIZE, TURBSIN, flowingScroll, subdivideWarpPolygon, warpTexCoord, type WarpPoly } from "../src/warp.js";
 
 const f = Math.fround;
 const X = [1, 0, 0];
@@ -184,5 +184,27 @@ describe("warpTexCoord", () => {
     expect(sin).toBe(f(1.17384));
     expect(warpTexCoord(0, 0, 3, true)).toEqual([f(f(sin - 32) / 64), f(sin / 64)]);
     expect(warpTexCoord(0, 0, 3, false)).toEqual([f(sin / 64), f(sin / 64)]);
+  });
+});
+
+describe("flowingScroll", () => {
+  it("is -64 * frac(time / 40) texture widths", () => {
+    expect(flowingScroll(10)).toBe(-16);
+    expect(flowingScroll(30)).toBe(-48);
+    expect(flowingScroll(50)).toBe(-16);
+    // 1 / 40 is not exact in double; the product rounds to float.
+    expect(flowingScroll(1)).toBe(f(-64 * (1 / 40)));
+  });
+
+  it("scrolls -64 where frac is 0, as the C swaps it", () => {
+    expect(flowingScroll(0)).toBe(-64);
+    expect(flowingScroll(40)).toBe(-64);
+    expect(flowingScroll(80)).toBe(-64);
+  });
+
+  it("rounds time to float first", () => {
+    // 0.3 as a float is 0.30000001192..., not the double 0.3.
+    expect(flowingScroll(0.3)).toBe(f(-64 * (f(0.3) / 40)));
+    expect(flowingScroll(0.3)).not.toBe(f(-64 * (0.3 / 40)));
   });
 });

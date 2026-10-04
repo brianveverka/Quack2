@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Port of ref_gl/gl_warp.c's water-surface subdivision (BoundPoly, SubdividePolygon,
-// GL_SubdivideSurface) and the EmitWaterPolys texture-coordinate warp. DOM-free so tests
-// can import it under Node. The C stores vec3_t, verts and locals as `float`; every store
-// or float-only operation is rounded with Math.fround so results match the engine bit for
-// bit where JS allows. Comments mark where the C mixes in `double`.
+// GL_SubdivideSurface) and the EmitWaterPolys texture-coordinate warp, with gl_rsurf.c's
+// scroll for unwarped SURF_FLOWING faces beside it. DOM-free so tests can import it under
+// Node. The C stores vec3_t, verts and locals as `float`; every store or float-only
+// operation is rounded with Math.fround so results match the engine bit for bit where JS
+// allows. Comments mark where the C mixes in `double`.
 
 const f = Math.fround;
 
@@ -237,4 +238,19 @@ export function warpTexCoord(os: number, ot: number, time: number, flowing: bool
   let t = f(ot + TURBSIN[(((os * 0.125 + rdt) * TURBSCALE) | 0) & 255]!);
   t = f(t * (1 / 64));
   return [s, t];
+}
+
+/**
+ * Scroll added to an unwarped SURF_FLOWING face's s, in texture widths (v[3] is already
+ * divided by the image width), time in seconds. DrawGLFlowingPoly and
+ * GL_RenderLightmappedPoly apply it to opaque faces; R_DrawAlphaSurfaces draws unwarped
+ * translucent ones with DrawGLPoly, unscrolled.
+ */
+export function flowingScroll(time: number): number {
+  const rdt = f(time);
+  // time / 40.0 is double; the product is stored to float scroll.
+  const q = rdt / 40;
+  const scroll = f(-64 * (q - Math.trunc(q)));
+  // The C's `scroll == 0.0` swap: a whole number of 40 s periods scrolls by -64.
+  return scroll === 0 ? -64 : scroll;
 }
