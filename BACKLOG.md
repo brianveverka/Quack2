@@ -102,3 +102,6 @@ Remaining:
   translucent faces draw as their texture; ref_gl draws min(texture * gl_intensity, 255)
   * inverse_intensity, which caps every channel at 127 at the default intensity 2. Needs a real
   map and the engine running to compare against; the sandbox has neither.
+- Evaluate the CLAUDE.md review loop as a whole: cost per small change, when a review is
+  skippable (docs-only, config), findings-file practice, and whether reviews should run
+  on the PR (e.g. a review bot) instead of local subagents.
