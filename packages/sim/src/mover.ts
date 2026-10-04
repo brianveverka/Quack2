@@ -91,12 +91,22 @@ export function levelTimeAt(framenum: number): number {
   return Math.fround(framenum * FRAMETIME);
 }
 
+/** The moveinfo fields Think_CalcMoveSpeed reads and sets, which every team member has. */
+export interface MoveSpeeds {
+  distance: number;
+  speed: number;
+  accel: number;
+  decel: number;
+}
+
 /**
  * Think_CalcMoveSpeed, run by the team master (the first member): every member's speed
  * is set so all of them finish their move together, in the time the member with the
- * shortest distance takes at the master's speed. accel and decel follow speed.
+ * shortest distance takes at the master's speed. accel and decel follow speed. A member
+ * at no distance makes that time 0, so every other member's speed becomes infinite (and
+ * its own 0 / 0, NaN), as the C's float division gives.
  */
-export function calcMoveSpeed(team: readonly LinearMover[]): void {
+export function calcMoveSpeed(team: readonly MoveSpeeds[]): void {
   const master = team[0];
   if (!master) return;
   let min = Math.fround(Math.abs(master.distance));

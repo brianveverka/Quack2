@@ -144,6 +144,18 @@ describe("linear door mover", () => {
 });
 
 describe("calcMoveSpeed", () => {
+  it("gives infinite speeds when a member has no distance, and that member NaN", () => {
+    const team = [
+      { distance: 42, speed: 200, accel: 200, decel: 100 },
+      { distance: 0, speed: 40, accel: 40, decel: 40 },
+    ];
+    calcMoveSpeed(team);
+    expect(team.map((m) => [m.speed, m.accel, m.decel])).toEqual([
+      [Infinity, Infinity, Infinity],
+      [NaN, NaN, NaN],
+    ]);
+  });
+
   it("gives every member the speed that ends the team's moves together", () => {
     const master = door();
     const slave = door({ distance: 60, endOrigin: [0, 0, 60] });

@@ -174,15 +174,84 @@ describe("door movers", () => {
     expect([slave.speed, slave.accel, slave.decel]).toEqual([speed, Math.fround(100 * Math.fround(speed / 200)), speed]);
   });
 
-  it("leaves out a team with a member that is not a linear door, or a freed master", () => {
+  it("keeps a team's linear doors, matching speeds over every member as Think_CalcMoveSpeed does", () => {
     const teams = doorMovers(
       bsp,
       parseEntities(`
         { "classname" "worldspawn" }
-        { "classname" "func_door" "model" "*1" "team" "mixed" }
-        { "classname" "func_wall" "model" "*1" "team" "mixed" }
-        { "classname" "func_door" "model" "*1" "team" "rot" }
+        { "classname" "func_door_rotating" "model" "*1" "distance" "30.9" "speed" "50" "team" "rot" }
+        { "classname" "func_door" "model" "*1" "angle" "-1" "team" "rot" }
+        { "classname" "func_button" "model" "*1" "team" "btn" }
+        { "classname" "func_door" "model" "*1" "angle" "-1" "team" "btn" }
+        { "classname" "func_water" "model" "*1" "angle" "-1" "team" "water" }
+        { "classname" "func_button" "model" "*1" "team" "water" }
+        { "classname" "func_door_rotating" "model" "*1" "team" "none" }
+        { "classname" "func_button" "model" "*1" "team" "none" }
+      `),
+    );
+    expect(teams.map((t) => t.map((d) => d.entity))).toEqual([[2], [4], [5]]);
+    const [rotSlave, btnSlave, water] = teams.map((t) => t[0]!.mover);
+    // A rotating master's "distance" is an int (30) in degrees and its speed is not doubled.
+    const speed = Math.fround(42 / Math.fround(30 / 50));
+    expect([rotSlave!.speed, rotSlave!.accel, rotSlave!.decel]).toEqual([speed, speed, speed]);
+    // A func_button master has no Think_CalcMoveSpeed; a func_water master neither.
+    expect(btnSlave!.speed).toBe(200);
+    expect(water!.speed).toBe(25);
+  });
+
+  it("takes a func_door_rotating master's default distance (90) and speed (100)", () => {
+    const teams = doorMovers(
+      bsp,
+      parseEntities(`
+        { "classname" "worldspawn" }
         { "classname" "func_door_rotating" "model" "*1" "team" "rot" }
+        { "classname" "func_door" "model" "*1" "angle" "-1" "lip" "-50" "team" "rot" }
+      `),
+    );
+    const slave = teams[0]![0]!.mover;
+    // 50 + 50 up, longer than the 90 degrees that set the team's time at 100 a second.
+    expect(slave.distance).toBe(100);
+    expect(slave.speed).toBe(Math.fround(100 / Math.fround(90 / 100)));
+  });
+
+  it("moves a door teamed with a member at no distance all the way in one frame", () => {
+    const src = `
+      { "classname" "worldspawn" }
+      { "classname" "trigger_always" "target" "d" }
+      { "classname" "func_door" "model" "*1" "targetname" "d" "angle" "-1" "team" "t" }
+      { "classname" "func_button" "model" "*1" "team" "t" }
+      { "classname" "func_door" "model" "*1" "angle" "0" "accel" "50" "team" "t" }
+    `;
+    const teams = doorMovers(bsp, parseEntities(src));
+    expect(teams.map((t) => t.map((d) => d.entity))).toEqual([[2, 4]]);
+    const movers = teams[0]!.map((d) => d.mover);
+    // The button's moveinfo.distance 0 makes the team's time 0: 42 / 0 is infinite, and
+    // so is an accel unlike speed, scaled by the infinite ratio.
+    expect(movers.map((m) => [m.speed, m.accel, m.decel])).toEqual([
+      [Infinity, Infinity, Infinity],
+      [Infinity, Infinity, Infinity],
+    ]);
+    // Move_Begin in frame 3 goes straight to Move_Final; frame 4 pushes the whole way.
+    stepPusher(movers, levelTimeAt(3));
+    expect(movers.map((m) => [...m.origin])).toEqual([
+      [0, 0, 0],
+      [0, 0, 0],
+    ]);
+    stepPusher(movers, levelTimeAt(4));
+    expect(movers.map((m) => [...m.origin])).toEqual([
+      [0, 0, 42],
+      [58, 0, 0],
+    ]);
+    expect(movers.map((m) => m.state)).toEqual(["top", "top"]);
+  });
+
+  it("leaves out a team with a linear door that has no model, or a freed master", () => {
+    const teams = doorMovers(
+      bsp,
+      parseEntities(`
+        { "classname" "worldspawn" }
+        { "classname" "func_door" "model" "*1" "team" "nomodel" }
+        { "classname" "func_water" "model" "*9999" "team" "nomodel" }
         { "classname" "func_door" "model" "*1" "targetname" "k" "team" "freed" }
         { "classname" "func_door" "model" "*1" "team" "freed" }
         { "classname" "trigger_always" "killtarget" "k" }
@@ -191,7 +260,7 @@ describe("door movers", () => {
         { "classname" "func_door" "model" "*1" }
       `),
     );
-    expect(teams.map((t) => t.map((d) => d.entity))).toEqual([[10]]);
+    expect(teams.map((t) => t.map((d) => d.entity))).toEqual([[8]]);
   });
 
   it("ends a team's chain at a member a killtarget freed", () => {
@@ -202,10 +271,16 @@ describe("door movers", () => {
         { "classname" "func_door" "model" "*1" "team" "t" }
         { "classname" "func_door" "model" "*1" "team" "t" "targetname" "k" }
         { "classname" "func_door" "model" "*1" "team" "t" }
+        { "classname" "func_door" "model" "*1" "team" "u" }
+        { "classname" "func_button" "model" "*1" "team" "u" "targetname" "k" }
+        { "classname" "func_door" "model" "*1" "team" "u" }
         { "classname" "trigger_always" "killtarget" "k" }
       `),
     );
-    expect(teams.map((t) => t.map((d) => d.entity))).toEqual([[1]]);
+    expect(teams.map((t) => t.map((d) => d.entity))).toEqual([[1], [4]]);
+    // Think_CalcMoveSpeed ran in the first frame, before the second frame's killtarget
+    // freed the button, so its distance 0 still set the team's speeds.
+    expect(teams[1]![0]!.mover.speed).toBe(Infinity);
   });
 });
 
