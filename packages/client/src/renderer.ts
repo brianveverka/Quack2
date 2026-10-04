@@ -7,7 +7,7 @@
 import { pointLeaf, type Bsp } from "@quack2/sim";
 import type { BrushModelInstance } from "./bmodels.js";
 import { boxClusters, boxOutsideFrustum, clustersVisible, fatClusters, frustumPlanes, instanceBox, pvsUnion, type Box } from "./cull.js";
-import { buildLightmapAtlas } from "./lightmap.js";
+import { buildLightmapAtlas, updateLightmapAtlas, type LightmapAtlas } from "./lightmap.js";
 import { fovY, modelMatrix, multiply, perspective, viewMatrix, type Mat4 } from "./math.js";
 import { resolveTextures, type TextureImage, type TextureSource } from "./textures.js";
 import {
@@ -99,6 +99,7 @@ export class WorldRenderer {
   private readonly brushIndexBuffer: WebGLBuffer;
   private readonly instances: InstanceDraws[] = [];
   private textures: { tex: WebGLTexture; width: number; height: number }[] = [];
+  private readonly atlas: LightmapAtlas;
   private readonly lightmap: WebGLTexture;
   private readonly uViewProj: WebGLUniformLocation | null;
   private readonly uModel: WebGLUniformLocation | null;
@@ -115,8 +116,10 @@ export class WorldRenderer {
     private readonly bsp: Bsp,
     textureSource: TextureSource,
     brushModels: readonly BrushModelInstance[] = [],
+    lightStyles?: ArrayLike<number>,
   ) {
-    const atlas = buildLightmapAtlas(bsp, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number);
+    const atlas = buildLightmapAtlas(bsp, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number, lightStyles);
+    this.atlas = atlas;
     this.mesh = buildWorldMesh(bsp, atlas);
 
     this.program = linkProgram(gl, VS, FS);
@@ -180,6 +183,30 @@ export class WorldRenderer {
     for (const t of this.textures) this.gl.deleteTexture(t.tex);
     this.textures = images.map((img) => ({ tex: uploadTexture(this.gl, img, true), width: img.width, height: img.height }));
     this.missingTextures = missing;
+  }
+
+  /**
+   * Set the brightness of each light style (lightStyleValues) and upload the lightmap of
+   * every face whose composed light changed. Returns how many faces were uploaded.
+   */
+  setLightStyles(values: ArrayLike<number>): number {
+    const faces = updateLightmapAtlas(this.bsp, this.atlas, values);
+    if (faces.length === 0) return 0;
+    const { gl, atlas } = this;
+    gl.bindTexture(gl.TEXTURE_2D, this.lightmap);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, atlas.width);
+    for (const f of faces) {
+      const r = atlas.rects[f]!;
+      gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, r.x);
+      gl.pixelStorei(gl.UNPACK_SKIP_ROWS, r.y);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, r.x, r.y, r.width, r.height, gl.RGBA, gl.UNSIGNED_BYTE, atlas.data);
+    }
+    // Other uploads read whole, tightly packed images.
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+    return faces.length;
   }
 
   render(view: View, width: number, height: number): FrameStats {
