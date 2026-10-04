@@ -2,9 +2,20 @@
 // Packs every face's lightmap into one RGBA atlas. A face stores one map per light style
 // (up to four); its atlas block holds their sum, each map scaled by its style's current
 // brightness, composed on the CPU as ref_gl's R_BuildLightMap does. When style values
-// change, only the faces using a changed style are composed again.
+// change, only the faces using a changed style are composed again. Sky, warp and
+// translucent faces get no lightmap, as in Mod_LoadFaces, and draw at full brightness.
 
-import { MAX_LIGHTMAPS, MAX_LIGHTSTYLES, faceStyleCount, lightmapExtents, type Bsp } from "@quack2/sim";
+import {
+  MAX_LIGHTMAPS,
+  MAX_LIGHTSTYLES,
+  SURF_SKY,
+  SURF_TRANS33,
+  SURF_TRANS66,
+  SURF_WARP,
+  faceStyleCount,
+  lightmapExtents,
+  type Bsp,
+} from "@quack2/sim";
 
 export interface LightmapRect {
   /** Atlas position of luxel (0, 0). */
@@ -15,7 +26,7 @@ export interface LightmapRect {
   /** Texture-space origin of the face's lightmap, from lightmapExtents. */
   readonly textureMinS: number;
   readonly textureMinT: number;
-  /** False for faces with no lightmap; their rect is the fullbright block. */
+  /** False for faces with no lightmap (none stored, or an unlit surface); their rect is the fullbright block. */
   readonly lit: boolean;
 }
 
@@ -36,6 +47,9 @@ export interface LightmapAtlas {
  */
 const FULLBRIGHT = 2;
 
+/** Surfaces ref_gl builds no lightmap for, whatever the map stores (GL_CreateSurfaceLightmap is skipped). */
+export const SURF_UNLIT = SURF_SKY | SURF_TRANS33 | SURF_TRANS66 | SURF_WARP;
+
 /** Every style at normal brightness ('m'), what ref_gl builds lightmaps with at load. */
 const STYLES_NORMAL = new Float32Array(MAX_LIGHTSTYLES).fill(1);
 
@@ -47,7 +61,9 @@ const STYLES_NORMAL = new Float32Array(MAX_LIGHTSTYLES).fill(1);
 export function buildLightmapAtlas(bsp: Bsp, maxSize = 4096, styles: ArrayLike<number> = STYLES_NORMAL): LightmapAtlas {
   const n = bsp.faces.count;
   const ext = Array.from({ length: n }, (_, f) => lightmapExtents(bsp, f));
-  const lit = [...Array(n).keys()].filter((f) => bsp.faces.lightOfs[f] !== -1);
+  const lit = [...Array(n).keys()].filter(
+    (f) => bsp.faces.lightOfs[f] !== -1 && !((bsp.texinfo.flags[bsp.faces.texinfo[f]!] ?? 0) & SURF_UNLIT),
+  );
   lit.sort((a, b) => ext[b]!.height - ext[a]!.height || ext[b]!.width - ext[a]!.width || a - b);
 
   for (let size = 64; size <= maxSize; size *= 2) {

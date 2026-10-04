@@ -5,16 +5,20 @@ order (see CLAUDE.md, Orchestration).
 
 ## 1. Game data and renderer completeness
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps with the deathmatch
-light styles animated at 10 Hz, PVS, inline brush models where the game has them after
+light styles animated at 10 Hz, warped surfaces moved per vertex as EmitWaterPolys does,
+translucent surfaces blended in R_DrawAlphaSurfaces' order, no lightmap on sky, warp or
+translucent faces, PVS, inline brush models where the game has them after
 spawn (untargeted plats lowered, START_OPEN doors open, trains at their first
 path_corner or a teleport one after it, turrets turned to rest in their pitch/yaw range
 with their teams), culled by PVS and frustum, free-fly camera, `.wal` textures and
 `?map=` BSPs from mounted pak/zip data (zip64 and self-extractor stubs included), picked
 archives read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- Surface flags: SURF_SKY, SURF_WARP, SURF_TRANS33/66 draw as ordinary opaque, lightmapped
-  faces (NODRAW is skipped); ref_gl gives them no lightmap. Needs a sky box, warp
-  shader, and a sorted translucent pass.
+- Sky: SURF_SKY faces draw as their own texture, unlit. ref_gl draws none of them: it
+  clips them to per-side sky bounds (R_AddSkySurface) and draws the worldspawn "sky" box
+  there (R_DrawSkyBox: env/<sky>{rt,bk,lf,ft,up,dn}, .tga then .pcx, "skyrotate",
+  "skyaxis"). Sky images are game data, so it needs a no-data fallback (the engine
+  draws r_notexture).
 - No area portal (areabits) culling, for the world or brush models (the server also
   drops entities behind a closed door's area portal); no frustum culling of the world.
   The engine's second view cluster near water surfaces (R_MarkLeaves `viewcluster2`) is
@@ -45,6 +49,21 @@ Remaining:
   warmed up: 33-34 ns per luxel with one style per face, about 73 with four, so 50k
   animated luxels cost 2-4 ms per 10 Hz step. Limit it to visible
   faces if large maps show it.
+- SURF_FLOWING scrolls only warped faces; ref_gl also scrolls unwarped opaque ones
+  (DrawGLFlowingPoly, GL_RenderLightmappedPoly), though not unwarped translucent ones
+  (R_DrawAlphaSurfaces uses DrawGLPoly).
+- Translucent faces of brush models move with their entity here; ref_gl draws the alpha
+  chain with the world matrix, so they stay at their compiled spot. Kept as intended
+  (the engine's is a draw bug); revisit if matching it matters. The alpha chain's brush
+  models come in instance (map) order; ref_gl uses entity numbers, which differ where
+  G_Spawn reused a freed slot.
+- `faceVertexIndices` reads surfedge 0 as forward (`e >= 0`); ref_gl's
+  GL_BuildPolygonFromSurface and GL_SubdivideSurface read it as reversed (`lindex > 0`).
+  Only corrupt maps use edge 0. Likewise `pointLeaf` and `boxLeafs` (sim vis.ts) start at
+  `models.headNode[0]`, Mod_PointInLeaf and R_RecursiveWorldNode at node 0; qbsp output
+  has both 0.
+- The alpha pass walks the whole world BSP every frame a translucent face is in the PVS;
+  ref_gl skips nodes outside the PVS and frustum. Measure on a large map.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
@@ -72,5 +91,7 @@ Remaining:
 ## Needs Brian
 - Brightness is not checked against the engine: GL Quake 2 scales textures by
   `gl_intensity` (default 2) and the lightmap blend differs from a plain multiply.
-  Compare a screenshot of a real map against the engine before tuning. Needs a real
+  Compare a screenshot of a real map against the engine before tuning. Warped and
+  translucent faces draw as their texture; ref_gl draws min(texture * gl_intensity, 255)
+  * inverse_intensity, which caps every channel at 127 at the default intensity 2. Needs a real
   map and the engine running to compare against; the sandbox has neither.
