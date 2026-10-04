@@ -223,7 +223,7 @@ describe("PVS face selection", () => {
     const list = buildDrawList(mesh, mask);
     expect(list.visibleFaces).toBe(6);
     // Six quads, one texture.
-    expect(list.draws).toEqual([{ texture: mesh.textures.indexOf("quack/trim"), first: 0, count: 6 * 2 * 3 }]);
+    expect(list.draws).toEqual([{ texture: mesh.textures.indexOf("quack/trim"), flags: 0, first: 0, count: 6 * 2 * 3 }]);
   });
 });
 

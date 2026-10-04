@@ -47,8 +47,8 @@ export interface QuackDebug {
   readPixels(): { width: number; height: number; data: Uint8Array };
   /** Turn brush model culling on (the default) or off. */
   setCull(on: boolean): void;
-  /** Hold the light style clock at `ms` since the map loaded, or let it run again (undefined). */
-  setLightTime(ms: number | undefined): void;
+  /** Hold the level clock (light styles, warps) at `ms` since the map loaded, or let it run again (undefined). */
+  setLevelTime(ms: number | undefined): void;
   /** Faces whose lightmap the last frame uploaded because a light style changed. */
   lightmapUploads: number;
 }
@@ -86,10 +86,12 @@ async function main(): Promise<void> {
     project: () => undefined,
     readPixels: () => ({ width: 0, height: 0, data: new Uint8Array(0) }),
     setCull: () => {},
-    setLightTime: () => {},
+    setLevelTime: () => {},
     lightmapUploads: 0,
   });
-  const gl = canvas.getContext("webgl2", { antialias: false });
+  // An opaque drawing buffer: fragment alpha (texture alpha, the alpha pass's blend)
+  // must not let the page show through, as the engine's window never does.
+  const gl = canvas.getContext("webgl2", { antialias: false, alpha: false });
   if (!gl) return showError("WebGL2 is not available in this browser.");
 
   const params = new URLSearchParams(location.search);
@@ -154,9 +156,9 @@ async function main(): Promise<void> {
   debug.brushModels = brush.instances.map(
     (b) => `${b.classname} *${b.model} at ${b.origin.join(" ")}${b.angles.some((a) => a !== 0) ? ` angles ${b.angles.join(" ")}` : ""}`,
   );
-  // Light styles animate on level time, which starts with the map here.
-  const lightStart = performance.now();
-  let lightTime: number | undefined;
+  // Light styles and warps animate on level time, which starts with the map here.
+  const levelStart = performance.now();
+  let levelTime: number | undefined;
   const styleValues = lightStyleValues(DEATHMATCH_LIGHTSTYLES, 0);
   const renderer = new WorldRenderer(gl, bsp, noTextures, brush.instances, styleValues);
   debug.missingTextures = renderer.missingTextures;
@@ -221,8 +223,10 @@ async function main(): Promise<void> {
   };
   const draw = () => {
     resize();
-    lightStyleValues(DEATHMATCH_LIGHTSTYLES, lightTime ?? performance.now() - lightStart, styleValues);
+    const time = levelTime ?? performance.now() - levelStart;
+    lightStyleValues(DEATHMATCH_LIGHTSTYLES, time, styleValues);
     debug.lightmapUploads = renderer.setLightStyles(styleValues);
+    renderer.setTime(time);
     debug.stats = renderer.render(camera, canvas.width, canvas.height);
     debug.frames++;
   };
@@ -240,8 +244,8 @@ async function main(): Promise<void> {
   debug.setCull = (on) => {
     renderer.cull = on;
   };
-  debug.setLightTime = (ms) => {
-    lightTime = ms;
+  debug.setLevelTime = (ms) => {
+    levelTime = ms;
   };
   debug.readPixels = () => {
     draw();

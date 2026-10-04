@@ -9,6 +9,8 @@
 // game data (a pak and a deflated zip built here, never id data) and checks the textures
 // arrive, and that ?map= finds a BSP packed into a mounted pak. A copy of the map with
 // every face on an animated light style checks lightmaps are uploaded as styles change.
+// Copies with surface flags set check warps move with level time and draw unlit, and
+// translucent faces blend with what is behind them at their alpha.
 // Usage: node scripts/smoke-render.mjs [outdir]   (default packages/client/dist/smoke)
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
@@ -65,6 +67,28 @@ const FIXTURE_FACES = fixtureBsp.readInt32LE(12 + 6 * 8) / 20;
   const ofs = fixtureBsp.readInt32LE(8 + 6 * 8);
   for (let f = 0; f < FIXTURE_FACES; f++) styled[ofs + f * 20 + 12] = 2;
   SYNTHETIC["/data/styled.bsp"] = styled;
+}
+/** A copy of `bsp` with `flags` set on every texinfo (lump 5, 76 bytes each, flags at 32, name at 40) of the named texture. */
+const withTextureFlags = (bsp, texture, flags) => {
+  const out = Uint8Array.from(bsp);
+  const view = Buffer.from(out.buffer);
+  const ofs = view.readInt32LE(8 + 5 * 8);
+  let n = 0;
+  for (let o = ofs; o < ofs + view.readInt32LE(12 + 5 * 8); o += 76) {
+    if (view.toString("latin1", o + 40, o + 72).replace(/\0.*$/s, "") !== texture) continue;
+    view.writeInt32LE(view.readInt32LE(o + 32) | flags, o + 32);
+    n++;
+  }
+  if (n === 0) throw new Error(`fixture has no texinfo for ${texture}`);
+  return out;
+};
+const SURF_WARP = 0x8, SURF_TRANS33 = 0x10, SURF_TRANS66 = 0x20;
+SYNTHETIC["/data/warp.bsp"] = withTextureFlags(fixtureBsp, "quack/floor", SURF_WARP);
+// Every trim face translucent, the func_wall's included; the moved copies take the
+// func_wall away from its compiled spot to show what is behind it there.
+for (const [name, flags] of [["trans33", SURF_TRANS33], ["trans66", SURF_TRANS66]]) {
+  SYNTHETIC[`/data/${name}.bsp`] = withTextureFlags(fixtureBsp, "quack/trim", flags);
+  SYNTHETIC[`/data/${name}-moved.bsp`] = withTextureFlags(SYNTHETIC["/data/moved.bsp"], "quack/trim", flags);
 }
 // The moved map packed at a path the server does not have, so only the pak can supply it.
 SYNTHETIC["/data/maps.pak"] = writePak({
@@ -135,13 +159,14 @@ try {
     const r = await page.evaluate((view) => {
       window.quack.setView(view);
       const { width, height, data } = window.quack.readPixels();
-      let clear = 0;
+      let clear = 0, seeThrough = 0;
       const colors = new Set();
       for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] !== 255) seeThrough++;
         if (data[i] === 64 && data[i + 1] === 0 && data[i + 2] === 64) clear++;
         colors.add((data[i] << 16) | (data[i + 1] << 8) | data[i + 2]);
       }
-      return { ...window.quack.stats, worldFaces: window.quack.worldFaces, clearFraction: clear / (width * height), colors: colors.size };
+      return { ...window.quack.stats, worldFaces: window.quack.worldFaces, clearFraction: clear / (width * height), colors: colors.size, seeThrough };
     }, view);
     await page.screenshot({ path: join(outDir, `${name}.png`) });
     console.log(`  ${name}: ${JSON.stringify(r)}`);
@@ -340,7 +365,7 @@ try {
   const lightFrame = (ms) =>
     page.evaluate((ms) => {
       window.quack.setView({ origin: [-448, 0, 46], pitch: 0, yaw: 0 });
-      window.quack.setLightTime(ms);
+      window.quack.setLevelTime(ms);
       const { data } = window.quack.readPixels();
       const uploads = window.quack.lightmapUploads;
       // A second frame at the same time uploads nothing.
@@ -374,6 +399,69 @@ try {
     doubled.uploads === FIXTURE_FACES && back.uploads === FIXTURE_FACES && doubled.again === 0 && back.again === 0,
     `a style change uploads every face on it once (${FIXTURE_FACES}), an unchanged frame none`,
   );
+
+  // Warps: the floor moves with level time and has no lightmap, so the pillar's shadow
+  // is gone. The unwarped map does not change with time (style 0 is constant).
+  const timeFrames = (map) =>
+    page.evaluate(async (map) => {
+      const frame = (ms) => {
+        window.quack.setView({ origin: [-448, 0, 46], pitch: 0, yaw: 0 });
+        window.quack.setLevelTime(ms);
+        return window.quack.readPixels().data;
+      };
+      const diff = (a, b) => {
+        let n = 0;
+        for (let i = 0; i < a.length; i += 4) if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) n++;
+        return n / (a.length / 4);
+      };
+      const t0 = frame(0), again = frame(0), t1 = frame(1000);
+      return { map, moved: diff(t0, t1), repeat: diff(t0, again), stats: window.quack.stats };
+    }, map);
+  await page.goto(`${ORIGIN}/`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const still = await timeFrames("fixture");
+  await page.goto(`${ORIGIN}/?map=data/warp.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const warped = await timeFrames("warp");
+  await page.evaluate(() => window.quack.setLevelTime(0));
+  await shoot("warp", { origin: [-448, 0, 46], pitch: 0, yaw: 0 });
+  const transView = await page.goto(`${ORIGIN}/?map=data/trans33.bsp`).then(() =>
+    page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 }),
+  ).then(() => shoot("trans33", WALL_VIEWS[0].view));
+  check(transView.alphaFaces > 0 && transView.seeThrough === 0, "the canvas stays opaque under the alpha pass (no pixel alpha below 255)");
+  await page.goto(`${ORIGIN}/?map=data/warp.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  await page.evaluate(() => window.quack.setLevelTime(0));
+  const [warpShadowRgb, warpLitRgb] = await floorBoxes([[-312, 0], [-256, -112]]);
+  const warpFloor = { shadow: brightness(warpShadowRgb), lit: brightness(warpLitRgb) };
+  console.log(`  warp: ${JSON.stringify({ still, warped, warpFloor })}`);
+  check(still.moved === 0 && still.repeat === 0, "without warps, level time changes no pixel");
+  check(warped.repeat === 0 && warped.moved > 0.05, `warped floor moves with level time (${(warped.moved * 100).toFixed(1)}% of pixels)`);
+  check(warpFloor.lit < 1.5 * warpFloor.shadow, "warped floor has no lightmap: no shadow under the pillar");
+
+  // Translucent faces: the func_wall's box, with and without the wall, at alpha 0.33 and
+  // 0.66. Solving P = a A + (1 - a) B for the wall's own colour A must give the same A
+  // at both alphas, and A is the unlit texture, at least as bright as the lit wall.
+  const transBox = async (map) => {
+    await page.goto(`${ORIGIN}/?map=data/${map}.bsp`);
+    await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+    const [r] = await wallBoxes(map, WALL_VIEWS.slice(0, 1));
+    return r;
+  };
+  const mean = (box) => box.reduce((a, v) => a + v, 0) / box.length;
+  const trans = {};
+  for (const map of ["trans33", "trans33-moved", "trans66", "trans66-moved"]) trans[map] = await transBox(map);
+  const wallColor = (a, map) => (mean(trans[map].box) - (1 - a) * mean(trans[`${map}-moved`].box)) / a;
+  const a33 = wallColor(0.33, "trans33"), a66 = wallColor(0.66, "trans66");
+  const behind = mean(trans["trans33-moved"].box), opaque = mean(compiled[0].box);
+  console.log(
+    `  translucent: mean box ${["trans33", "trans66"].map((m) => mean(trans[m].box).toFixed(1))}, behind ${behind.toFixed(1)}, opaque lit ${opaque.toFixed(1)}, wall colour at 0.33 ${a33.toFixed(1)} at 0.66 ${a66.toFixed(1)}, stats ${JSON.stringify(trans.trans33.stats)}`,
+  );
+  check(trans.trans33.stats.alphaFaces > 0 && trans.trans33.stats.brushModels === 1, "translucent faces go through the alpha pass");
+  // Measured 0.4 apart (2026-10-04). Behind the wall is dark (mean 3.1), so a blend that
+  // dropped the destination would still land only about 4.7 apart: the bound is 1.5.
+  check(Math.abs(a33 - a66) < 1.5, "translucent faces blend at 0.33 and 0.66 alpha over what is behind them");
+  check(a33 >= opaque - 1, "translucent faces draw unlit");
 
   // Game data: ?pak= mounts in order; 404s are reported, in URL order, and skipped.
   await page.goto(`${ORIGIN}/?pak=data/absent-1.pak&pak=data/synthetic.pak&pak=data/absent-2.pak&pak=data/synthetic.zip`);
