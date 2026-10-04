@@ -38,6 +38,7 @@ import {
   buildOrderedDraws,
   buildWorldMesh,
   modelFaceMask,
+  viewClusters,
   visibleFaceMask,
   walkWorld,
   worldVis,
@@ -135,9 +136,12 @@ export interface View {
 }
 
 export interface FrameStats {
+  /** The eye's leaf, as ref_gl's Mod_PointInLeaf finds it (renderLeaf). */
   readonly leaf: number;
   readonly cluster: number;
-  /** The eye leaf's area; 0 in solid or outside the map. */
+  /** The second view cluster R_MarkLeaves merges (viewClusters); `cluster` when there is none. */
+  readonly cluster2: number;
+  /** The area of the eye's leaf as the server finds it (pointLeaf); 0 in solid or outside the map. */
   readonly area: number;
   /** World faces in the PVS and in areas connected to the eye's; brush model faces are not counted. */
   readonly visibleFaces: number;
@@ -218,6 +222,7 @@ export class WorldRenderer {
   /** View-projection of the last rendered frame. */
   viewProj: Float32Array = new Float32Array(16);
   private cluster = Number.NaN;
+  private cluster2 = Number.NaN;
   /** Area of the eye the world draw list was built for, -1 with noAreas. */
   private area = Number.NaN;
   /** Flood number per area (floodAreas) for the portals open at spawn. */
@@ -401,19 +406,22 @@ export class WorldRenderer {
 
   render(view: View, width: number, height: number): FrameStats {
     const { gl, bsp } = this;
-    const leaf = pointLeaf(bsp, view.origin[0], view.origin[1], view.origin[2]);
-    const cluster = bsp.leafs.cluster[leaf] ?? -1;
+    const { leaf, cluster, cluster2 } = viewClusters(bsp, view.origin);
+    // The server finds the client's area, and the fat PVS for brush models, with
+    // CM_PointLeafnum, which can pick the other leaf of a plane the eye is on.
+    const serverLeaf = pointLeaf(bsp, view.origin[0], view.origin[1], view.origin[2]);
     // A leaf area outside the areas lump (a corrupt map) counts as area 0, so the map still draws.
-    const leafArea = bsp.leafs.area[leaf] ?? 0;
+    const leafArea = bsp.leafs.area[serverLeaf] ?? 0;
     const area = leafArea > 0 && leafArea < this.flood.length ? leafArea : 0;
     // The world's area bits depend on the eye's area alone: portals do not change yet.
     const worldArea = this.noAreas ? -1 : area;
-    if (cluster !== this.cluster || worldArea !== this.area) {
+    if (cluster !== this.cluster || cluster2 !== this.cluster2 || worldArea !== this.area) {
       this.cluster = cluster;
+      this.cluster2 = cluster2;
       this.area = worldArea;
       const bits = worldArea > 0 ? areaBits(this.flood, worldArea) : undefined;
-      this.vis = worldVis(bsp, cluster, bits);
-      const mask = visibleFaceMask(bsp, this.mesh, cluster, bits);
+      this.vis = worldVis(bsp, cluster, bits, cluster2);
+      const mask = visibleFaceMask(bsp, this.mesh, cluster, bits, cluster2);
       this.visibleFaces = mask.reduce((n, m, f) => (m && this.mesh.faceTexture[f]! >= 0 ? n + 1 : n), 0);
     }
     const aspect = width / height;
@@ -427,7 +435,7 @@ export class WorldRenderer {
     const rebuild = world.update(faces);
     // Farthest a near-plane point lies from the eye on any axis is at most its corner distance.
     const nearCorner = NEAR * Math.hypot(1, Math.tan((FOV_X * Math.PI) / 360), Math.tan((fy * Math.PI) / 360));
-    const fat = fatClusters(bsp, view.origin, cluster, Math.max(8, nearCorner));
+    const fat = fatClusters(bsp, view.origin, bsp.leafs.cluster[serverLeaf] ?? -1, Math.max(8, nearCorner));
     const fatKey = fat?.join(",");
     if (fatKey !== this.fatKey) {
       this.fatKey = fatKey;
@@ -529,6 +537,7 @@ export class WorldRenderer {
     return {
       leaf,
       cluster,
+      cluster2,
       area,
       visibleFaces: this.visibleFaces,
       drawnFaces: faces.length,

@@ -104,8 +104,10 @@ export function boxClusters(bsp: Bsp, box: Box): number[] {
  * visible point of a ray a few units past the eye, possibly through a thin wall into a
  * cluster the eye's own one cannot see; a box reaching past the near plane's corners
  * covers that.
- * Returns the clusters, ascending, for `pvsUnion`; undefined when the eye is in no
- * cluster with a PVS row: the world then draws every face, and every model passes.
+ * `eyeCluster` is the server's (pointLeaf). Returns the clusters, ascending, for
+ * `pvsUnion`; undefined when the eye is in no cluster with a PVS row: every model then
+ * passes. The world's view cluster comes from renderLeaf, which can differ for an eye
+ * on a node's plane in float.
  */
 export function fatClusters(bsp: Bsp, eye: Vec3, eyeCluster: number, half: number): number[] | undefined {
   const n = bsp.visibility.numClusters;

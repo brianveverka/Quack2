@@ -193,9 +193,10 @@ export interface DrawList {
  * engine's novis path does. With `areaBits` (areaBits in @quack2/sim), a leaf whose
  * area bit is clear adds no faces, as R_RecursiveWorldNode skips leafs behind a closed
  * area portal, on the novis path too (every non-solid leaf then counts as in the PVS).
- * Pass none for an eye in area 0, whose bits are all set.
+ * Pass none for an eye in area 0, whose bits are all set. `cluster2` is the second view
+ * cluster (viewClusters); its PVS row is ORed in as R_MarkLeaves does.
  */
-export function visibleFaceMask(bsp: Bsp, mesh: WorldMesh, cluster: number, areaBits?: Uint8Array): Uint8Array {
+export function visibleFaceMask(bsp: Bsp, mesh: WorldMesh, cluster: number, areaBits?: Uint8Array, cluster2 = cluster): Uint8Array {
   const mask = new Uint8Array(bsp.faces.count);
   const end = mesh.firstFace + mesh.numFaces;
   // A leaf cluster past the vis data (a corrupt map that warns but still draws) has no
@@ -205,7 +206,7 @@ export function visibleFaceMask(bsp: Bsp, mesh: WorldMesh, cluster: number, area
     mask.fill(1, mesh.firstFace, end);
     return mask;
   }
-  const pvs = novis ? undefined : clusterPvs(bsp, cluster);
+  const pvs = novis ? undefined : markPvs(bsp, cluster, cluster2);
   const { leafs, leafFaces } = bsp;
   for (let l = 0; l < leafs.count; l++) {
     if (pvs) {
@@ -326,8 +327,74 @@ export interface WorldVis {
   readonly leafs: Uint8Array;
 }
 
-/** R_MarkLeaves' marks for an eye in `cluster`, with the area test on leafs (WorldVis). */
-export function worldVis(bsp: Bsp, cluster: number, areaBits?: Uint8Array): WorldVis {
+/**
+ * The leaf ref_gl's Mod_PointInLeaf finds for a point: from node 0, in float, a point on
+ * a node's plane goes to the back child. CM_PointLeafnum (pointLeaf in @quack2/sim), which
+ * the server and so the area bits use, sends it to the front. Each operation rounds to
+ * float, as an SSE build does; an x87 build keeps more precision until `d` is stored.
+ */
+export function renderLeaf(bsp: Bsp, p: readonly [number, number, number]): number {
+  const { nodes, planes } = bsp;
+  const f = Math.fround;
+  const x = f(p[0]), y = f(p[1]), z = f(p[2]);
+  let num = 0;
+  // A corrupt map whose children loop ends in leaf 0, the solid leaf outside the map.
+  for (let steps = 0; steps <= nodes.count; steps++) {
+    const pl = nodes.planeNum[num];
+    if (pl === undefined) return 0;
+    const n = planes.normal;
+    const d = f(f(f(f(x * n[pl * 3]!) + f(y * n[pl * 3 + 1]!)) + f(z * n[pl * 3 + 2]!)) - planes.dist[pl]!);
+    num = nodes.children[num * 2 + (d > 0 ? 0 : 1)]!;
+    if (num < 0) return -1 - num;
+  }
+  return 0;
+}
+
+/** The eye's leaf and R_SetupFrame's two view clusters (viewClusters). */
+export interface ViewClusters {
+  readonly leaf: number;
+  /** r_viewcluster: the eye leaf's cluster. */
+  readonly cluster: number;
+  /** r_viewcluster2: the cluster 16 units below or above, else `cluster`. */
+  readonly cluster2: number;
+}
+
+/**
+ * R_SetupFrame's view clusters, so a view crossing a water surface that vis treats as
+ * solid does not draw wrong. From an empty leaf (contents 0) it looks 16 units down,
+ * from any other 16 up; that leaf's cluster becomes the second unless the leaf is solid.
+ */
+export function viewClusters(bsp: Bsp, eye: readonly [number, number, number]): ViewClusters {
+  const { leafs } = bsp;
+  const leaf = renderLeaf(bsp, eye);
+  const cluster = leafs.cluster[leaf] ?? -1;
+  // temp[2] is a float.
+  const z = Math.fround(Math.fround(eye[2]) + (leafs.contents[leaf] === 0 ? -16 : 16));
+  const other = renderLeaf(bsp, [eye[0], eye[1], z]);
+  const cluster2 = ((leafs.contents[other] ?? CONTENTS_SOLID) & CONTENTS_SOLID) === 0 ? (leafs.cluster[other] ?? -1) : cluster;
+  return { leaf, cluster, cluster2 };
+}
+
+/**
+ * The PVS row R_MarkLeaves marks from: `cluster`'s, ORed with `cluster2`'s when they
+ * differ. Mod_ClusterPVS gives cluster -1 its all-set mod_novis row; a cluster past the
+ * vis data (a corrupt map) gets the same. `cluster` must have a row.
+ */
+function markPvs(bsp: Bsp, cluster: number, cluster2: number): Uint8Array {
+  const pvs = clusterPvs(bsp, cluster);
+  if (cluster2 === cluster) return pvs;
+  if (cluster2 < 0 || cluster2 >= bsp.visibility.numClusters) return pvs.fill(0xff);
+  const row = clusterPvs(bsp, cluster2);
+  for (let i = 0; i < pvs.length; i++) pvs[i]! |= row[i]!;
+  return pvs;
+}
+
+/**
+ * R_MarkLeaves' marks for an eye in `cluster`, with the area test on leafs (WorldVis).
+ * `cluster2` is the second view cluster (viewClusters), whose PVS row is ORed in; it
+ * plays no part when `cluster` has no row.
+ */
+export function worldVis(bsp: Bsp, cluster: number, areaBits?: Uint8Array, cluster2 = cluster): WorldVis {
   const { nodes, leafs } = bsp;
   const nodeVis = new Uint8Array(nodes.count);
   const leafVis = new Uint8Array(leafs.count);
@@ -347,7 +414,7 @@ export function worldVis(bsp: Bsp, cluster: number, areaBits?: Uint8Array): Worl
         } else if (-1 - c < leafs.count && leafParent[-1 - c] === -1) leafParent[-1 - c] = n;
       }
     }
-    const pvs = clusterPvs(bsp, cluster);
+    const pvs = markPvs(bsp, cluster, cluster2);
     for (let l = 0; l < leafs.count; l++) {
       const c = leafs.cluster[l]!;
       if (c < 0 || !(pvs[c >> 3]! & (1 << (c & 7)))) continue;

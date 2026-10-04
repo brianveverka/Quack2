@@ -274,6 +274,18 @@ try {
   );
   check(east.clearFraction === 0, "east view has no background pixels");
 
+  // R_SetupFrame's second view cluster: from an empty leaf the eye looks 16 units down, so
+  // just above the leaf split at z 128 west of the pillars cluster 3 is joined by 6.
+  const split = await page.evaluate(() => {
+    window.quack.setView({ origin: [-496, -16, 136], pitch: 0, yaw: 0 });
+    window.quack.readPixels();
+    return window.quack.stats;
+  });
+  check(
+    split.cluster === 3 && split.cluster2 === 6 && spawn.cluster2 === spawn.cluster,
+    `the cluster 16 units below the eye joins its own (${split.cluster} and ${split.cluster2}; spawn ${spawn.cluster} alone)`,
+  );
+
   // Outside the map: cluster -1 draws every face, and the void shows the background.
   const outside = await shoot("outside", { origin: [1200, 0, 400], pitch: 20, yaw: 180 });
   check(outside.cluster === -1 && outside.visibleFaces === outside.worldFaces, "outside the map, every world face is in the PVS");

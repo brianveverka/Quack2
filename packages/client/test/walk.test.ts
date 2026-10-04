@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// The world walk (walkWorld) against R_MarkLeaves, R_SetFrustum, R_CullBox and
-// R_RecursiveWorldNode written as the C does, and WorldDraws' per-frame index rebuild.
+// The world walk (walkWorld) against R_SetupFrame's view clusters, R_MarkLeaves,
+// R_SetFrustum, R_CullBox and R_RecursiveWorldNode written as the C does, and
+// WorldDraws' per-frame index rebuild.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { CONTENTS_SOLID, SURF_SKY, SURF_TRANS33, SURF_TRANS66, areaBits, clusterPvs, parseBsp, pointLeaf, type Bsp } from "@quack2/sim";
+import { CONTENTS_SOLID, CONTENTS_WATER, SURF_SKY, SURF_TRANS33, SURF_TRANS66, areaBits, clusterPvs, parseBsp, pointLeaf, type Bsp } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
 import { closedFlood, withEastArea } from "./areas-fixture.js";
 import { frustumPlanes } from "../src/cull.js";
 import { buildLightmapAtlas } from "../src/lightmap.js";
 import { angleVectors, fovY, multiply, perspective, viewMatrix } from "../src/math.js";
-import { WorldDraws, buildDrawList, buildWorldMesh, eyePlaneSide, visibleFaceMask, walkWorld, worldVis, type WorldMesh } from "../src/world.js";
+import { WorldDraws, buildDrawList, buildWorldMesh, eyePlaneSide, renderLeaf, viewClusters, visibleFaceMask, walkWorld, worldVis, type WorldMesh } from "../src/world.js";
 
 const fixture = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
 const mesh = buildWorldMesh(fixture, buildLightmapAtlas(fixture));
@@ -57,8 +58,34 @@ function cullBox(frustum: { normal: Vec3; dist: number }[], mins: Float32Array, 
   });
 }
 
+/** Mod_PointInLeaf as the C writes it: float DotProduct less dist, front only when > 0. */
+function modPointInLeaf(bsp: Bsp, p: Vec3): number {
+  const f = Math.fround;
+  const n = bsp.planes.normal;
+  let node = 0;
+  for (;;) {
+    if (node < 0) return -1 - node;
+    const pl = bsp.nodes.planeNum[node]!;
+    const d = f(f(f(f(f(p[0]) * n[pl * 3]!) + f(f(p[1]) * n[pl * 3 + 1]!)) + f(f(p[2]) * n[pl * 3 + 2]!)) - bsp.planes.dist[pl]!);
+    node = bsp.nodes.children[node * 2 + (d > 0 ? 0 : 1)]!;
+  }
+}
+
+/** R_SetupFrame's r_viewcluster and r_viewcluster2. */
+function setupFrame(bsp: Bsp, origin: Vec3): [number, number] {
+  let leaf = modPointInLeaf(bsp, origin);
+  const viewcluster = bsp.leafs.cluster[leaf]!;
+  let viewcluster2 = viewcluster;
+  const temp: [number, number, number] = [origin[0], origin[1], Math.fround(origin[2])];
+  if (!bsp.leafs.contents[leaf]) temp[2] = Math.fround(temp[2] - 16); // look down a bit
+  else temp[2] = Math.fround(temp[2] + 16); // look up a bit
+  leaf = modPointInLeaf(bsp, temp);
+  if (!(bsp.leafs.contents[leaf]! & CONTENTS_SOLID) && bsp.leafs.cluster[leaf] !== viewcluster2) viewcluster2 = bsp.leafs.cluster[leaf]!;
+  return [viewcluster, viewcluster2];
+}
+
 /** R_MarkLeaves, then R_RecursiveWorldNode from node 0 as the C writes them, recursive. */
-function reference(bsp: Bsp, view: View | undefined, eye: Vec3, cluster: number, bits?: Uint8Array): number[] {
+function reference(bsp: Bsp, view: View | undefined, eye: Vec3, cluster: number, bits?: Uint8Array, cluster2 = cluster): number[] {
   const { nodes, leafs } = bsp;
   const nodeVis = new Uint8Array(nodes.count);
   const leafVis = new Uint8Array(leafs.count);
@@ -68,7 +95,15 @@ function reference(bsp: Bsp, view: View | undefined, eye: Vec3, cluster: number,
   } else {
     const parent = new Map<number, number>(); // child (node n, or leaf as -1 - l) -> parent node
     for (let n = 0; n < nodes.count; n++) for (let s = 0; s < 2; s++) parent.set(nodes.children[n * 2 + s]!, n);
-    const pvs = clusterPvs(bsp, cluster);
+    let pvs = clusterPvs(bsp, cluster);
+    // may have to combine two clusters because of solid water boundaries
+    if (cluster2 !== cluster) {
+      const fatvis = Uint8Array.from(pvs);
+      // Mod_ClusterPVS(-1) is mod_novis, all set.
+      pvs = cluster2 === -1 ? new Uint8Array(fatvis.length).fill(0xff) : clusterPvs(bsp, cluster2);
+      for (let i = 0; i < fatvis.length; i++) fatvis[i]! |= pvs[i]!;
+      pvs = fatvis;
+    }
     for (let l = 0; l < leafs.count; l++) {
       const c = leafs.cluster[l]!;
       if (c === -1 || !(pvs[c >> 3]! & (1 << (c & 7)))) continue;
@@ -211,6 +246,102 @@ describe("walkWorld", () => {
     const looped = { ...fixture, nodes: { ...fixture.nodes, children } };
     expect(() => walkWorld(looped, mesh, worldVis(looped, -1), [0, 0, 64])).not.toThrow();
     expect(() => worldVis(looped, 0)).not.toThrow();
+  });
+});
+
+/** The fixture with the leafs at `points` given `contents`. */
+function withContents(bsp: Bsp, contents: number, ...points: Vec3[]): Bsp {
+  const c = Int32Array.from(bsp.leafs.contents);
+  for (const p of points) c[renderLeaf(bsp, p)] = contents;
+  return { ...bsp, leafs: { ...bsp.leafs, contents: c } };
+}
+
+describe("viewClusters", () => {
+  // The fixture's leafs split at z 128 here: cluster 3 above, 6 below.
+  const above: Vec3 = [-496, -16, 136];
+  const below: Vec3 = [-496, -16, 120];
+
+  it("matches R_SetupFrame over the map, plane ties and water leafs included", () => {
+    const water = withContents(fixture, CONTENTS_WATER, below, [304, -16, 120], [0, 0, 64]);
+    let differ = 0;
+    for (const bsp of [fixture, water]) {
+      for (let x = -544; x <= 544; x += 16) {
+        for (let y = -288; y <= 288; y += 32) {
+          for (let z = -32; z <= 288; z += 8) {
+            const v = viewClusters(bsp, [x, y, z]);
+            expect([v.cluster, v.cluster2]).toEqual(setupFrame(bsp, [x, y, z]));
+            expect(v.leaf).toBe(modPointInLeaf(bsp, [x, y, z]));
+            if (v.cluster2 !== v.cluster) differ++;
+          }
+        }
+      }
+    }
+    expect(differ).toBeGreaterThan(0);
+  });
+
+  it("looks 16 units down from an empty leaf and up from any other", () => {
+    expect(viewClusters(fixture, above)).toMatchObject({ cluster: 3, cluster2: 6 });
+    // Empty, so it looks down and stays in cluster 6.
+    expect(viewClusters(fixture, below)).toMatchObject({ cluster: 6, cluster2: 6 });
+    expect(viewClusters(withContents(fixture, CONTENTS_WATER, below), below)).toMatchObject({ cluster: 6, cluster2: 3 });
+    // Water above looks up, out of the cluster below.
+    expect(viewClusters(withContents(fixture, CONTENTS_WATER, above), above)).toMatchObject({ cluster: 3, cluster2: 3 });
+  });
+
+  it("ignores a solid leaf", () => {
+    expect(viewClusters(withContents(fixture, CONTENTS_SOLID | CONTENTS_WATER, below), above)).toMatchObject({ cluster: 3, cluster2: 3 });
+  });
+
+  it("puts a point on a plane in the back leaf, as Mod_PointInLeaf does", () => {
+    const on: Vec3 = [-496, -16, 128];
+    expect(renderLeaf(fixture, on)).toBe(renderLeaf(fixture, below));
+    expect(pointLeaf(fixture, on[0], on[1], on[2])).toBe(renderLeaf(fixture, above));
+    // In float, 128 + 1e-6 is on the plane.
+    expect(renderLeaf(fixture, [-496, -16, 128 + 1e-6])).toBe(renderLeaf(fixture, below));
+    expect(renderLeaf(fixture, [-496, -16, 128 + 2e-5])).toBe(renderLeaf(fixture, above));
+  });
+
+  it("walks from node 0, as Mod_PointInLeaf starts at model->nodes", () => {
+    // A head node whose subtree puts the point in another leaf.
+    const head = [...Array(fixture.nodes.count).keys()].find((n) => pointLeaf(fixture, above[0], above[1], above[2], n) !== renderLeaf(fixture, above))!;
+    expect(head).toBeGreaterThan(0);
+    const moved = { ...fixture, models: { ...fixture.models, headNode: Int32Array.from(fixture.models.headNode, () => head) } };
+    expect(renderLeaf(moved, above)).toBe(renderLeaf(fixture, above));
+  });
+
+  it("marks both clusters' PVS for R_RecursiveWorldNode, as R_MarkLeaves ORs the rows", () => {
+    // Clusters 4, 5 and 6 of the fixture do not see each other.
+    const one = worldVis(fixture, 6);
+    const both = worldVis(fixture, 6, undefined, 4);
+    const four = worldVis(fixture, 4);
+    for (let l = 0; l < fixture.leafs.count; l++) expect(both.leafs[l]).toBe(one.leafs[l]! | four.leafs[l]!);
+    expect(both.leafs.reduce((a, m) => a + m, 0)).toBeGreaterThan(one.leafs.reduce((a, m) => a + m, 0));
+    for (const view of VIEWS) {
+      for (const [c, c2] of [[6, 4], [4, 6], [3, 6], [6, -1], [-1, 6]] as const) {
+        const faces = walkWorld(fixture, mesh, worldVis(fixture, c, undefined, c2), view.origin, sidePlanes(view));
+        expect(faces).toEqual(reference(fixture, view, view.origin, c, undefined, c2));
+      }
+    }
+    const split = withEastArea(fixture);
+    const bits = areaBits(closedFlood(split), 1);
+    const eye: Vec3 = [-256, -128, 128];
+    expect(walkWorld(split, mesh, worldVis(split, 3, bits, 4), eye)).toEqual(reference(split, undefined, eye, 3, bits, 4));
+  });
+
+  it("a second cluster of -1 sees every leaf with a cluster, as mod_novis does", () => {
+    const vis = worldVis(fixture, 6, undefined, -1);
+    for (let l = 0; l < fixture.leafs.count; l++) {
+      expect(vis.leafs[l]).toBe(fixture.leafs.cluster[l]! >= 0 && fixture.leafs.contents[l] !== CONTENTS_SOLID ? 1 : 0);
+    }
+  });
+
+  it("visibleFaceMask counts both clusters' faces", () => {
+    const both = visibleFaceMask(fixture, mesh, 6, undefined, 4);
+    const one = visibleFaceMask(fixture, mesh, 6);
+    const four = visibleFaceMask(fixture, mesh, 4);
+    expect(Array.from(both)).toEqual(Array.from(one, (m, f) => m | four[f]!));
+    expect(both.reduce((a, m) => a + m, 0)).toBeGreaterThan(one.reduce((a, m) => a + m, 0));
+    expect(visibleFaceMask(fixture, mesh, 6, undefined, -1).reduce((a, m) => a + m, 0)).toBe(WORLD_FACES);
   });
 });
 
