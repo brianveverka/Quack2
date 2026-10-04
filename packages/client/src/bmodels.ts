@@ -863,17 +863,23 @@ function pickTarget(s: Settle, name: string | undefined): number | undefined {
   return undefined;
 }
 
-/** An entity as train_next reads it when a train's "target" names it (`pickTarget`). */
+/**
+ * An entity as train_next reads it when a train's "target" names it (`pickTarget`): its
+ * live s.origin and target when it is a train, else its spawn ones (no other entity it
+ * may name moves or steps its target in the settle frames; after them a door's or plat's
+ * is not followed).
+ */
 function pathCorner(s: Settle, name: string): PathCorner | undefined {
   const t = pickTarget(s, name);
   if (t === undefined) return undefined;
   const ent = s.entities[t]!;
+  const train = s.trains.get(t);
   // ED_ParseField reads origin and "wait" with sscanf and atof into floats.
-  const origin = entityVec3(ent, "origin") ?? [0, 0, 0];
+  const origin = train ? train.origin : (entityVec3(ent, "origin") ?? [0, 0, 0]);
   return {
     entity: t,
     origin: [f32(origin[0]), f32(origin[1]), f32(origin[2])],
-    target: ent.target,
+    target: train ? train.train!.target : ent.target,
     wait: f32(atof(ent.wait ?? "0")),
     teleport: (atoi(ent.spawnflags ?? "0") & PATH_CORNER_TELEPORT) !== 0,
     pathtarget: ent.pathtarget,
@@ -1149,7 +1155,10 @@ function settleSpawnFrames(
   };
 }
 
-/** The area portals open after the settle frames (`settleSpawnFrames`). */
+/**
+ * The area portals open after the settle frames (`settleSpawnFrames`). Without `bsp`
+ * every train's mins are 0 0 0, which can change which corners lie at no distance.
+ */
 export function openAreaPortals(entities: readonly BspEntity[], bsp?: Bsp): Set<number> {
   return settleSpawnFrames(entities, bsp).portals;
 }

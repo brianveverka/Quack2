@@ -121,7 +121,9 @@ export interface BrushMover {
   /**
    * s.event is EV_OTHER_TELEPORT: train_next put it on a TELEPORT corner this frame, so
    * a client does not blend its pose from the frame before (CL_DeltaEntity). Cleared as
-   * its team's next frame starts (SV_PrepWorldFrame clears every event).
+   * its team's next frame starts (`stepPusher`); SV_PrepWorldFrame clears every event
+   * before any slot runs, so a teleport from a use in an earlier slot of the same frame
+   * is wiped here and kept in the game.
    */
   teleported: boolean;
   /** A func_train's fields; undefined for every other mover. */

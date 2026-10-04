@@ -679,6 +679,23 @@ describe("train movers", () => {
     expect(ids(TRAIN.replace('"model" "*1" ', ""))).toEqual([]);
   });
 
+  it("reads a train its target names as a corner by its live origin and target", () => {
+    // func_train_find left the second train on p (z 300 less mins) with its target
+    // stepped on to q; the first train's train_next heads there and takes q as its next.
+    const train = brushMovers(
+      bsp,
+      parseEntities(`
+        { "classname" "worldspawn" }
+        { "classname" "func_train" "model" "*1" "target" "a1" }
+        { "classname" "path_corner" "targetname" "a1" "target" "tb" }
+        { "classname" "func_train" "model" "*1" "targetname" "tb" "target" "p" }
+        { "classname" "path_corner" "targetname" "p" "origin" "0 0 300" "target" "q" }
+        { "classname" "path_corner" "targetname" "q" "origin" "0 0 600" }
+      `),
+    )[0]![0]!.mover;
+    expect([[...train.train!.targetEnt!.origin], train.train!.target, [...train.endOrigin]]).toEqual([[385, -127, 301], "q", [770, -254, 302]]);
+  });
+
   it("puts the train's mins on the corners in float, so corners its mins round together lie at no distance", () => {
     // 385.00001 rounds to 385 in float: with the fixture's mins the second corner is
     // where the train already is, so train_wait fires its pathtarget in the second frame.
