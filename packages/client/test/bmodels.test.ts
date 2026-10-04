@@ -116,4 +116,121 @@ describe("brush model instances", () => {
       expect(vis(hidden), hidden).toBe(false);
     }
   });
+
+  describe("spawn moves", () => {
+    // Fixture model 1 spans -384 128 0 to -320 192 48; setmodel spreads it a unit, so the
+    // entity's mins are -385 127 -1 and its size 66 66 50.
+    const place = (src: string) => {
+      const ents = parseEntities(src);
+      return brushModelInstances(bsp, ents).instances.map((b) => ({ origin: b.origin, angles: b.angles }));
+    };
+    const close = (got: readonly number[], want: readonly number[]) =>
+      want.forEach((w, k) => expect(got[k], `component ${k} of ${got.join(" ")}`).toBeCloseTo(w, 9));
+
+    it("lowers an untargeted func_plat by its height less lip, or by height", () => {
+      expect(place(`
+        { "classname" "func_plat" "model" "*1" "origin" "1 2 3" }
+        { "classname" "func_plat" "model" "*1" "lip" "0" }
+        { "classname" "func_plat" "model" "*1" "lip" "4" }
+        { "classname" "func_plat" "model" "*1" "height" "32" "lip" "4" }
+        { "classname" "func_plat" "model" "*1" "targetname" "" }
+        { "classname" "func_plat" "model" "*1" "angle" "90" }
+      `).map((b) => b.origin)).toEqual([
+        [1, 2, 3 - 42], // 50 - default lip 8
+        [0, 0, -42], // lip 0 means the default
+        [0, 0, -46],
+        [0, 0, -32],
+        [0, 0, 0], // targeted: starts at the top
+        [0, 0, -42],
+      ]);
+    });
+
+    it("opens a START_OPEN func_door or func_water along its move direction", () => {
+      const got = place(`
+        { "classname" "func_door" "model" "*1" "spawnflags" "1" "origin" "16 -32 8" }
+        { "classname" "func_door" "model" "*1" "spawnflags" "1" "angle" "90" }
+        { "classname" "func_door" "model" "*1" "spawnflags" "1" "angle" "-1" }
+        { "classname" "func_door" "model" "*1" "spawnflags" "1" "angles" "0 -2 0" "lip" "2" }
+        { "classname" "func_door" "model" "*1" "spawnflags" "1" "angle" "45" }
+        { "classname" "func_door" "model" "*1" "spawnflags" "1" "angle" "180" }
+        { "classname" "func_door" "model" "*1" "angle" "90" }
+        { "classname" "func_water" "model" "*1" "spawnflags" "1" "angle" "-1" }
+        { "classname" "func_water" "model" "*1" "spawnflags" "1" "angle" "-2" "lip" "10" }
+        { "classname" "func_water" "model" "*1" "angle" "-1" }
+      `);
+      const d45 = 66 * Math.SQRT1_2 * 2 - 8;
+      const want = [
+        [16 + 58, -32, 8], // yaw 0: size 66 less lip 8 along +X
+        [0, 58, 0],
+        [0, 0, 42], // -1 is up: 50 - 8
+        [0, 0, -48], // -2 is down
+        [d45 * Math.SQRT1_2, d45 * Math.SQRT1_2, 0], // |dir| . size - lip
+        [-58, 0, 0],
+        [0, 0, 0], // not START_OPEN
+        [0, 0, 50], // func_water has no default lip
+        [0, 0, -40],
+        [0, 0, 0],
+      ];
+      expect(got).toHaveLength(want.length);
+      got.forEach((b, i) => {
+        close(b.origin, want[i]!);
+        expect(b.angles).toEqual([0, 0, 0]);
+      });
+    });
+
+    it("turns a START_OPEN func_door_rotating to its open angles", () => {
+      expect(place(`
+        { "classname" "func_door_rotating" "model" "*1" "spawnflags" "1" "origin" "1 2 3" "angle" "30" }
+        { "classname" "func_door_rotating" "model" "*1" "spawnflags" "3" "distance" "45" }
+        { "classname" "func_door_rotating" "model" "*1" "spawnflags" "65" }
+        { "classname" "func_door_rotating" "model" "*1" "spawnflags" "129" "distance" "-30" }
+        { "classname" "func_door_rotating" "model" "*1" "spawnflags" "193" }
+        { "classname" "func_door_rotating" "model" "*1" "distance" "45" }
+      `)).toEqual([
+        { origin: [1, 2, 3], angles: [0, 90, 0] }, // default distance 90 about yaw; spawn angles cleared
+        { origin: [0, 0, 0], angles: [0, -45, 0] }, // REVERSE
+        { origin: [0, 0, 0], angles: [0, 0, 90] }, // X_AXIS turns roll
+        { origin: [0, 0, 0], angles: [-30, 0, 0] }, // Y_AXIS turns pitch
+        { origin: [0, 0, 0], angles: [0, 0, 90] }, // X_AXIS is tested first
+        { origin: [0, 0, 0], angles: [0, 0, 0] }, // not START_OPEN
+      ]);
+    });
+
+    it("moves a func_train's mins to the first entity its target names", () => {
+      expect(place(`
+        { "classname" "func_train" "model" "*1" "origin" "5 5 5" "target" "T1" }
+        { "classname" "path_corner" "targetname" "t1" "origin" "1 1 1" "spawnflags" "2048" }
+        { "classname" "path_corner" "targetname" "t1" "origin" "100 200 300" }
+        { "classname" "path_corner" "targetname" "T1" "origin" "9 9 9" }
+        { "classname" "func_train" "model" "*1" "origin" "5 5 5" "target" "nowhere" }
+        { "classname" "func_train" "model" "*1" "origin" "5 5 5" }
+      `).map((b) => b.origin)).toEqual([
+        [100 + 385, 200 - 127, 300 + 1], // NOT_DEATHMATCH corner is freed; case-insensitive match
+        [5, 5, 5], // target not found: stays
+        [5, 5, 5], // no target
+      ]);
+    });
+
+    it("jumps an untargeted or START_ON func_train on to a TELEPORT path_corner after its first", () => {
+      expect(place(`
+        { "classname" "func_train" "model" "*1" "target" "a" }
+        { "classname" "path_corner" "targetname" "a" "target" "b" "origin" "10 0 0" }
+        { "classname" "path_corner" "targetname" "b" "target" "c" "origin" "20 0 0" "spawnflags" "1" }
+        { "classname" "path_corner" "targetname" "c" "origin" "30 0 0" "spawnflags" "1" }
+        { "classname" "func_train" "model" "*1" "target" "a" "targetname" "t" }
+        { "classname" "func_train" "model" "*1" "target" "a" "targetname" "t" "spawnflags" "1" }
+        { "classname" "func_train" "model" "*1" "target" "c" }
+        { "classname" "func_train" "model" "*1" "target" "b" }
+        { "classname" "func_train" "model" "*1" "target" "d" }
+        { "classname" "path_corner" "targetname" "d" "target" "a" "origin" "40 0 0" }
+      `).map((b) => b.origin[0])).toEqual([
+        20 + 385, // next corner b teleports; only one jump
+        10 + 385, // targeted, not START_ON: waits at a
+        20 + 385, // START_ON
+        30 + 385, // c has no target: no next corner
+        30 + 385, // b's next, c, teleports too
+        40 + 385, // next corner a does not teleport: still at d
+      ]);
+    });
+  });
 });

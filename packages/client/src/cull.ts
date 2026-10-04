@@ -5,7 +5,7 @@
 // R_DrawBrushModel, R_CullBox). DOM-free.
 
 import { boxLeafs, clusterPvs, visRowBytes, type Bsp } from "@quack2/sim";
-import type { BrushModelInstance } from "./bmodels.js";
+import { modelBounds, type BrushModelInstance } from "./bmodels.js";
 import type { Mat4 } from "./math.js";
 
 export type Vec3 = readonly [number, number, number];
@@ -23,10 +23,7 @@ export interface Box {
  * rotated corner can poke out of; the radius cube always encloses the model.
  */
 export function instanceBox(bsp: Bsp, inst: BrushModelInstance): Box {
-  const { mins: bmins, maxs: bmaxs } = bsp.models;
-  const m = inst.model * 3;
-  const mins = [0, 1, 2].map((k) => bmins[m + k]! - 1);
-  const maxs = [0, 1, 2].map((k) => bmaxs[m + k]! + 1);
+  const { mins, maxs } = modelBounds(bsp, inst.model);
   const o = inst.origin;
   if (inst.angles[0] || inst.angles[1] || inst.angles[2]) {
     const r = Math.hypot(...[0, 1, 2].map((k) => Math.max(Math.abs(mins[k]!), Math.abs(maxs[k]!))));
