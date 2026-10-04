@@ -5,8 +5,8 @@
 import { DVIS_PVS } from "./format.js";
 import type { Bsp } from "./parse.js";
 
-/** Leaf containing a point, walking the BSP tree from `headNode` (model 0's by default). */
-export function pointLeaf(bsp: Bsp, x: number, y: number, z: number, headNode = bsp.models.headNode[0] ?? 0): number {
+/** Leaf containing a point, walking the BSP tree from `headNode`: node 0 by default, as CM_PointLeafnum starts. */
+export function pointLeaf(bsp: Bsp, x: number, y: number, z: number, headNode = 0): number {
   const { nodes, planes } = bsp;
   let num = headNode;
   while (num >= 0) {
@@ -19,12 +19,13 @@ export function pointLeaf(bsp: Bsp, x: number, y: number, z: number, headNode = 
 
 /**
  * Every leaf an axis-aligned box touches, solid ones included, after CM_BoxLeafnums but
- * with no cap on the count, in its order (front child first). By default a box on a
- * node's plane goes to both children, where the engine's axial fast path
- * (BOX_ON_PLANE_SIDE) sends a box whose max is on an axial plane only to the back and
- * one whose min is on it only to the front: a superset, never missing a leaf. With
- * `axialTies` the fast path is followed, for the engine's exact leaf list. Each node is
- * visited once, so a corrupt map whose children loop or share subtrees still terminates.
+ * with no cap on the count, in its order (front child first), from `headNode` (model 0's
+ * by default, as CM_BoxLeafnums starts). By default a box on a node's plane goes to
+ * both children, where the engine's axial fast path (BOX_ON_PLANE_SIDE) sends a box
+ * whose max is on an axial plane only to the back and one whose min is on it only to
+ * the front: a superset, never missing a leaf. With `axialTies` the fast path is
+ * followed, for the engine's exact leaf list. Each node is visited once, so a corrupt
+ * map whose children loop or share subtrees still terminates.
  */
 export function boxLeafs(
   bsp: Bsp,

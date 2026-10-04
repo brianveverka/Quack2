@@ -15,7 +15,7 @@ import {
   SURF_TRANS66,
   SURF_WARP,
   clusterPvs,
-  faceVertexIndices,
+  facePolygonIndices,
   texCoord,
   type Bsp,
 } from "@quack2/sim";
@@ -125,7 +125,7 @@ export function buildWorldMesh(bsp: Bsp, atlas: LightmapAtlas): WorldMesh {
     const first = verts.length / VERTEX_FLOATS;
     faceFirstVertex[f] = first;
     faceFirstPoly[f] = polyFirstVertex.length;
-    const corners = faceVertexIndices(bsp, f);
+    const corners = facePolygonIndices(bsp, f);
     if (flags & SURF_WARP) {
       const points = new Float32Array(corners.length * 3);
       corners.forEach((v, i) => points.set(pos.subarray(v * 3, v * 3 + 3), i * 3));
@@ -313,6 +313,18 @@ export function eyePlaneSide(bsp: Bsp, p: number, eye: readonly [number, number,
  */
 export function brushModelAlphaOrder(faces: readonly number[]): number[] {
   return [...faces].reverse();
+}
+
+/**
+ * The order R_DrawAlphaSurfaces draws brush model instances' translucent faces in.
+ * V_RenderView sorts the entity list by model pointer, and inline models sit in one
+ * array, so R_DrawEntitiesOnList walks brush models by ascending model number, each
+ * prepended to the alpha chain: highest model number first. Two drawn instances of
+ * one model with a translucent face make ref_gl's chain loop on itself (it links the
+ * model's own surfaces), hanging R_DrawAlphaSurfaces; here both draw, the later first.
+ */
+export function brushInstanceAlphaOrder<T extends { readonly modelIndex: number }>(instances: readonly T[]): T[] {
+  return [...instances].reverse().sort((a, b) => b.modelIndex - a.modelIndex);
 }
 
 /**

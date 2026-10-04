@@ -3,13 +3,14 @@
 // their texinfo with the flags set.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { SURF_FLOWING, SURF_SKY, SURF_TRANS33, SURF_TRANS66, SURF_WARP, parseBsp, type Bsp } from "@quack2/sim";
+import { SURF_FLOWING, SURF_SKY, SURF_TRANS33, SURF_TRANS66, SURF_WARP, facePolygonIndices, parseBsp, type Bsp } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
 import { buildLightmapAtlas, lightmapUv } from "../src/lightmap.js";
 import { subdivideWarpPolygon } from "../src/warp.js";
 import {
   VERTEX_FLOATS,
   WorldDraws,
+  brushInstanceAlphaOrder,
   brushModelAlphaOrder,
   buildDrawList,
   buildOrderedDraws,
@@ -119,6 +120,24 @@ describe("sky faces", () => {
   });
 });
 
+describe("face polygons", () => {
+  it("read surfedge 0 backwards, as GL_BuildPolygonFromSurface does", () => {
+    // qbsp leaves edge 0 unused (vertices 0 to 0); give it face 0's first edge and point
+    // that face's first surfedge at it.
+    const surfEdges = Int32Array.from(fixture.surfEdges);
+    const edges = Uint16Array.from(fixture.edges);
+    const e = surfEdges[fixture.faces.firstEdge[0]!]!;
+    edges.set(e >= 0 ? [edges[e * 2]!, edges[e * 2 + 1]!] : [edges[-e * 2]!, edges[-e * 2 + 1]!], 0);
+    surfEdges[fixture.faces.firstEdge[0]!] = 0;
+    const bsp: Bsp = { ...fixture, surfEdges, edges };
+    const mesh = buildWorldMesh(bsp, buildLightmapAtlas(bsp));
+    const o = mesh.faceFirstVertex[0]! * VERTEX_FLOATS;
+    const p = fixture.vertexes.position;
+    expect(edges[0]).not.toBe(edges[1]);
+    expect(Array.from(mesh.vertices.subarray(o, o + 3))).toEqual(Array.from(p.subarray(edges[1]! * 3, edges[1]! * 3 + 3)));
+  });
+});
+
 describe("warped faces", () => {
   const f = [...Array(WORLD_FACES).keys()].find((i) => fixture.texinfo.texture[fixture.faces.texinfo[i]!] === "quack/floor")!;
   const bsp = flagged({ [f]: SURF_WARP | SURF_FLOWING });
@@ -130,11 +149,7 @@ describe("warped faces", () => {
     const v = bsp.texinfo.vecs;
     // The face's corners in edge order, as GL_SubdivideSurface reads them.
     const points: number[] = [];
-    for (let i = 0; i < bsp.faces.numEdges[f]!; i++) {
-      const e = bsp.surfEdges[bsp.faces.firstEdge[f]! + i]!;
-      const vert = e >= 0 ? bsp.edges[e * 2]! : bsp.edges[-e * 2 + 1]!;
-      points.push(...bsp.vertexes.position.subarray(vert * 3, vert * 3 + 3));
-    }
+    for (const vert of facePolygonIndices(bsp, f)) points.push(...bsp.vertexes.position.subarray(vert * 3, vert * 3 + 3));
     const polys = subdivideWarpPolygon(points, v.subarray(ti * 8, ti * 8 + 3), v.subarray(ti * 8 + 4, ti * 8 + 7));
     expect(polys.length).toBeGreaterThan(1);
     expect(mesh.faceNumPolys[f]).toBe(polys.length);
@@ -186,6 +201,11 @@ describe("translucent faces", () => {
     const brush = buildDrawList(mesh, modelFaceMask(bsp, 1));
     expect(brush.translucent).toEqual([105, 106, 107, 108, 109, 110]);
     expect(brushModelAlphaOrder(brush.translucent)).toEqual([110, 109, 108, 107, 106, 105]);
+  });
+
+  it("of brush models draw by model number, highest first, as V_RenderView's sort leaves them", () => {
+    const instances = [3, 1, 2, 1, 3].map((modelIndex, i) => ({ modelIndex, i }));
+    expect(brushInstanceAlphaOrder(instances).map((x) => x.i)).toEqual([4, 0, 2, 3, 1]);
   });
 
   it("draw in the order given, one draw per run of the same texture and flags", () => {

@@ -33,6 +33,7 @@ import {
   SURF_TRANSLUCENT,
   VERTEX_FLOATS,
   WorldDraws,
+  brushInstanceAlphaOrder,
   brushModelAlphaOrder,
   buildDrawList,
   buildOrderedDraws,
@@ -171,6 +172,8 @@ export interface FrameStats {
 }
 
 interface InstanceDraws {
+  /** Index into bsp.models. */
+  readonly modelIndex: number;
   /** Model to world: entity angles, then origin. */
   readonly model: Mat4;
   /** Ranges in the brush model index buffer. */
@@ -320,6 +323,7 @@ export class WorldRenderer {
       const box = instanceBox(bsp, inst);
       const alphaBase = base + list.indices.length;
       this.instances.push({
+        modelIndex: inst.model,
         model: modelMatrix(inst.origin, inst.angles),
         draws: list.draws.map((d) => ({ ...d, first: d.first + base })),
         alphaDraws: alpha.draws.map((d) => ({ ...d, first: d.first + alphaBase })),
@@ -527,17 +531,17 @@ export class WorldRenderer {
     }
 
     // Alpha pass (R_DrawAlphaSurfaces): blended, depth tested and written as ref_gl
-    // leaves it. Brush models were prepended to the alpha chain after the world, the
-    // last one first, so they draw before the world's back-to-front faces. ref_gl draws
-    // them all with the world matrix, so a moved or rotated brush model's translucent
-    // faces stay at their compiled spot there; here they move with their entity.
+    // leaves it. Brush models were prepended to the alpha chain after the world
+    // (brushInstanceAlphaOrder), so they draw before the world's back-to-front faces.
+    // ref_gl draws them all with the world matrix, so a moved or rotated brush model's
+    // translucent faces stay at their compiled spot there; here they move with their
+    // entity.
     let alphaFaces = 0;
     const order = world.alpha;
     if (drawn.some((i) => i.alphaDraws.length > 0) || order.length > 0) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      for (let k = drawn.length - 1; k >= 0; k--) {
-        const inst = drawn[k]!;
+      for (const inst of brushInstanceAlphaOrder(drawn)) {
         if (inst.alphaDraws.length === 0) continue;
         gl.uniformMatrix4fv(this.uModel, false, inst.model);
         this.drawRanges(inst.alphaDraws);
