@@ -10,16 +10,30 @@ import type { Bsp } from "./parse.js";
 export const LIGHTMAP_SCALE = 16;
 
 /**
- * Vertex index of each corner of a face, in winding order. Surfedge e >= 0 walks edge e
- * forwards (starts at v0), e < 0 walks edge -e backwards (starts at v1).
+ * Vertex index of each corner of a face, in winding order, as CalcSurfaceExtents reads
+ * them: surfedge e >= 0 walks edge e forwards (starts at v0), e < 0 walks edge -e
+ * backwards (starts at v1).
  */
 export function faceVertexIndices(bsp: Bsp, face: number): number[] {
+  return cornerIndices(bsp, face, true);
+}
+
+/**
+ * Vertex index of each corner of a face as GL_BuildPolygonFromSurface and
+ * GL_SubdivideSurface read them (`lindex > 0`): like `faceVertexIndices`, but surfedge 0
+ * walks edge 0 backwards. Only a corrupt map uses edge 0, which qbsp leaves unused.
+ */
+export function facePolygonIndices(bsp: Bsp, face: number): number[] {
+  return cornerIndices(bsp, face, false);
+}
+
+function cornerIndices(bsp: Bsp, face: number, zeroForward: boolean): number[] {
   const first = bsp.faces.firstEdge[face]!;
   const num = bsp.faces.numEdges[face]!;
   const out: number[] = [];
   for (let i = 0; i < num; i++) {
     const e = bsp.surfEdges[first + i]!;
-    out.push(e >= 0 ? bsp.edges[e * 2]! : bsp.edges[-e * 2 + 1]!);
+    out.push(e > 0 || (e === 0 && zeroForward) ? bsp.edges[e * 2]! : bsp.edges[-e * 2 + 1]!);
   }
   return out;
 }

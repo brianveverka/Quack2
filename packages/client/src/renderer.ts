@@ -528,7 +528,9 @@ export class WorldRenderer {
 
     // Alpha pass (R_DrawAlphaSurfaces): blended, depth tested and written as ref_gl
     // leaves it. Brush models were prepended to the alpha chain after the world, the
-    // last one first, so they draw before the world's back-to-front faces. ref_gl draws
+    // last one first, so they draw before the world's back-to-front faces. Instances
+    // come in map order, which is their entity order: at spawn the game frees only the
+    // entity it just allocated, and G_Spawn refills that slot next. ref_gl draws
     // them all with the world matrix, so a moved or rotated brush model's translucent
     // faces stay at their compiled spot there; here they move with their entity.
     let alphaFaces = 0;

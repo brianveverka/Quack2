@@ -9,7 +9,8 @@ the win32 CalcSurfaceExtents does, with the deathmatch light styles animated at 
 and a face's lightmap composed again only as it is drawn, as ref_gl rebuilds it, warped
 surfaces moved per vertex as EmitWaterPolys does, SURF_FLOWING scrolled on warps and on
 unwarped opaque faces (DrawGLFlowingPoly) but not unwarped translucent ones, translucent
-surfaces blended in R_DrawAlphaSurfaces' order, no lightmap on sky, warp or translucent
+surfaces blended in R_DrawAlphaSurfaces' order (a brush model's moving with its entity,
+where ref_gl draws them at their compiled spot), no lightmap on sky, warp or translucent
 faces, the worldspawn sky box drawn where the world's sky faces bound it (R_DrawSkyBox,
 with skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS (with
 R_SetupFrame's second view cluster 16 units below or above the eye), area portals
@@ -25,16 +26,6 @@ yaw SelectSpawnPoint gives the first deathmatch player, `.wal` textures and `?ma
 from mounted pak/zip data (zip64 and self-extractor stubs included), picked archives
 read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- Translucent faces of brush models move with their entity here; ref_gl draws the alpha
-  chain with the world matrix, so they stay at their compiled spot. Kept as intended
-  (the engine's is a draw bug); revisit if matching it matters. The alpha chain's brush
-  models come in instance (map) order; ref_gl uses entity numbers, which differ where
-  G_Spawn reused a freed slot.
-- `faceVertexIndices` reads surfedge 0 as forward (`e >= 0`); ref_gl's
-  GL_BuildPolygonFromSurface and GL_SubdivideSurface read it as reversed (`lindex > 0`).
-  Only corrupt maps use edge 0. Likewise `pointLeaf` and `boxLeafs` (sim vis.ts) start at
-  `models.headNode[0]`, Mod_PointInLeaf and R_RecursiveWorldNode at node 0; qbsp output
-  has both 0.
 - `buildWorldMesh` drops SURF_NODRAW faces; ref_gl has no NODRAW test, so a SKY|NODRAW
   face a compiler emits would bound the sky box there and not here. Check whether qbsp
   or ericw-tools emit such faces before changing it.

@@ -15,7 +15,7 @@ import {
   SURF_TRANS66,
   SURF_WARP,
   clusterPvs,
-  faceVertexIndices,
+  facePolygonIndices,
   texCoord,
   type Bsp,
 } from "@quack2/sim";
@@ -125,7 +125,7 @@ export function buildWorldMesh(bsp: Bsp, atlas: LightmapAtlas): WorldMesh {
     const first = verts.length / VERTEX_FLOATS;
     faceFirstVertex[f] = first;
     faceFirstPoly[f] = polyFirstVertex.length;
-    const corners = faceVertexIndices(bsp, f);
+    const corners = facePolygonIndices(bsp, f);
     if (flags & SURF_WARP) {
       const points = new Float32Array(corners.length * 3);
       corners.forEach((v, i) => points.set(pos.subarray(v * 3, v * 3 + 3), i * 3));

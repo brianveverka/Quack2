@@ -6,6 +6,7 @@ import {
   checkBspIntegrity,
   clusterPvs,
   faceLightmapBytes,
+  facePolygonIndices,
   faceStyleCount,
   faceVertexIndices,
   lightmapExtents,
@@ -39,6 +40,22 @@ describe("face polygons", () => {
         expect(end).toBe(idx[(i + 1) % idx.length]);
       }
     }
+  });
+
+  it("reads surfedge 0 forwards for extents and backwards for polygons, as ref_gl does", () => {
+    // qbsp leaves edge 0 unused (vertices 0 to 0); give it face 0's first edge and point
+    // that face's first surfedge at it.
+    const surfEdges = Int32Array.from(bsp.surfEdges);
+    const edges = Uint16Array.from(bsp.edges);
+    const first = surfEdges[bsp.faces.firstEdge[0]!]!;
+    edges.set(first >= 0 ? [edges[first * 2]!, edges[first * 2 + 1]!] : [edges[-first * 2]!, edges[-first * 2 + 1]!], 0);
+    surfEdges[bsp.faces.firstEdge[0]!] = 0;
+    const edgeZero: Bsp = { ...bsp, surfEdges, edges };
+    expect(edges[0]).not.toBe(edges[1]);
+    expect(faceVertexIndices(edgeZero, 0)[0]).toBe(edges[0]);
+    expect(facePolygonIndices(edgeZero, 0)[0]).toBe(edges[1]);
+    expect(facePolygonIndices(edgeZero, 0).slice(1)).toEqual(faceVertexIndices(edgeZero, 0).slice(1));
+    for (let f = 0; f < bsp.faces.count; f++) expect(facePolygonIndices(bsp, f)).toEqual(faceVertexIndices(bsp, f));
   });
 
   it("texCoord applies texinfo vecs as s = dot(p, s.xyz) + s.w", () => {
@@ -182,6 +199,17 @@ describe("point leaf and PVS", () => {
     expect(found).toContain(leafAt(-290, 0, 10));
     expect(found).toContain(leafAt(-286, 0, 10));
     expect(bsp.leafs.cluster[leafAt(-286, 0, 10)]).toBe(-1);
+  });
+
+  it("point leaf starts at node 0 (CM_PointLeafnum); box leafs at model 0's head node (CM_BoxLeafnums)", () => {
+    const p = [-448, 0, 24] as const;
+    // A head node whose subtree puts the point in another leaf.
+    const head = [...Array(bsp.nodes.count).keys()].find((n) => pointLeaf(bsp, ...p, n) !== leafAt(...p))!;
+    expect(head).toBeGreaterThan(0);
+    const moved: Bsp = { ...bsp, models: { ...bsp.models, headNode: Int32Array.from(bsp.models.headNode, () => head) } };
+    expect(pointLeaf(moved, ...p)).toBe(leafAt(...p));
+    expect(boxLeafs(moved, p, p)).toEqual(boxLeafs(bsp, p, p, head));
+    expect(boxLeafs(moved, p, p)).not.toContain(leafAt(...p));
   });
 
   it("box leafs: the whole map finds every world leaf; a looping corrupt tree terminates", () => {
