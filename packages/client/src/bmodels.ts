@@ -598,7 +598,10 @@ interface Settle {
   byTargetname: Map<string, number[]>;
   /** Entities a killtarget freed. */
   freed: Set<number>;
-  /** Whether a func_wall or func_object used so far is sent to clients (SVF_NOCLIENT clear); the rest are as `visibleAtSpawn` says. */
+  /**
+   * Whether a func_wall or func_object used so far is sent to clients (SVF_NOCLIENT
+   * clear); the rest are as `visibleAtSpawn` says.
+   */
   shown: Map<number, boolean>;
   /** func_wall and func_object entities whose use function their own use cleared. */
   useCleared: Set<number>;
@@ -908,9 +911,10 @@ function trainUse(s: Settle, index: number): void {
 /**
  * func_wall_use and func_object_use. SP_func_wall gives a use only to a wall with any of
  * TRIGGER_SPAWN, TOGGLE or START_ON, and SP_func_object to an object with any spawnflag;
- * the use shows a hidden one and hides a shown wall, then clears itself unless the wall
- * has TOGGLE (which START_ON forces). The KillBox a shown one runs needs the trace and
- * is not modeled, nor the fall a used func_object starts (MOVETYPE_TOSS).
+ * the use shows a hidden one and hides a shown wall. An object's use then clears itself,
+ * and a wall's does unless it has TOGGLE (which START_ON forces). The KillBox a shown
+ * one runs needs the trace and is not modeled, nor the fall a used func_object starts
+ * (MOVETYPE_TOSS).
  */
 function wallUse(s: Settle, index: number): void {
   if (s.useCleared.has(index)) return;
@@ -986,8 +990,8 @@ function doorUse(s: Settle, index: number): void {
  * its own targets, except portals, and opens its portals), a func_door_secret at origin
  * 0 0 0 opens its portals, a trigger_relay fires its targets, a train runs train_use,
  * a func_wall or func_object is shown or hidden (`wallUse`); an entity a killtarget
- * freed is not drawn. Other use functions are not modeled, nor are a team slave train's thinks (both
- * func_train_find and train_next) running in its master's slot.
+ * freed is not drawn. Other use functions are not modeled, nor are a team slave train's
+ * thinks (both func_train_find and train_next) running in its master's slot.
  */
 function settleSpawnFrames(entities: readonly BspEntity[]): {
   portals: Set<number>;

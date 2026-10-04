@@ -36,6 +36,11 @@ Remaining:
   func_object uses are modeled in the settle frames (and a train's pathtarget at a
   corner it reaches at once), and a door's or relay's own "delay" always defers its
   targets (a tiny or negative one can come due within the second frame in the game).
+- A team whose master a settle-frame killtarget frees stops moving from that frame (its
+  members move and think only through the master's SV_Physics_Pusher), but
+  `settleTurrets` ignores frees: a freed breach master is left out while its team is
+  drawn turned to rest. A freed func_train master's team slaves are drawn at their spawn
+  origin either way.
 - win32 Quake 2 runs every frame at x87 24-bit precision (`_controlfp(_PC_24)` in
   sys_win.c WinMain), which rounds the C's `double` steps to a 24-bit mantissa too
   (unless a GL driver resets it mid-frame; see `lightmapExtents`).
@@ -68,10 +73,10 @@ Remaining:
 - With the trace: a team under a MOVETYPE_TOSS master (misc_gib_*, or a spawnflags-0
   func_object from its third frame) takes the master's origin each frame the master starts
   off the ground (SV_Physics_Toss), so its brush models leave their spawn origin; `settleTurrets`
-  keeps them there. A func_object a settle-frame use shows turns MOVETYPE_TOSS and falls
-  the same way, and the KillBox a used func_wall or func_object runs damages what its box
-  overlaps; neither is modeled (`wallUse`). Items cut their team chain in droptofloor first, so an item master
-  moves no slave.
+  keeps them there. Items cut their team chain in droptofloor first, so an item master
+  moves no slave. A func_object a settle-frame use shows turns MOVETYPE_TOSS and falls
+  the same way, and the KillBox a func_wall or func_object runs as a use shows it damages
+  what its box overlaps; neither is modeled (`wallUse`).
 
 ## 3. Server and netcode
 - Authoritative server in `packages/server` over `ws`, fixed tick.
