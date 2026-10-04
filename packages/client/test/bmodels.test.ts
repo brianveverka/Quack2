@@ -357,4 +357,109 @@ describe("area portals open at spawn", () => {
       { "classname" "func_door" "target" "p" "spawnflags" "1" }`);
     expect([...openAreaPortals(ents)]).toEqual([4]);
   });
+
+  describe("a trigger_always in the second settle frame", () => {
+    it("toggles a func_areaportal open, and back closed if fired twice", () => {
+      expect(open(`{ "classname" "trigger_always" "target" "q" }`)).toEqual([3]);
+      expect(open(`{ "classname" "trigger_always" "target" "p" }`)).toEqual([1, 2]);
+      expect(open(`{ "classname" "trigger_always" "target" "q" } { "classname" "trigger_always" "target" "q" }`)).toEqual([]);
+      expect(open(`{ "classname" "trigger_always" "target" "q" "spawnflags" "2048" }`)).toEqual([]);
+    });
+
+    it("toggles the entity's count, not the portal's state (Use_Areaportal)", () => {
+      // The START_OPEN door opened portal 3 in the first frame; the toggle writes count 1, still open.
+      expect(open(`{ "classname" "func_door" "target" "q" "spawnflags" "1" } { "classname" "trigger_always" "target" "q" }`)).toEqual([3]);
+      // Two entities on one portal: each toggles its own count, the last write wins.
+      const shared = parseEntities(`{ "classname" "worldspawn" }
+        { "classname" "func_areaportal" "targetname" "a" "style" "1" }
+        { "classname" "func_areaportal" "targetname" "b" "style" "1" }
+        { "classname" "trigger_always" "target" "a" }
+        { "classname" "trigger_always" "target" "a" }
+        { "classname" "trigger_always" "target" "b" }`);
+      expect([...openAreaPortals(shared)]).toEqual([1]);
+    });
+
+    it("fires only if due by the second frame: delay up to 0.2 s, as SP_trigger_always raises it", () => {
+      expect(open(`{ "classname" "trigger_always" "target" "q" "delay" "0.2" }`)).toEqual([3]);
+      expect(open(`{ "classname" "trigger_always" "target" "q" "delay" "-5" }`)).toEqual([3]);
+      expect(open(`{ "classname" "trigger_always" "target" "q" "delay" "0.2009" }`)).toEqual([3]);
+      expect(open(`{ "classname" "trigger_always" "target" "q" "delay" "0.25" }`)).toEqual([]);
+    });
+
+    it("opens a door's portals as it goes up, and the portals of its team", () => {
+      expect(open(`{ "classname" "trigger_always" "target" "d" } { "classname" "func_door" "targetname" "d" "target" "q" }`)).toEqual([3]);
+      expect(open(`{ "classname" "trigger_always" "target" "D" } { "classname" "func_door_rotating" "targetname" "d" "target" "p" }`)).toEqual([1, 2]);
+      // A START_OPEN door with a targetname goes up to its closed position, and still opens them.
+      expect(open(`{ "classname" "trigger_always" "target" "d" } { "classname" "func_door" "targetname" "d" "target" "q" "spawnflags" "1" }`)).toEqual([3]);
+      expect(
+        open(`{ "classname" "trigger_always" "target" "d" }
+          { "classname" "func_door" "targetname" "d" "team" "t" "target" "q" }
+          { "classname" "func_door" "team" "t" "target" "p" }`),
+      ).toEqual([1, 2, 3]);
+      // A slave ignores the use.
+      expect(
+        open(`{ "classname" "trigger_always" "target" "d" }
+          { "classname" "func_door" "team" "t" "target" "q" }
+          { "classname" "func_door" "targetname" "d" "team" "t" "target" "p" }`),
+      ).toEqual([]);
+    });
+
+    it("a door's portals are set open, not toggled, and a door targeting a portal does not toggle it (G_UseTargets)", () => {
+      // The door both targets portal 3 and has it toggled by its own use: set open, never toggled back.
+      expect(
+        open(`{ "classname" "trigger_always" "target" "d" } { "classname" "trigger_always" "target" "d" }
+          { "classname" "func_door" "targetname" "d" "target" "q" }`),
+      ).toEqual([3]);
+      // The second use of a DOOR_TOGGLE door sends it down, which writes nothing yet.
+      expect(
+        open(`{ "classname" "trigger_always" "target" "d" } { "classname" "trigger_always" "target" "d" }
+          { "classname" "func_door" "targetname" "d" "target" "q" "spawnflags" "32" }`),
+      ).toEqual([3]);
+    });
+
+    it("a door fires its other targets as it goes up; one with a delay fires later", () => {
+      const chain = (delay: string) =>
+        open(`{ "classname" "trigger_always" "target" "d" }
+          { "classname" "func_door" "targetname" "d" "target" "e" ${delay} }
+          { "classname" "func_door" "targetname" "e" "target" "q" }`);
+      expect(chain("")).toEqual([3]);
+      expect(chain(`"delay" "0.1"`)).toEqual([]);
+    });
+
+    it("func_water is a door named func_door after spawn, toggling unless it has a wait", () => {
+      const water = `{ "classname" "func_water" "targetname" "w" "target" "q" }`;
+      expect(open(`{ "classname" "trigger_always" "target" "w" } ${water}`)).toEqual([3]);
+      // As a func_door, it does not toggle the portal it targets; its second use (DOOR_TOGGLE) only sends it down.
+      expect(open(`{ "classname" "trigger_always" "target" "w" } { "classname" "trigger_always" "target" "w" } ${water}`)).toEqual([3]);
+    });
+
+    it("a func_door_secret at origin 0 0 0 opens its portals; a trigger_relay passes the use on", () => {
+      expect(open(`{ "classname" "trigger_always" "target" "s" } { "classname" "func_door_secret" "targetname" "s" "target" "q" }`)).toEqual([3]);
+      expect(
+        open(`{ "classname" "trigger_always" "target" "s" } { "classname" "func_door_secret" "targetname" "s" "target" "q" "origin" "0 0 8" }`),
+      ).toEqual([]);
+      expect(open(`{ "classname" "trigger_always" "target" "r" } { "classname" "trigger_relay" "targetname" "r" "target" "q" }`)).toEqual([3]);
+      expect(open(`{ "classname" "trigger_always" "target" "r" } { "classname" "trigger_relay" "targetname" "r" "target" "r" }`)).toEqual([]);
+    });
+
+    it("frees killtargets before using targets", () => {
+      expect(open(`{ "classname" "trigger_always" "target" "q" "killtarget" "q" }`)).toEqual([]);
+      expect(
+        open(`{ "classname" "trigger_always" "target" "d" "killtarget" "d" } { "classname" "func_door" "targetname" "d" "target" "q" }`),
+      ).toEqual([]);
+      // A door that kills itself is a zeroed edict: no target to open portals by, no teamchain to follow.
+      expect(open(`{ "classname" "trigger_always" "target" "d" } { "classname" "func_door" "targetname" "d" "target" "q" "killtarget" "d" }`)).toEqual([]);
+      expect(
+        open(`{ "classname" "trigger_always" "target" "d" }
+          { "classname" "func_door" "targetname" "d" "team" "t" "target" "q" "killtarget" "d" }
+          { "classname" "func_door" "team" "t" "target" "p" }`),
+      ).toEqual([]);
+      // A member freed before its turn ends the chain too; the master's portals stay open.
+      expect(
+        open(`{ "classname" "trigger_always" "target" "d" }
+          { "classname" "func_door" "targetname" "d" "team" "t" "target" "q" "killtarget" "m" }
+          { "classname" "func_door" "targetname" "m" "team" "t" "target" "p" }`),
+      ).toEqual([3]);
+    });
+  });
 });
