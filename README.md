@@ -6,10 +6,9 @@ shared simulation.
 
 Status: early. The BSP parser, pak/zip readers, and a WebGL2 world renderer (lightmaps,
 PVS culling, inline brush models such as doors and plats drawn where the map places
-them, free-fly camera, `.wal` textures from game data you mount, checker placeholders
-for anything missing) are implemented and tested. Movement, the server, and netcode are
-not written yet. See
-[BACKLOG.md](BACKLOG.md).
+them and culled by PVS and view frustum, free-fly camera, `.wal` textures from game
+data you mount, checker placeholders for anything missing) are implemented and tested.
+Movement, the server, and netcode are not written yet. See [BACKLOG.md](BACKLOG.md).
 
 ## Layout
 

@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CONTENTS_SOLID,
+  boxLeafs,
   checkBspIntegrity,
   clusterPvs,
   faceLightmapBytes,
@@ -134,6 +135,51 @@ describe("point leaf and PVS", () => {
     expect(Array.from(clusterPvs(bsp, -1))).toEqual([0, 0]);
     const novis: Bsp = { ...bsp, visibility: { numClusters: 0, offsets: new Int32Array(0), data: new Uint8Array(0) } };
     expect(Array.from(clusterPvs(novis, 0))).toEqual([]);
+  });
+
+  it("box leafs: a box inside one leaf finds only it; any box finds every leaf its points are in", () => {
+    expect(boxLeafs(bsp, [-460, -10, 20], [-440, 10, 60])).toEqual([leafAt(-448, 0, 40)]);
+    // Spans the pillar, the corridors either side and the open floor beside them.
+    const mins = [-300, -40, -8] as const, maxs = [-200, 40, 140] as const;
+    const found = boxLeafs(bsp, mins, maxs);
+    expect(new Set(found).size).toBe(found.length);
+    for (let x = mins[0]; x <= maxs[0]; x += 4) {
+      for (let y = mins[1]; y <= maxs[1]; y += 4) {
+        for (let z = mins[2]; z <= maxs[2]; z += 4) expect(found).toContain(leafAt(x, y, z));
+      }
+    }
+    // And nothing it does not touch: every leaf's bounds overlap the box.
+    for (const l of found) {
+      for (let k = 0; k < 3; k++) {
+        expect(bsp.leafs.mins[l * 3 + k]!).toBeLessThanOrEqual(maxs[k]!);
+        expect(bsp.leafs.maxs[l * 3 + k]!).toBeGreaterThanOrEqual(mins[k]!);
+      }
+    }
+  });
+
+  it("box leafs: a box that ends on a plane reaches the leaf on its far side", () => {
+    // The corridor west of the pillar, up to its west face at x -288.
+    const found = boxLeafs(bsp, [-300, -8, 8], [-288, 8, 16]);
+    expect(found).toContain(leafAt(-290, 0, 10));
+    expect(found).toContain(leafAt(-286, 0, 10));
+    expect(bsp.leafs.cluster[leafAt(-286, 0, 10)]).toBe(-1);
+  });
+
+  it("box leafs: the whole map finds every world leaf; a looping corrupt tree terminates", () => {
+    const world = new Set<number>();
+    const walk = (n: number): void => {
+      if (n < 0) world.add(-(n + 1));
+      else (walk(bsp.nodes.children[n * 2]!), walk(bsp.nodes.children[n * 2 + 1]!));
+    };
+    walk(bsp.models.headNode[0]!);
+    const all = boxLeafs(bsp, [-4096, -4096, -4096], [4096, 4096, 4096]);
+    expect([...all].sort((a, b) => a - b)).toEqual([...world].sort((a, b) => a - b));
+    const children = Int32Array.from(bsp.nodes.children);
+    // The root's back child leads back to the root.
+    const root = bsp.models.headNode[0]!;
+    children[root * 2 + 1] = root;
+    const looped: Bsp = { ...bsp, nodes: { ...bsp.nodes, children } };
+    expect(boxLeafs(looped, [-4096, -4096, -4096], [4096, 4096, 4096]).length).toBeGreaterThan(0);
   });
 
   it("decodes zero runs and clamps a run that overflows the row", () => {

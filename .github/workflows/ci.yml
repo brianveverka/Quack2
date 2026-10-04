@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+    # ready_for_review too: a draft whose check already passed must run it again, or
+    # auto-merge is refused for having nothing pending.
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
