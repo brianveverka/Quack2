@@ -711,6 +711,15 @@ interface Settle {
   moves: { index: number; up: boolean }[];
   /** Plats Use_Plat sent down: Move_Calc gave them a think, so later uses return. */
   platsMoving: Set<number>;
+  /**
+   * nextthink multi_trigger gave a trigger_once, trigger_multiple or trigger_counter: while
+   * nonzero its later uses return. multi_wait zeroes it when due (`settleSpawnFrames`).
+   */
+  multiThink: Map<number, number>;
+  /** trigger_counter_use's count, by entity, once a use changed it. */
+  counterCount: Map<number, number>;
+  /** TRIGGERED trigger_once and trigger_multiple entities trigger_enable gave Use_Multi. */
+  multiEnabled: Set<number>;
   /** Use_Areaportal's per-entity toggle (ent->count). */
   portalCount: Map<number, number>;
   /** gi.SetAreaPortalState writes, last one wins; portals never written stay closed. */
@@ -882,6 +891,20 @@ function useOne(s: Settle, index: number): void {
     case "trigger_relay":
       useTargets(s, userOf(s, index));
       return;
+    case "trigger_once":
+    case "trigger_multiple":
+      // A TRIGGERED one has trigger_enable as its use, which gives it Use_Multi.
+      if (multiTriggered(ent) && !s.multiEnabled.has(index)) s.multiEnabled.add(index);
+      else multiTrigger(s, index);
+      return;
+    case "trigger_counter": {
+      // trigger_counter_use: a count already 0 returns; else it counts down and fires at 0.
+      const count = s.counterCount.get(index) ?? (atoi(ent.count ?? "0") || 2);
+      if (count === 0) return;
+      s.counterCount.set(index, count - 1);
+      if (count - 1 === 0) multiTrigger(s, index);
+      return;
+    }
     case "target_crosslevel_trigger":
       // trigger_crosslevel_trigger_use sets serverflags and frees itself (G_FreeEdict refuses worldspawn).
       if (index !== 0) freeEdict(s, index);
@@ -912,6 +935,29 @@ function useOne(s: Settle, index: number): void {
       }
       return;
   }
+}
+
+/**
+ * Whether a trigger_once or trigger_multiple spawned TRIGGERED (spawnflags 4), with
+ * trigger_enable as its use. SP_trigger_once moves a spawnflags 1 there.
+ */
+function multiTriggered(ent: BspEntity): boolean {
+  return (atoi(ent.spawnflags ?? "0") & (ent.classname === "trigger_once" ? 5 : 4)) !== 0;
+}
+
+/**
+ * multi_trigger in the second settle frame: returns while the trigger has a nextthink,
+ * else fires its targets and sets one. A positive "wait" (trigger_multiple's 0.2 if
+ * unset or 0) thinks multi_wait at level.time + wait, in float, which zeroes it again
+ * if that comes due in this frame. trigger_once and trigger_counter wait -1, and with
+ * no positive wait it thinks G_FreeEdict a frame later, after the settle frames.
+ */
+function multiTrigger(s: Settle, index: number): void {
+  if ((s.multiThink.get(index) ?? 0) !== 0) return;
+  useTargets(s, userOf(s, index));
+  const ent = s.entities[index]!;
+  const wait = ent.classname === "trigger_multiple" ? Math.fround(atof(ent.wait ?? "0")) || Math.fround(0.2) : -1;
+  s.multiThink.set(index, f32(levelTimeAt(2) + (wait > 0 ? wait : FRAMETIME)));
 }
 
 /** G_PickTarget, taking the first of several matches where the game picks one at random. */
@@ -1131,7 +1177,9 @@ function doorUse(s: Settle, index: number): void {
  * firing and freeing itself in either frame. G_UseTargets first frees its killtargets, then uses its targets: a
  * func_areaportal toggles, a door goes up with its team (each member at the bottom fires
  * its own targets, except portals, and opens its portals), a func_door_secret at origin
- * 0 0 0 opens its portals, a trigger_relay fires its targets, a train runs train_use
+ * 0 0 0 opens its portals, a trigger_relay fires its targets, a trigger_once,
+ * trigger_multiple or trigger_counter passes it on as multi_trigger does (`multiTrigger`;
+ * a TRIGGERED one is armed by its first, a counter fires as its count runs out), a train runs train_use
  * (`trainUseIn`),
  * a func_wall or func_object is shown or hidden (`wallUse`); an entity a killtarget
  * freed is not drawn. Other use functions are not modeled, nor are a team slave train's
@@ -1191,6 +1239,9 @@ function settleSpawnFrames(
     moveState: new Map(),
     moves: [],
     platsMoving: new Set(),
+    multiThink: new Map(),
+    counterCount: new Map(),
+    multiEnabled: new Set(),
     portalCount: new Map(),
     portals: new Map(),
     trains: new Map(),
@@ -1239,6 +1290,9 @@ function settleSpawnFrames(
     const slot = s.slots[p]!;
     s.budget = MAX_USES;
     if (typeof slot === "number") {
+      // multi_wait, if a use earlier in this frame set a wait due in it.
+      const think = s.multiThink.get(slot) ?? 0;
+      if (think > 0 && think <= SECOND_FRAME_DUE) s.multiThink.set(slot, 0);
       const train = s.trains.get(slot);
       if (!train) continue;
       s.current = slot;

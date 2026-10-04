@@ -722,6 +722,66 @@ describe("area portals open at spawn", () => {
       expect(open(train("0.001"))).toEqual([]);
     });
 
+    describe("trigger_once, trigger_multiple and trigger_counter pass a use on (multi_trigger)", () => {
+      const always = (target: string, n = 1) => `{ "classname" "trigger_always" "target" "${target}" } `.repeat(n);
+
+      it("fire their targets once: a nextthink set makes later uses return", () => {
+        const once = `{ "classname" "trigger_once" "targetname" "o" "target" "q" }`;
+        expect(open(always("o") + once)).toEqual([3]);
+        expect(open(always("o", 2) + once)).toEqual([3]);
+        // A trigger_relay passes every use on, toggling the portal back.
+        expect(open(always("o", 2) + `{ "classname" "trigger_relay" "targetname" "o" "target" "q" }`)).toEqual([]);
+        const multi = (wait: string) => `{ "classname" "trigger_multiple" "targetname" "o" "target" "q" ${wait} }`;
+        expect(open(always("o", 2) + multi(""))).toEqual([3]);
+        expect(open(always("o", 2) + multi(`"wait" "-1"`))).toEqual([3]);
+        expect(open(always("o", 2) + multi(`"wait" "x"`))).toEqual([3]);
+      });
+
+      it("a wait due in the second frame thinks multi_wait in the trigger's slot, if it lies ahead of the use", () => {
+        const multi = (wait: string) => `{ "classname" "trigger_multiple" "targetname" "m" "target" "q" "wait" "${wait}" }`;
+        // The first DelayedUse fires it; multi_wait zeroes its nextthink; the second fires it again.
+        expect(open(always("m") + multi("0.0005") + always("m"))).toEqual([]);
+        // 0.2f + 0.001f rounds to just above the bound.
+        expect(open(always("m") + multi("0.001") + always("m"))).toEqual([3]);
+        // With no positive wait it thinks G_FreeEdict a frame later: never in this one.
+        expect(open(always("m") + multi("-1") + always("m"))).toEqual([3]);
+        expect(open(always("m") + `{ "classname" "trigger_once" "targetname" "m" "target" "q" }` + always("m"))).toEqual([3]);
+        // The walk has passed the trigger's slot when the first use sets its wait.
+        expect(open(multi("0.0005") + always("m", 2))).toEqual([3]);
+      });
+
+      it("a TRIGGERED one takes its first use to arm (trigger_enable)", () => {
+        const trig = (classname: string, flags: string) => `{ "classname" "${classname}" "targetname" "t" "target" "q" "spawnflags" "${flags}" }`;
+        expect(open(always("t") + trig("trigger_multiple", "4"))).toEqual([]);
+        expect(open(always("t", 2) + trig("trigger_multiple", "4"))).toEqual([3]);
+        expect(open(always("t") + trig("trigger_multiple", "1"))).toEqual([3]);
+        // SP_trigger_once moves spawnflags 1 to TRIGGERED.
+        expect(open(always("t") + trig("trigger_once", "1"))).toEqual([]);
+        expect(open(always("t", 2) + trig("trigger_once", "1"))).toEqual([3]);
+        expect(open(always("t", 3) + trig("trigger_once", "4"))).toEqual([3]);
+      });
+
+      it("a trigger_counter fires once its count (default 2) runs down, then never again", () => {
+        const counter = (count: string) => `{ "classname" "trigger_counter" "targetname" "c" "target" "q" ${count} }`;
+        expect(open(always("c") + counter(""))).toEqual([]);
+        expect(open(always("c", 2) + counter(""))).toEqual([3]);
+        expect(open(always("c", 3) + counter(""))).toEqual([3]);
+        expect(open(always("c", 2) + counter(`"count" "3"`))).toEqual([]);
+        expect(open(always("c", 3) + counter(`"count" "3"`))).toEqual([3]);
+        expect(open(always("c") + counter(`"count" "1"`))).toEqual([3]);
+        // A negative count only counts further down.
+        expect(open(always("c", 3) + counter(`"count" "-1"`))).toEqual([]);
+      });
+
+      it("their own delay fires through a DelayedUse, and a freed one is not found", () => {
+        expect(open(always("o") + `{ "classname" "trigger_once" "targetname" "o" "target" "q" "delay" "0.0005" }`)).toEqual([3]);
+        expect(open(always("o") + `{ "classname" "trigger_once" "targetname" "o" "target" "q" "delay" "0.001" }`)).toEqual([]);
+        // The trigger_once frees itself with its killtarget before using its targets.
+        expect(open(always("o") + `{ "classname" "trigger_once" "targetname" "o" "target" "q" "killtarget" "o" }`)).toEqual([]);
+        expect(open(`{ "classname" "trigger_always" "killtarget" "o" } ` + always("o") + `{ "classname" "trigger_once" "targetname" "o" "target" "q" }`)).toEqual([]);
+      });
+    });
+
     it("G_Spawn puts a DelayedUse in the first free slot, and one before the edict running waits a frame", () => {
       const relay = `{ "classname" "trigger_relay" "targetname" "r" "target" "q" "delay" "0.0005" }`;
       // The first trigger_always's DelayedUse frees its slot after firing; the relay's lands there.
