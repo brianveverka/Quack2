@@ -232,5 +232,63 @@ describe("brush model instances", () => {
         40 + 385, // next corner a does not teleport: still at d
       ]);
     });
+
+    it("turns a turret_breach to rest: pitch to 0 within its range, yaw into minyaw..maxyaw", () => {
+      const angles = (src: string) => place(src).map((b) => b.angles);
+      const [level, inRange, clampedUp, nearMin, nearMax, huge] = angles(`
+        { "classname" "worldspawn" }
+        { "classname" "turret_breach" "model" "*1" "angles" "20 90 5" }
+        { "classname" "turret_breach" "model" "*1" "angle" "-90" "minyaw" "200" "maxyaw" "300" }
+        { "classname" "turret_breach" "model" "*1" "minpitch" "10" "maxpitch" "20" "speed" "3" }
+        { "classname" "turret_breach" "model" "*1" "angle" "350" "minyaw" "10" "maxyaw" "100" }
+        { "classname" "turret_breach" "model" "*1" "angle" "160" "minyaw" "10" "maxyaw" "100" }
+        { "classname" "turret_breach" "model" "*1" "angle" "1e999" }
+      `);
+      close(level!, [0, 90, 5]); // roll is never turned
+      close(inRange!, [0, -90, 0]); // 270, already in range
+      close(clampedUp!, [-10, 0, 0]); // pitch range -20..-10 (Quake pitch is down), at 0.3 deg a frame
+      close(nearMin!, [0, 370, 0]); // 20 deg the short way, up past 360
+      close(nearMax!, [0, 100, 0]);
+      expect(huge).toEqual([0, Infinity, 0]); // not run: the game's AnglesNormalize would never end
+    });
+
+    it("turns a turret team by the yaw of its last breach, only under a turret master", () => {
+      const yaws = (src: string) => place(src).map((b) => b.angles[1]);
+      // Breach a turns from 0 to its minyaw 80, so its base, on team "a" too, turns by 80.
+      const [baseA, breachA, other, breachB1, breachB2, baseB] = yaws(`
+        { "classname" "worldspawn" }
+        { "classname" "turret_base" "model" "*1" "angle" "30" "team" "a" }
+        { "classname" "turret_breach" "model" "*1" "minyaw" "80" "maxyaw" "100" "team" "a" }
+        { "classname" "turret_base" "model" "*1" "angle" "30" "team" "A" }
+        { "classname" "turret_breach" "model" "*1" "minyaw" "90" "maxyaw" "100" "team" "b" }
+        { "classname" "turret_breach" "model" "*1" "minyaw" "180" "maxyaw" "190" "team" "b" }
+        { "classname" "turret_base" "model" "*1" "team" "b" }
+        { "classname" "turret_breach" "model" "*1" "minyaw" "90" "maxyaw" "100" "team" "b" "spawnflags" "2048" }
+      `);
+      expect(baseA).toBeCloseTo(110, 9);
+      expect(breachA).toBeCloseTo(80, 9); // 0 is nearer minyaw 80 than maxyaw 100
+      expect(other).toBe(30); // team names compare case sensitively
+      // The second breach turns to 190 the short way (-170) and sets the team's yaw last, so
+      // the first follows it instead of its own range. The NOT_DEATHMATCH one is not in the team.
+      expect(breachB1).toBeCloseTo(-170, 9);
+      expect(breachB2).toBeCloseTo(-170, 9);
+      expect(baseB).toBeCloseTo(-170, 9);
+
+      expect(yaws(`
+        { "classname" "worldspawn" }
+        { "classname" "func_wall" "model" "*1" "team" "c" }
+        { "classname" "turret_breach" "model" "*1" "minyaw" "90" "maxyaw" "100" "team" "c" }
+        { "classname" "turret_base" "model" "*1" "angle" "45" }
+      `)).toEqual([0, 0, 45]); // a func_wall master: not run (known gap, see BACKLOG.md); an unteamed base never turns
+
+      // A master its spawn function frees in deathmatch is not in the team; the base leads it.
+      expect(yaws(`
+        { "classname" "worldspawn" }
+        { "classname" "light" "team" "d" }
+        { "classname" "func_explosive" "model" "*1" "team" "d" }
+        { "classname" "turret_base" "model" "*1" "team" "d" }
+        { "classname" "turret_breach" "model" "*1" "minyaw" "80" "maxyaw" "100" "team" "d" }
+      `).map((y) => Math.round(y * 1e9) / 1e9)).toEqual([80, 80]);
+    });
   });
 });

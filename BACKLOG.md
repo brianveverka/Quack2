@@ -6,15 +6,12 @@ order (see CLAUDE.md, Orchestration).
 ## 1. Game data and renderer completeness
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps, PVS, inline brush
 models where the game has them after spawn (untargeted plats lowered, START_OPEN
-doors open, trains at their first path_corner or a teleport one after it), culled by
+doors open, trains at their first path_corner or a teleport one after it, turrets
+turned to rest in their pitch/yaw range with their teams), culled by
 PVS and frustum, free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip
 data (zip64 and self-extractor stubs included), picked archives read by range, checker
 fallback, `pnpm smoke`).
 Remaining:
-- turret_breach (and its teamed turret_base) turns from its spawn angles into its
-  minpitch/maxpitch and minyaw/maxyaw range over the first seconds
-  (g_turret.c turret_breach_think); drawn at its spawn angles here. Needs entity think
-  over time, or at least the resting angles it turns to.
 - Entity keys match case sensitively; the game's ED_ParseField uses Q_stricmp, so a
   map with "Origin" or "Angle" places the entity differently here, and one with
   "Model" is not drawn.
@@ -34,6 +31,15 @@ Remaining:
   settle frame) also runs train_next before clients see it, so it too jumps on to a
   TELEPORT path_corner after its first; only untargeted and START_ON trains do here.
   Needs a search for what targets the train.
+- A turret team whose master (first member) is not a turret keeps its spawn angles here;
+  the game runs it under the master's movetype (a MOVETYPE_NONE or TOSS master never
+  runs the slaves' thinks, a PUSH one does). Needs the movetype per spawn function. Of
+  the entities their spawn function frees in deathmatch, team membership leaves out only
+  lights and func_explosive; monsters, misc_explobox, target_secret/goal/help and
+  dmflags-removed items still count, and pickTarget counts all of them. An inverted
+  pitch range (minpitch > maxpitch) makes the game's clamp flip move_angles between the
+  two limits every frame, forever; here it runs to the frame cap (pitch by parity) or
+  stops on a zero-step frame.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
