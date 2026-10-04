@@ -455,7 +455,7 @@ function runThink(m: BrushMover, levelTime: number): void {
     case "doorGoDown":
       // Run from the door's own think, so its master is level.current_entity: unless
       // it is a team slave, whose think runs inside its master's SV_Physics_Pusher with
-      // the master current too. Either way Move_Begin runs now.
+      // the master current too. Either way Move_Begin (AngleMove_Begin) runs now.
       return doorGoDown(m, levelTime, true);
   }
 }

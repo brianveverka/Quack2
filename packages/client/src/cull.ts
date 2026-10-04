@@ -75,7 +75,10 @@ export interface PlacedInstance {
   model: Mat4;
   /** World box enclosing it at `origin` and `angles`, for the frustum test. */
   box: Box;
-  /** Distinct non-solid clusters its box at the link pose touches. */
+  /**
+   * Distinct non-solid clusters its `instanceBox` at the link pose touches. The server
+   * uses its link box (`linkBox`); see BACKLOG.md.
+   */
   clusters: readonly number[];
   /** areanum and areanum2 of the server's link box at the link pose (boxAreas). */
   areas: readonly [number, number];

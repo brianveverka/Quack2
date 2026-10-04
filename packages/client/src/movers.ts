@@ -56,7 +56,8 @@ export function lerpAngle(a2: number, a1: number, frac: number): number {
  * sent every frame. The server sends only what the client's PVS holds, and a door coming
  * back into it arrives as a new entity whose prev origin is its old_origin: for a team
  * slave that is where the master's push already left it, so that frame the game snaps
- * the slave where this lerps it.
+ * the slave where this lerps it; its prev angles are its current ones, so it snaps to
+ * those too.
  */
 export class BrushMotion {
   private teams: readonly (readonly MovingDoor[])[] = [];

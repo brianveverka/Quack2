@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { levelTimeAt, parseBsp, parseEntities, stepPusher } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
-import { doorMovers } from "../src/bmodels.js";
+import { brushModelInstances, doorMovers } from "../src/bmodels.js";
 import { BrushMotion, lerpAngle, networkAngle, networkCoord, type MoverPose } from "../src/movers.js";
 
 const bsp = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
@@ -313,6 +313,22 @@ describe("rotating door movers", () => {
     expect([fast.speed, fast.accel, fast.decel, fast.wait, fast.toggle]).toEqual([30, 5, 30, -1, true]);
   });
 
+  it("starts a door in a turret's team turned by the breach's yaw, as it is drawn at rest", () => {
+    // The breach (yaw 350 clamped into 10..100) turns its team 20 degrees in the settle frames.
+    for (const door of [`"func_door" "angle" "-1"`, `"func_door_rotating"`]) {
+      const ents = parseEntities(`
+        { "classname" "worldspawn" }
+        { "classname" ${door} "model" "*1" "team" "t" }
+        { "classname" "turret_breach" "model" "*1" "team" "t" "angle" "350" "minyaw" "10" "maxyaw" "100" }
+      `);
+      const placed = brushModelInstances(bsp, ents).instances.find((b) => b.entity === 1)!;
+      expect(placed.angles).toEqual([0, 20, 0]);
+      const m = new BrushMotion(() => doorMovers(bsp, ents));
+      expect(m.linkedPoses(0).get(1)!.angles).toEqual([0, 20, 0]);
+      expect(m.posesAt(0).get(1)!.angles).toEqual([0, 19.6875, 0]);
+    }
+  });
+
   const DOOR = `
     { "classname" "worldspawn" }
     { "classname" "trigger_always" "target" "d" }
@@ -385,6 +401,12 @@ describe("network angles", () => {
     expect(lerpAngle(-170, 170, 0.5)).toBe(-180);
     expect(lerpAngle(0, 90, 0.25)).toBe(22.5);
     expect(lerpAngle(0, 0.1, 1)).toBe(Math.fround(0.1));
+    // From a gcc (SSE) build of LerpAngle: every step rounds to float (in double the
+    // first would be 14.148000402450561).
+    expect(lerpAngle(Math.fround(10.3), Math.fround(20.7), Math.fround(0.37))).toBe(14.148000717163086);
+    expect(lerpAngle(Math.fround(170.3), Math.fround(-171.1), Math.fround(1 - (300 - 237) * 0.01))).toBe(177.1820068359375);
+    // Here the double product rounds once less and lands on 30.58589744567871.
+    expect(lerpAngle(34.940181732177734, 26.91077423095703, 0.5422919988632202)).toBe(30.585899353027344);
   });
 });
 

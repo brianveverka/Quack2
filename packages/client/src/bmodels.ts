@@ -1206,14 +1206,20 @@ function rotatingDoor(ent: BspEntity, origin: Vec3): BrushMoverInit {
  */
 export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor[][] {
   const { freed, doorMoves } = settleSpawnFrames(entities);
+  const turrets = settleTurrets(entities);
   const doors = new Map<number, MovingDoor>();
   entities.forEach((ent, i) => {
     if (i === 0 || !inGame(ent) || !movingDoor(ent)) return;
     const model = inlineModel(bsp, ent.model);
     if (model === undefined) return;
     const origin = entityVec3(ent, "origin") ?? [0, 0, 0];
+    // A door in a turret's team starts turned by the breach's yaw, as
+    // `brushModelInstances` draws it; neither move resets s.angles.
+    const yaw = turrets.get(i)?.yaw ?? 0;
     if (ent.classname === "func_door_rotating") {
-      doors.set(i, { entity: i, mover: brushMover(rotatingDoor(ent, origin)) });
+      const init = rotatingDoor(ent, origin);
+      const a = init.angles!;
+      doors.set(i, { entity: i, mover: brushMover({ ...init, angles: [a[0], a[1] + yaw, a[2]] }) });
       return;
     }
     const { mins, maxs } = modelBounds(bsp, model);
@@ -1231,6 +1237,7 @@ export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor
     }
     const mover = brushMover({
       origin: pos1,
+      angles: [0, yaw, 0],
       startOrigin: pos1,
       endOrigin: pos2,
       distance,

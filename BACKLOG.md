@@ -80,6 +80,14 @@ Remaining:
   face away, which R_DrawInlineBModel skips; same light, extra cost.
 - `brushModelInstances` draws an inline model on entity 0 of a malformed map; the engine
   puts that entity in edict 0, which SV_BuildClientFrame never sends (it starts at 1).
+- A placed brush model's clusters (`PlacedInstance.clusters`, `boxClusters` in cull.ts)
+  come from `instanceBox` (the corner-radius cube when turned, no extra unit at rest);
+  SV_LinkEdict takes them from absmin/absmax, which `linkBox` gives. Same on the
+  fixture (360 placements, 5 origins by yaw 0..355, 2026-10-04); a larger map can send
+  a door the server would not.
+- turret_breach_think sets every team member's avelocity[1] to the breach's each frame,
+  overriding a func_door_rotating teammate's own turn; `doorMovers` seeds such a door
+  with the breach's settled yaw but the mover does not model the override.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
