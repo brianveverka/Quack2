@@ -165,6 +165,8 @@ const FREED_IN_DEATHMATCH = new Set([
   "light",
   "func_explosive",
   "info_null",
+  "func_group",
+  "info_player_coop",
   "point_combat",
   "misc_explobox",
   "misc_deadsoldier",
@@ -201,10 +203,12 @@ const FREED_IN_DEATHMATCH = new Set([
 /**
  * Classes whose spawn function sets MOVETYPE_PUSH or MOVETYPE_STOP. G_RunEntity runs
  * them through SV_Physics_Pusher, which as a team master pushes every member and runs
- * every member's think each frame. Every other spawned class is MOVETYPE_NONE at spawn
- * (the G_Spawn default), except misc_gib_* (MOVETYPE_TOSS); items become MOVETYPE_TOSS
- * in droptofloor. Under any of those a master runs only its own think, so its slaves
- * never think (SV_Physics_Pusher returns for an FL_TEAMSLAVE).
+ * every member's think each frame. Every other class that stays in a deathmatch game is
+ * MOVETYPE_NONE at spawn (the G_Spawn default), except misc_gib_* (MOVETYPE_TOSS); items
+ * become MOVETYPE_TOSS in droptofloor. Under any of those a master runs only its own
+ * think, so a pusher slave (a turret) never thinks: SV_Physics_Pusher returns for an
+ * FL_TEAMSLAVE. func_explosive and turret_driver are listed for the movetype alone; the
+ * game frees both in deathmatch.
  */
 const PUSHER_CLASSES = new Set([
   "func_plat",
@@ -399,9 +403,14 @@ function breachThink(b: Breach): [number, number] {
  *
  * Only a master in PUSHER_CLASSES runs its slaves' thinks; under any other the team keeps
  * its spawn angles. A spawnflags-0 func_object master turns MOVETYPE_TOSS in its think in
- * the second frame (func_object_release), so its team turns for two frames only. An item
- * on the team cuts the master's chain after itself in its droptofloor, in the second
- * frame: members after it are neither turned nor thought for from then on. A turned
+ * the second frame (func_object_release), so its team turns for two frames only, and the
+ * master alone once more in the third: SV_Physics_Toss turns it by the avelocity the
+ * breaches last set until it lands (later frames need the trace). An item on the team
+ * cuts the master's chain after itself in its droptofloor, in the second frame: members
+ * after it are neither turned nor thought for from then on. Other frees that cut a chain
+ * the same way are not modeled (a killtarget, turret_breach_finish_init freeing its
+ * target, a target_crosslevel_target firing), nor a use that releases a triggered
+ * func_object. A turned
  * member's own spin (a START_ON func_rotating) is not added. An inverted pitch range
  * (minpitch > maxpitch) flips move_angles between the limits every frame, forever; it
  * runs to MAX_SETTLE_FRAMES here, or stops on a frame that turns nothing.
@@ -426,8 +435,8 @@ function settleTurrets(entities: readonly BspEntity[]): Map<number, { angles?: V
     const values = breaches.flatMap((b) => [...b.angles, ...b.pos1, ...b.pos2, b.speed]);
     if (!values.every(Number.isFinite)) continue;
     const master = entities[members[0]!]!;
-    const frames =
-      master.classname === "func_object" && (atoi(master.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK) === 0 ? 2 : MAX_SETTLE_FRAMES;
+    const released = master.classname === "func_object" && (atoi(master.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK) === 0;
+    const frames = released ? 2 : MAX_SETTLE_FRAMES;
     // Members [0, chain) are on the master's teamchain.
     let chain = members.length;
     const turned = members.map(() => 0);
@@ -455,6 +464,7 @@ function settleTurrets(entities: readonly BspEntity[]): Map<number, { angles?: V
       const pitches = breachAt.slice(0, chain).map((b) => Math.abs(b?.pitchVel ?? 0));
       if (Math.max(Math.abs(yawVel), ...pitches) * FRAMETIME <= SETTLED) break;
     }
+    if (released) turned[0]! += yawVel * FRAMETIME;
     members.forEach((i, p) => result.set(i, { yaw: turned[p]! }));
     for (const b of breaches) result.set(b.index, { angles: b.angles });
   }

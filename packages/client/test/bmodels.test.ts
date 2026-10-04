@@ -394,15 +394,17 @@ describe("brush model instances", () => {
       const breach = (team: string) => `{ "classname" "turret_breach" "model" "*1" "minyaw" "80" "maxyaw" "100" "team" "${team}" }`;
       // MOVETYPE_STOP (func_button) runs like PUSH.
       expect(yaws(`{ "classname" "func_button" "model" "*1" "team" "a" } ${breach("a")}`)).toEqual([80, 80]);
-      // MOVETYPE_NONE masters (func_conveyor, an item, a classname with no spawn function) run
-      // only their own think; a misc_gib (TOSS) master likewise, its origin copy not modeled.
+      // MOVETYPE_NONE masters (func_conveyor, a classname with no spawn function) run only
+      // their own think; so do an item (NONE, then TOSS) and a misc_gib (TOSS), whose origin
+      // copy onto the slaves is not modeled.
       expect(yaws(`{ "classname" "func_conveyor" "model" "*1" "angle" "10" "team" "a" } ${breach("a")}`)).toEqual([10, 0]);
       expect(yaws(`{ "classname" "weapon_shotgun" "team" "a" } ${breach("a")}`)).toEqual([0]);
       expect(yaws(`{ "classname" "no_such_class" "team" "a" } ${breach("a")}`)).toEqual([0]);
       expect(yaws(`{ "classname" "misc_gib_arm" "team" "a" } ${breach("a")}`)).toEqual([0]);
       // A spawnflags-0 func_object turns MOVETYPE_TOSS in the second frame: one 5 degree
-      // step (speed 50 * FRAMETIME) is pushed, in that frame. A triggered one stays PUSH.
-      expect(yaws(`{ "classname" "func_object" "model" "*1" "team" "a" } ${breach("a")}`)).toEqual([5, 5]);
+      // step (speed 50 * FRAMETIME) is pushed, in that frame, and SV_Physics_Toss turns the
+      // master alone by one more in the third. A triggered one stays PUSH.
+      expect(yaws(`{ "classname" "func_object" "model" "*1" "team" "a" } ${breach("a")}`)).toEqual([10, 5]);
       expect(yaws(`{ "classname" "func_object" "model" "*1" "team" "a" "spawnflags" "1" } ${breach("a")}`)).toEqual([80]);
     });
 
@@ -435,6 +437,8 @@ describe("brush model instances", () => {
       for (const freed of [
         `{ "classname" "monster_soldier" "team" "a" }`,
         `{ "classname" "info_null" "team" "a" }`,
+        `{ "classname" "func_group" "team" "a" }`,
+        `{ "classname" "info_player_coop" "team" "a" }`,
         `{ "classname" "target_secret" "team" "a" }`,
         `{ "classname" "path_corner" "team" "a" }`,
         `{ "classname" "misc_teleporter" "team" "a" }`,
