@@ -14,6 +14,8 @@ import {
   frustumPlanes,
   instanceBox,
   linkBox,
+  moveInstance,
+  placeInstance,
   pvsUnion,
   type Box,
 } from "../src/cull.js";
@@ -99,6 +101,85 @@ describe("brush model PVS", () => {
     expect(fatClusters(bsp, [-256, 0, 64], -1, 8)).toBeUndefined();
     // Nothing but solid is never visible.
     expect(clustersVisible([], clusterPvs(bsp, start))).toBe(false);
+  });
+});
+
+describe("moving brush models", () => {
+  // Origin (352, -160, 26) puts the func_wall's middle at 0 0 50, over the corridor;
+  // at 2000 0 0 it is outside the map, in no cluster. The PVS sees only its compiled cluster.
+  const corridor: [number, number, number] = [352, -160, 26];
+  const outside: [number, number, number] = [2000, 0, 0];
+  const home = clusterAt(-352, 160, 24);
+  const start = new Uint8Array((bsp.visibility.numClusters + 7) >> 3);
+  start[home >> 3] = 1 << (home & 7);
+  const linked = (inst: BrushModelInstance) => {
+    const { model, box, clusters, areas } = placeInstance(bsp, inst);
+    return { model, box, clusters, areas };
+  };
+
+  it("places an instance at its own origin, in every PVS until tested", () => {
+    const placed = placeInstance(bsp, wall([0, 0, 0]));
+    expect(placed.box).toEqual(instanceBox(bsp, wall([0, 0, 0])));
+    expect(placed.clusters).toEqual([home]);
+    expect(placed.areas).toEqual(boxAreas(bsp, linkBox(bsp, wall([0, 0, 0]))));
+    expect(Array.from(placed.model)).toEqual(Array.from(modelMatrix([0, 0, 0], [0, 0, 0])));
+    expect(placed.inPvs).toBe(true);
+  });
+
+  it("re-links a moved instance as if it had spawned there, and re-tests its PVS", () => {
+    const placed = placeInstance(bsp, wall([0, 0, 0]));
+    moveInstance(bsp, placed, corridor, corridor, start);
+    const { model, box, clusters, areas } = placed;
+    expect({ model, box, clusters, areas }).toEqual(linked(wall(corridor)));
+    expect(clusters).toContain(clusterAt(0, 0, 50));
+    moveInstance(bsp, placed, outside, outside, start);
+    expect([placed.clusters, placed.inPvs]).toEqual([[], false]);
+    moveInstance(bsp, placed, [0, 0, 0], [0, 0, 0], start);
+    expect([placed.clusters, placed.inPvs]).toEqual([[home], true]);
+    moveInstance(bsp, placed, outside, outside, start);
+    // No fat PVS (the eye in no cluster) passes it.
+    moveInstance(bsp, placed, corridor, corridor, undefined);
+    expect(placed.inPvs).toBe(true);
+  });
+
+  it("draws and frustum culls at the drawn origin, sends by clusters and areas at the linked one", () => {
+    const placed = placeInstance(bsp, wall([0, 0, 0]));
+    moveInstance(bsp, placed, corridor, [0, 0, 0], start);
+    const at = linked(wall(corridor));
+    const there = linked(wall([0, 0, 0]));
+    expect([placed.model, placed.box]).toEqual([at.model, at.box]);
+    expect([placed.clusters, placed.areas]).toEqual([there.clusters, there.areas]);
+    expect(placed.origin).toEqual(corridor);
+    expect(placed.linkOrigin).toEqual([0, 0, 0]);
+    // And the other way round, both moving in one call.
+    moveInstance(bsp, placed, [0, 0, 0], corridor, start);
+    expect([placed.model, placed.box]).toEqual([there.model, there.box]);
+    expect([placed.clusters, placed.areas]).toEqual([at.clusters, at.areas]);
+    expect(at.clusters).not.toEqual(there.clusters);
+  });
+
+  it("leaves what did not move as it is, the cached PVS test included", () => {
+    const placed = placeInstance(bsp, wall([0, 0, 0]));
+    const { model, clusters } = placed;
+    placed.inPvs = false;
+    moveInstance(bsp, placed, [0, 0, 0], [0, 0, 0], undefined);
+    expect(placed.model).toBe(model);
+    expect(placed.clusters).toBe(clusters);
+    expect(placed.inPvs).toBe(false);
+    // Moving only the drawn origin keeps the link and its test.
+    moveInstance(bsp, placed, corridor, [0, 0, 0], undefined);
+    expect(placed.model).not.toBe(model);
+    expect(placed.clusters).toBe(clusters);
+    expect(placed.inPvs).toBe(false);
+  });
+
+  it("keeps its own copies of the origins", () => {
+    const placed = placeInstance(bsp, wall([0, 0, 0]));
+    const origin: [number, number, number] = [...corridor];
+    moveInstance(bsp, placed, origin, origin, start);
+    origin[2] = 0;
+    expect(placed.origin).toEqual(corridor);
+    expect(placed.linkOrigin).toEqual(corridor);
   });
 });
 

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // WebGL2 world renderer: one static vertex buffer for every model, a world index buffer
 // rebuilt when the faces R_RecursiveWorldNode passes change, a static index buffer for
-// the brush models drawn at their entity origins and angles, one draw per texture and
-// surface flags per model. World leafs and brush models behind a closed area portal,
+// the brush models drawn at their entity origins and angles (movers' origins set each
+// frame), one draw per texture and surface flags per model. World leafs and brush models behind a closed area portal,
 // outside the eye's PVS, or outside the view frustum are skipped. Warped faces
 // (SURF_WARP) are moved in the vertex shader as EmitWaterPolys does; translucent ones
 // (SURF_TRANS33/66) are blended last, in R_DrawAlphaSurfaces' order. The world's sky
@@ -12,16 +12,15 @@ import { SURF_FLOWING, SURF_TRANS33, SURF_TRANS66, SURF_WARP, areaBits, floodAre
 import type { BrushModelInstance } from "./bmodels.js";
 import {
   areasVisible,
-  boxAreas,
-  boxClusters,
   boxOutsideFrustum,
   clustersVisible,
   fatClusters,
   frustumPlanes,
-  instanceBox,
-  linkBox,
+  moveInstance,
+  placeInstance,
   pvsUnion,
-  type Box,
+  type PlacedInstance,
+  type Vec3,
 } from "./cull.js";
 import { buildLightmapAtlas, refreshLightmaps, setLightmapStyles, type LightmapAtlas } from "./lightmap.js";
 import { fovY, modelMatrix, multiply, perspective, viewMatrix, type Mat4 } from "./math.js";
@@ -171,11 +170,9 @@ export interface FrameStats {
   readonly lightmapUploads: number;
 }
 
-interface InstanceDraws {
+interface InstanceDraws extends PlacedInstance {
   /** Index into bsp.models. */
   readonly modelIndex: number;
-  /** Model to world: entity angles, then origin. */
-  readonly model: Mat4;
   /** Ranges in the brush model index buffer. */
   readonly draws: readonly DrawRange[];
   /** Translucent faces' ranges in the brush model index buffer, in alpha pass order. */
@@ -183,14 +180,6 @@ interface InstanceDraws {
   readonly alphaFaces: number;
   /** The model's faces, for refreshing their lightmaps when it is drawn. */
   readonly faces: readonly number[];
-  /** World box enclosing the instance. */
-  readonly box: Box;
-  /** Distinct non-solid clusters the box touches. Computed once: models do not move yet; a mover must recompute this and `box`. */
-  readonly clusters: readonly number[];
-  /** areanum and areanum2 of the server's link box (boxAreas). Computed once, as `clusters` is. */
-  readonly areas: readonly [number, number];
-  /** In the fat PVS of the current eye position. */
-  inPvs: boolean;
 }
 
 export class WorldRenderer {
@@ -240,6 +229,8 @@ export class WorldRenderer {
   private readonly flood: Int32Array;
   /** Clusters of the fat PVS the brush models were last tested against. */
   private fatKey: string | undefined = "";
+  /** That fat PVS; undefined passes every model. */
+  private fatPvs: Uint8Array | undefined;
   private vis: WorldVis = { nodes: new Uint8Array(0), leafs: new Uint8Array(0) };
   private visibleFaces = 0;
   private readonly worldWalk: WorldWalk;
@@ -322,19 +313,14 @@ export class WorldRenderer {
     for (const inst of brushModels) {
       const { base, list, alpha, faces } = lists.get(inst.model)!;
       if (list.draws.length === 0 && alpha.draws.length === 0) continue;
-      const box = instanceBox(bsp, inst);
       const alphaBase = base + list.indices.length;
       this.instances.push({
+        ...placeInstance(bsp, inst),
         modelIndex: inst.model,
-        model: modelMatrix(inst.origin, inst.angles),
         draws: list.draws.map((d) => ({ ...d, first: d.first + base })),
         alphaDraws: alpha.draws.map((d) => ({ ...d, first: d.first + alphaBase })),
         alphaFaces: list.translucent.length,
         faces,
-        box,
-        clusters: boxClusters(bsp, box),
-        areas: boxAreas(bsp, linkBox(bsp, inst)),
-        inPvs: true,
       });
     }
     this.brushIndexBuffer = gl.createBuffer();
@@ -423,6 +409,21 @@ export class WorldRenderer {
     return stale.length;
   }
 
+  /**
+   * Move brush entities, by entity index: each is drawn at its `origins` entry (the
+   * client's blended origin) and linked, for the PVS and area tests, at its `linked` one
+   * (where the last game frame left it), or at `origins` without one. An entity in
+   * neither keeps its place.
+   */
+  moveBrushModels(origins: ReadonlyMap<number, Vec3>, linked: ReadonlyMap<number, Vec3> = origins): void {
+    for (const inst of this.instances) {
+      const entity = inst.source.entity;
+      const origin = origins.get(entity) ?? linked.get(entity);
+      if (!origin) continue;
+      moveInstance(this.bsp, inst, origin, linked.get(entity) ?? origin, this.fatPvs);
+    }
+  }
+
   /** Set the level time in milliseconds that warps move with. */
   setTime(ms: number): void {
     // r_newrefdef.time is a float, in seconds.
@@ -465,6 +466,7 @@ export class WorldRenderer {
     if (fatKey !== this.fatKey) {
       this.fatKey = fatKey;
       const pvs = fat && pvsUnion(bsp, fat);
+      this.fatPvs = pvs;
       for (const inst of this.instances) inst.inPvs = !pvs || clustersVisible(inst.clusters, pvs);
     }
 

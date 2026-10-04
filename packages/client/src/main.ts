@@ -43,8 +43,8 @@ export interface QuackDebug {
   /**
    * The origin each brush model instance (in `brushModels` order) has at level time `ms`
    * (default now) as the client would draw it: the linear doors `BrushMotion` steps (at
-   * rest or not, at the network's 1/8 unit), the rest where `brushModels` says. The
-   * renderer does not draw them moving yet.
+   * rest or not, at the network's 1/8 unit), the rest where `brushModels` says. Each
+   * frame is drawn with these at its level time.
    */
   brushOrigins(ms?: number): [number, number, number][];
   integrityErrors?: readonly string[];
@@ -263,6 +263,7 @@ async function main(): Promise<void> {
     lightStyleValues(DEATHMATCH_LIGHTSTYLES, time, styleValues);
     renderer.setLightStyles(styleValues);
     renderer.setTime(time);
+    renderer.moveBrushModels(motion.originsAt(time), motion.linkedOrigins());
     debug.stats = renderer.render(camera, canvas.width, canvas.height);
     debug.lightmapUploads = debug.stats.lightmapUploads;
     debug.frames++;

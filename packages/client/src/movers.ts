@@ -62,6 +62,19 @@ export class BrushMotion {
     return out;
   }
 
+  /**
+   * Where the last game frame `originsAt` stepped to left every moving entity, by entity
+   * index: the origin the server links it at (SV_LinkEdict) and so decides by whether to
+   * send it, where the drawn origin is blended towards it. The arrays are the caller's.
+   */
+  linkedOrigins(): Map<number, Vec3> {
+    const out = new Map<number, Vec3>();
+    for (const team of this.teams) {
+      for (const { entity, mover } of team) out.set(entity, [mover.origin[0], mover.origin[1], mover.origin[2]]);
+    }
+    return out;
+  }
+
   /** The drawn origin of every moving entity at `ms`, by entity index; the arrays are the caller's. */
   originsAt(ms: number): Map<number, Vec3> {
     // Steps one game frame per 100 ms: an infinite time never ends (a huge one takes as long).

@@ -68,6 +68,32 @@ describe("door movers", () => {
     expect(at(m, -50)).toEqual({ 2: [0, 0, 0], 3: [0, 0, 0] });
   });
 
+  it("links each door where the frame it draws towards left it", () => {
+    const m = motion(TEAM);
+    const linked = () => Object.fromEntries(m.linkedOrigins());
+    // Stepped by hand to the frame each time draws towards: frame 2 + ceil(ms / 100).
+    const frames = (n: number) => {
+      const team = doorMovers(bsp, parseEntities(TEAM))[0]!;
+      for (let k = 3; k <= n; k++) stepPusher(team.map((d) => d.mover), levelTimeAt(k));
+      return Object.fromEntries(team.map((d) => [d.entity, [...d.mover.origin]]));
+    };
+    m.originsAt(0);
+    expect(linked()).toEqual(frames(2));
+    m.originsAt(150);
+    const frame4 = frames(4);
+    expect(linked()).toEqual(frame4);
+    // Between frames the drawn origin is blended; at frame 4's own time it is the linked
+    // one as sent (SV_Push moves by whole 1/8 units, so the network leaves it as it is).
+    expect(at(m, 150)).not.toEqual(frame4);
+    expect(at(m, 200)).toEqual(Object.fromEntries(Object.entries(frame4).map(([e, o]) => [e, o.map(networkCoord)])));
+    expect(linked()).toEqual(frame4);
+    // Going back in time links where the earlier frame left it; the arrays are the caller's.
+    m.originsAt(50);
+    expect(linked()).toEqual(frames(3));
+    m.linkedOrigins().get(2)![2] = 99;
+    expect(linked()).toEqual(frames(3));
+  });
+
   it("leaves a door nothing uses at rest", () => {
     const m = motion(`
       { "classname" "worldspawn" }

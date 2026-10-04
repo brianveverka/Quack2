@@ -24,21 +24,13 @@ so the sky box is bounded by the sky faces in view), inline brush models where t
 has them after spawn (untargeted plats lowered, START_OPEN doors open, trains at their
 first path_corner or a teleport one after it, also when a trigger_always uses them,
 turrets turned to rest in their pitch/yaw range with their teams under a MOVETYPE_PUSH
-or STOP master), culled by area, PVS and frustum, free-fly camera at the spawn spot and
-yaw SelectSpawnPoint gives the first deathmatch player, `.wal` textures and `?map=` BSPs
+or STOP master), the linear doors the settle frames send moving drawn moving
+(`doorMovers`, stepped at the 10 Hz game frame by `BrushMotion` and blended as
+CL_AddPacketEntities does, re-linked each frame they move), culled by area, PVS and
+frustum, free-fly camera at the spawn spot and yaw SelectSpawnPoint gives the first deathmatch player, `.wal` textures and `?map=` BSPs
 from mounted pak/zip data (zip64 and self-extractor stubs included), picked archives
 read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- A door the second settle frame's use chains send up is drawn at rest although it
-  starts moving the next frame (Move_Calc defers Move_Begin a frame). The client already
-  steps it: `doorMovers` (bmodels.ts) builds the linear doors' `LinearMover` teams as
-  SP_func_door, SP_func_water and Think_CalcMoveSpeed set them up and sends the settle
-  frames' doors up or down, and `BrushMotion` (movers.ts) steps them and blends the
-  networked origins as CL_AddPacketEntities does, but only `quack.brushOrigins` reads it.
-  Next: have main.ts pass those origins to the renderer each frame, and give the
-  renderer per-instance origins (it bakes each instance's model matrix, box, clusters
-  and areas at construction; re-link a moved one as SV_LinkEdict would, and drop its
-  cached PVS test), then check the door is drawn moving in `pnpm smoke` (`door.bsp`).
 - `doorMovers` leaves out a door team with a member that is not a linear door (a
   func_door_rotating, a button): Think_CalcMoveSpeed would mix that member's
   moveinfo.distance into the team's speeds, and its own move is not ported.

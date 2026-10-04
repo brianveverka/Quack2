@@ -63,6 +63,10 @@ SYNTHETIC["/data/rotated.bsp"] = withEntityString(
 const doorEntities = fixtureEntities.replace('"classname" "func_wall"', '"classname" "func_door"\n"targetname" "smokedoor"\n"angle" "-1"');
 if (doorEntities === fixtureEntities) throw new Error("fixture has no func_wall to make a door");
 SYNTHETIC["/data/door.bsp"] = withEntityString(fixtureBsp, `${doorEntities}{\n"classname" "trigger_always"\n"target" "smokedoor"\n}\n`);
+// The func_wall placed where the door is drawn at 150 ms and at 400 ms.
+for (const z of [10, 42]) {
+  SYNTHETIC[`/data/door-at-${z}.bsp`] = withEntityString(fixtureBsp, fixtureEntities.replace('"model" "*1"', `"model" "*1"\n"origin" "0 0 ${z}"`));
+}
 // Culling: the func_wall at its compiled spot, again at the south spot, and again outside
 // the map, where its box touches only solid leafs (no PVS cluster, and area 0, which
 // the server's area test drops before the PVS one is reached).
@@ -405,7 +409,7 @@ try {
 
   // Door motion: brushOrigins steps the door from the settle frames and blends game
   // frames as the client does (frame 3 starts it, 4 at 20, 6 at the top, 42; frame n is
-  // sent at (n - 2) * 100 ms). The renderer does not draw it moving yet.
+  // sent at (n - 2) * 100 ms), and each frame is drawn with those origins.
   await page.goto(`${ORIGIN}/?map=data/door.bsp`);
   await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
   const doorMotion = await page.evaluate(() => ({
@@ -418,6 +422,40 @@ try {
       JSON.stringify(doorMotion.origins) === JSON.stringify([[[0, 0, 0]], [[0, 0, 10]], [[0, 0, 42]], [[0, 0, 10]]]),
     "a door the settle frames send up moves in brushOrigins: at rest, half way to frame 4's 20 at 150 ms, at the top by 400 ms",
   );
+  // Facing the door's west face (x -384, z 0..48 at rest) from 64 units, each frame of
+  // the moving door matches, pixel for pixel, the func_wall placed where it is drawn
+  // then: the fixture's at rest, z 10 at 150 ms, z 42 at 400 ms.
+  const doorView = { origin: [-448, 160, 24], pitch: 0, yaw: 0 };
+  /** Every third pixel's RGB, and the stats, of a frame of `map` at level time `ms`. */
+  const doorFrame = async (map, ms) => {
+    await page.goto(`${ORIGIN}/?map=${map}`);
+    await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+    const r = await page.evaluate(
+      ([view, ms]) => {
+        window.quack.setView(view);
+        window.quack.setLevelTime(ms);
+        const { data } = window.quack.readPixels();
+        const frame = [];
+        for (let i = 0; i < data.length; i += 3 * 4) frame.push(data[i], data[i + 1], data[i + 2]);
+        return { frame, stats: window.quack.stats, error: window.quack.error };
+      },
+      [doorView, ms],
+    );
+    await page.screenshot({ path: join(outDir, `door-${map.replace(/\W+/g, "-")}-${ms}.png`) });
+    return r;
+  };
+  const doorFrames = [];
+  for (const [ms, ref] of [[0, "maps/test_arena.bsp"], [150, "data/door-at-10.bsp"], [400, "data/door-at-42.bsp"]]) {
+    const [moving, placed] = [await doorFrame("data/door.bsp", ms), await doorFrame(ref, ms)];
+    doorFrames.push({ ms, moving, placed, diff: changed(moving.frame, placed.frame) });
+  }
+  const doorRestTop = changed(doorFrames[0].moving.frame, doorFrames[2].moving.frame);
+  console.log(
+    `  door drawn: ${doorFrames.map((d) => `${d.ms} ms ${d.diff.toFixed(4)} off its placed wall (brush models ${d.moving.stats.brushModels})`).join(", ")}; rest to top changes ${doorRestTop.toFixed(3)}`,
+  );
+  check(doorFrames.every((d) => !d.moving.error && !d.placed.error && d.moving.stats.brushModels === 1), "the moving door is drawn at every time");
+  check(doorRestTop > 0.02, "the door's frames at rest and at the top differ");
+  check(doorFrames.every((d) => d.diff === 0), "the moving door draws as a func_wall placed where brushOrigins puts it: at rest, z 10 at 150 ms, z 42 at 400 ms");
 
   // Culling never changes a pixel: each view renders the same with culling off. From the
   // north spot the south wall is beside the view and the one outside the map is in no
