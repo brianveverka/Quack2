@@ -87,25 +87,12 @@ const DOOR_REVERSE = 2;
 const DOOR_X_AXIS = 64;
 const DOOR_Y_AXIS = 128;
 const TRAIN_START_ON = 1;
+const TRAIN_TOGGLE = 2;
 const PATH_CORNER_TELEPORT = 1;
 
 /** Q_stricmp equality (see `asciiLower`). */
 function stricmpEqual(a: string, b: string): boolean {
   return asciiLower(a) === asciiLower(b);
-}
-
-/**
- * G_PickTarget: an entity whose "targetname" matches `target` case insensitively (G_Find,
- * Q_stricmp), among entities still in the game. With several, the game picks one at
- * random; this takes the first. Only NOT_DEATHMATCH entities count as gone: entities
- * whose spawn function frees itself in deathmatch (monsters, some items) still match.
- */
-function pickTarget(entities: readonly BspEntity[], target: string | undefined): BspEntity | undefined {
-  if (target === undefined) return undefined;
-  return entities.find(
-    (e) =>
-      e.targetname !== undefined && stricmpEqual(e.targetname, target) && !(atoi(e.spawnflags ?? "0") & SPAWNFLAG_NOT_DEATHMATCH),
-  );
 }
 
 /** G_SetMovedir: angles 0 -1 0 mean up, 0 -2 0 down, anything else the forward vector. */
@@ -125,11 +112,11 @@ function moveDir(angles: readonly [number, number, number]): Vec3 {
  */
 function spawnMove(
   ent: BspEntity,
-  entities: readonly BspEntity[],
   mins: readonly number[],
   maxs: readonly number[],
   origin: Vec3,
   angles: Vec3,
+  trainAt: Vec3 | undefined,
 ): { origin: Vec3; angles: Vec3 } {
   const flags = atoi(ent.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK;
   const size = [0, 1, 2].map((k) => maxs[k]! - mins[k]!);
@@ -162,19 +149,10 @@ function spawnMove(
       open[axis] = flags & DOOR_REVERSE ? -distance : distance;
       return { origin, angles: open };
     }
-    // func_train_find, the train's first think: its mins go to the origin of the entity
-    // its "target" names. A train nothing targets, or one with START_ON, runs train_next
-    // in the second settle frame (SV_SpawnServer runs two before any client is sent the
-    // entity); it jumps on at once only if that next entity is a TELEPORT path_corner.
+    // Trains: their mins sit on the corner the settle frames left them at (`settleSpawnFrames`).
     case "func_train": {
-      const first = pickTarget(entities, ent.target);
-      if (!first) break;
-      let at = entityVec3(first, "origin") ?? [0, 0, 0];
-      if (ent.targetname === undefined || flags & TRAIN_START_ON) {
-        const next = pickTarget(entities, first.target);
-        if (next && atoi(next.spawnflags ?? "0") & PATH_CORNER_TELEPORT) at = entityVec3(next, "origin") ?? [0, 0, 0];
-      }
-      return { origin: [0, 1, 2].map((k) => at[k]! - mins[k]!) as Vec3, angles };
+      if (!trainAt) break;
+      return { origin: [0, 1, 2].map((k) => trainAt[k]! - mins[k]!) as Vec3, angles };
     }
   }
   return { origin, angles };
@@ -380,6 +358,7 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
   const instances: BrushModelInstance[] = [];
   const errors: string[] = [];
   const turrets = settleTurrets(entities);
+  const { trains } = settleSpawnFrames(entities);
   entities.forEach((ent, i) => {
     const ref = ent.model;
     // Point entities carry model paths ("models/..."); only "*N" is an inline model.
@@ -394,7 +373,8 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
     if (!visibleAtSpawn(ent)) return;
     const { mins, maxs } = modelBounds(bsp, model);
     const spawn = entityVec3(ent, "origin") ?? [0, 0, 0];
-    const { origin, angles } = spawnMove(ent, entities, mins, maxs, spawn, KEEPS_ANGLES.has(classname) ? entityAngles(ent) : [0, 0, 0]);
+    const keep = KEEPS_ANGLES.has(classname) ? entityAngles(ent) : ([0, 0, 0] as Vec3);
+    const { origin, angles } = spawnMove(ent, mins, maxs, spawn, keep, trains.get(i)?.at);
     const turn = turrets.get(i);
     const turned: Vec3 = turn?.angles ?? (turn?.yaw ? [angles[0], angles[1] + turn.yaw, angles[2]] : angles);
     instances.push({ model, origin, angles: turned, classname });
@@ -445,9 +425,25 @@ interface Settle {
   portalCount: Map<number, number>;
   /** gi.SetAreaPortalState writes, last one wins; portals never written stay closed. */
   portals: Map<number, boolean>;
+  /** Every in-game func_train, by entity index. */
+  trains: Map<number, Train>;
   /** Uses left for the current trigger_always before MAX_USES cuts the walk off. */
   budget: number;
   depth: number;
+}
+
+/** A func_train's fields the settle frames read and change. */
+interface Train {
+  /** self->target: the train's own "target" until func_train_find or train_next steps it on. */
+  target: string | undefined;
+  /** The origin of the corner its mins were last put on (func_train_find, a TELEPORT corner); undefined while at its spawn origin. */
+  at: Vec3 | undefined;
+  startOn: boolean;
+  readonly toggle: boolean;
+  /** Whether train_next set target_ent (it found a corner to move to). */
+  targetEnt: boolean;
+  /** Whether func_train_find left train_next as its think, due in the second frame. */
+  thinking: boolean;
 }
 
 /** g_func.c STATE_TOP (0, also every edict that never sets it), STATE_BOTTOM, STATE_UP, STATE_DOWN. */
@@ -536,9 +532,9 @@ function useTargets(s: Settle, user: User): void {
 }
 
 /**
- * An entity's use function, for the classes whose use changes area portals now or the
- * moveinfo.state door_go_up reads. The rest (trains, func_wall and others) are not
- * modeled and do nothing here.
+ * An entity's use function, for the classes whose use changes area portals or a train's
+ * position now, or the moveinfo.state door_go_up reads. The rest (func_wall and others)
+ * are not modeled and do nothing here.
  */
 function use(s: Settle, index: number): void {
   if (s.budget <= 0 || s.depth >= MAX_USE_DEPTH) return;
@@ -575,6 +571,9 @@ function useOne(s: Settle, index: number): void {
     case "trigger_relay":
       useTargets(s, userOf(s, index));
       return;
+    case "func_train":
+      trainUse(s, index);
+      return;
     // These change no portal, but door_go_up reads the state they leave.
     case "func_button": {
       // button_use -> button_fire: returns if up or at the top, else starts up.
@@ -589,6 +588,128 @@ function useOne(s: Settle, index: number): void {
         s.moveState.set(index, "down");
       }
       return;
+  }
+}
+
+/** G_PickTarget, taking the first of several matches where the game picks one at random. */
+function pickTarget(s: Settle, name: string | undefined): number | undefined {
+  if (name === undefined) return undefined;
+  for (const t of findTargets(s, name)) return t;
+  return undefined;
+}
+
+/**
+ * func_train_find, the train's first think (first frame): its mins go to the corner its
+ * "target" names, and a train with no "targetname" gets START_ON; with START_ON it
+ * thinks train_next in the second frame. One with no "target" never gets this think.
+ */
+function trainFind(s: Settle, index: number): Train {
+  const ent = s.entities[index]!;
+  const flags = atoi(ent.spawnflags ?? "0");
+  const train: Train = {
+    target: ent.target,
+    at: undefined,
+    startOn: (flags & TRAIN_START_ON) !== 0,
+    toggle: (flags & TRAIN_TOGGLE) !== 0,
+    targetEnt: false,
+    thinking: false,
+  };
+  const first = pickTarget(s, train.target);
+  if (first === undefined) return train;
+  train.target = s.entities[first]!.target;
+  train.at = entityVec3(s.entities[first]!, "origin") ?? [0, 0, 0];
+  if (ent.targetname === undefined) train.startOn = true;
+  train.thinking = train.startOn;
+  return train;
+}
+
+/**
+ * train_next: steps self->target on to the next corner. A TELEPORT corner (spawnflag 1,
+ * whatever the class) puts the train's mins on it at once and steps on again; at a
+ * second one in a row the train stays put, though self->target has stepped past it.
+ * Any other corner starts a Move_Calc, which moves nothing in the settle frames: run
+ * from a use in another entity's slot it defers Move_Begin a frame (a use from within
+ * the train's own think, by its pathtarget, only matters for maps whose resume loop
+ * recurses until the game crashes); run from the train's own think (`think`) it
+ * sets a velocity the next frame applies, except that a corner at no distance (with a
+ * positive speed) finishes the move at once and runs train_wait.
+ */
+function trainNext(s: Settle, index: number, train: Train, think: boolean): void {
+  let first = true;
+  for (;;) {
+    const t = pickTarget(s, train.target);
+    if (t === undefined) return;
+    const ent = s.entities[t]!;
+    train.target = ent.target;
+    const corner = entityVec3(ent, "origin") ?? [0, 0, 0];
+    if (atoi(ent.spawnflags ?? "0") & PATH_CORNER_TELEPORT) {
+      if (!first) return;
+      first = false;
+      train.at = corner;
+      continue;
+    }
+    train.targetEnt = true;
+    // Move_Calc -> Move_Begin -> Move_Final -> Move_Done: the origins compare as floats
+    // (ED_ParseField's sscanf); the train's mins, subtracted from both, are not modeled.
+    const at = train.at;
+    const speed = Math.fround(atof(s.entities[index]!.speed ?? "0")) || 100;
+    if (think && speed > 0 && at && corner.every((c, k) => Math.fround(c) === Math.fround(at[k]!))) trainWait(s, index, train, t);
+    train.startOn = true;
+    return;
+  }
+}
+
+/**
+ * train_wait at the corner `t`, from the train's own think: its "pathtarget" fires
+ * through G_UseTargets with the corner's own delay and killtarget; then a corner with
+ * no "wait" runs train_next again, a negative one on a TOGGLE train runs it and stops
+ * the train, and a positive one waits past the settle frames. A loop of coincident
+ * corners recurses in the game until it crashes; the use budget and depth cut it off.
+ */
+function trainWait(s: Settle, index: number, train: Train, t: number): void {
+  if (s.budget <= 0 || s.depth >= MAX_USE_DEPTH) return;
+  s.budget--;
+  s.depth++;
+  try {
+    const corner = s.entities[t]!;
+    if (corner.pathtarget !== undefined) {
+      useTargets(s, {
+        index: t,
+        classname: liveClassname(corner),
+        target: corner.pathtarget,
+        killtarget: corner.killtarget,
+        delay: Math.fround(atof(corner.delay ?? "0")),
+      });
+      if (s.freed.has(index)) return;
+    }
+    const wait = Math.fround(atof(corner.wait ?? "0"));
+    if (wait === 0) {
+      trainNext(s, index, train, true);
+    } else if (wait < 0 && train.toggle) {
+      trainNext(s, index, train, true);
+      train.startOn = false;
+    }
+  } finally {
+    s.depth--;
+  }
+}
+
+/**
+ * train_use: a running (START_ON) train ignores it unless TOGGLE, which stops it and
+ * drops the train_next think it may still have due; a stopped one resumes towards its
+ * target_ent (Move_Calc, nothing moves yet) or, without one, runs train_next.
+ */
+function trainUse(s: Settle, index: number): void {
+  const train = s.trains.get(index);
+  if (!train) return;
+  if (train.startOn) {
+    if (!train.toggle) return;
+    train.startOn = false;
+    train.thinking = false;
+  } else if (train.targetEnt) {
+    train.startOn = true;
+  } else {
+    trainNext(s, index, train, false);
   }
 }
 
@@ -629,25 +750,30 @@ function doorUse(s: Settle, index: number): void {
 }
 
 /**
- * Area portals open once the game has run the two frames SV_SpawnServer settles the map
- * with (CM_SetAreaPortalState starts them all closed; SP_func_areaportal leaves them so;
+ * The two frames SV_SpawnServer runs to settle the map before any client is sent an
+ * entity: the area portals left open, and where every in-game func_train is.
+ *
+ * Area portals start closed (CM_SetAreaPortalState; SP_func_areaportal leaves them so;
  * a portal is its entity's "style").
  *
  * First frame: a START_OPEN func_door or func_door_rotating with no "health" and no
  * "targetname" runs Think_SpawnDoorTrigger, which, unless the door is a team slave,
  * opens every portal door_use_areaportals finds: in-game entities whose classname is
  * func_areaportal and whose "targetname" is the door's "target", compared case
- * insensitively (G_Find, Q_stricmp).
+ * insensitively (G_Find, Q_stricmp). Every train runs func_train_find (`trainFind`).
  *
- * Second frame: every in-game trigger_always, in entity order, fires its targets through
- * a DelayedUse (SP_trigger_always raises "delay" to at least 0.2 s; one above that comes
- * due later and is skipped). G_UseTargets first frees its killtargets, then uses its
- * targets: a func_areaportal toggles, a door goes up with its team (each member at the
- * bottom fires its own targets, except portals, and opens its portals), a
- * func_door_secret at origin 0 0 0 opens its portals, a trigger_relay fires its targets.
- * Other use functions are not modeled.
+ * Second frame: edicts run in entity order. A START_ON train runs train_next. Every
+ * in-game trigger_always fires its targets through a DelayedUse (SP_trigger_always
+ * raises "delay" to at least 0.2 s; one above that comes due later and is skipped),
+ * which G_Spawn placed right after it: freed slots are refilled by the next spawn, so
+ * none lies earlier. G_UseTargets first frees its killtargets, then uses its targets: a
+ * func_areaportal toggles, a door goes up with its team (each member at the bottom fires
+ * its own targets, except portals, and opens its portals), a func_door_secret at origin
+ * 0 0 0 opens its portals, a trigger_relay fires its targets, a train runs train_use.
+ * Other use functions are not modeled, nor are a team slave train's thinks (both
+ * func_train_find and train_next) running in its master's slot.
  */
-export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
+function settleSpawnFrames(entities: readonly BspEntity[]): { portals: Set<number>; trains: Map<number, Train> } {
   const teams = new Map<number, number[]>();
   const slaves = new Set<number>();
   for (const members of findTeams(entities).values()) {
@@ -672,9 +798,13 @@ export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
     platsMoving: new Set(),
     portalCount: new Map(),
     portals: new Map(),
+    trains: new Map(),
     budget: MAX_USES,
     depth: 0,
   };
+  entities.forEach((e, i) => {
+    if (e.classname === "func_train" && inGame(e)) s.trains.set(i, trainFind(s, i));
+  });
   entities.forEach((door, i) => {
     if (door.classname !== "func_door" && door.classname !== "func_door_rotating") return;
     if (!inGame(door) || slaves.has(i)) return;
@@ -683,11 +813,22 @@ export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
     doorUseAreaportals(s, i, true);
   });
   entities.forEach((e, i) => {
+    const train = s.trains.get(i);
+    if (train?.thinking && !s.freed.has(i)) {
+      train.thinking = false;
+      s.budget = MAX_USES;
+      trainNext(s, i, train, true);
+    }
     if (i === 0 || e.classname !== "trigger_always" || !inGame(e)) return;
     const delay = Math.fround(atof(e.delay ?? "0"));
     if (Math.max(delay, Math.fround(0.2)) > SECOND_FRAME_DUE) return;
     s.budget = MAX_USES;
     useTargets(s, { index: -1, classname: "DelayedUse", target: e.target, killtarget: e.killtarget, delay: 0 });
   });
-  return new Set([...s.portals].filter(([, open]) => open).map(([p]) => p));
+  return { portals: new Set([...s.portals].filter(([, open]) => open).map(([p]) => p)), trains: s.trains };
+}
+
+/** The area portals open after the settle frames (`settleSpawnFrames`). */
+export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
+  return settleSpawnFrames(entities).portals;
 }
