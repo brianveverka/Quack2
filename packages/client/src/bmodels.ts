@@ -1291,8 +1291,8 @@ function settleSpawnFrames(
     s.budget = MAX_USES;
     if (typeof slot === "number") {
       // multi_wait, if a use earlier in this frame set a wait due in it: in the trigger's own
-      // slot, and before that along a PUSH or STOP master's teamchain (SV_Physics_Pusher),
-      // after the master's own think.
+      // slot, and also in a PUSH or STOP master's slot (earlier) for each teamchain member,
+      // after the master's push and own think (SV_Physics_Pusher).
       const multiWait = (i: number) => {
         const think = s.multiThink.get(i) ?? 0;
         if (think > 0 && think <= SECOND_FRAME_DUE) s.multiThink.set(i, 0);

@@ -751,6 +751,12 @@ describe("area portals open at spawn", () => {
             `{ "classname" "trigger_multiple" "team" "x" "targetname" "m" "target" "q" "wait" "0.0005" }`);
         expect(team("func_door")).toEqual([]);
         expect(team("trigger_relay")).toEqual([3]);
+        // A member a killtarget freed ends the teamchain (G_FreeEdict clears its teamchain).
+        expect(
+          open(`{ "classname" "trigger_always" "target" "m" "killtarget" "k" } { "classname" "func_door" "team" "x" }
+            { "classname" "func_wall" "model" "*1" "team" "x" "targetname" "k" }` + always("m") +
+            `{ "classname" "trigger_multiple" "team" "x" "targetname" "m" "target" "q" "wait" "0.0005" }`),
+        ).toEqual([3]);
         // With no positive wait it thinks G_FreeEdict a frame later: never in this one.
         expect(open(always("m") + multi("-1") + always("m"))).toEqual([3]);
         expect(open(always("m") + `{ "classname" "trigger_once" "targetname" "m" "target" "q" }` + always("m"))).toEqual([3]);

@@ -140,6 +140,10 @@ Remaining:
   (which crashes the game) costs about 160 ms each to load, measured 2026-10-04 in Node 22.
   One budget for the whole frame would bound it, at the cost of starving later uses on
   such maps.
+- `settleSpawnFrames` ends a pusher master's teamchain walk (turret frees, multi_wait) at
+  the first freed member. In the game, the member before it still points at that edict,
+  so if a G_Spawn later in the frame refills it (a DelayedUse), the master's slot runs
+  the new edict's think, earlier than its own slot would.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
