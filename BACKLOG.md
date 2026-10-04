@@ -66,6 +66,11 @@ Remaining:
   so entities 1-8 land in the body-queue slots G_FreeEdict refuses to free, and stay in
   the game whatever `inGame` says (spawn spots, teams, targets). ED_ParseEdict also ends
   an entity on any key starting with "}", quoted or not; `parseEntities` does not.
+- A light style change scans every face for the styles it uses (`setLightmapStyles`):
+  0.7-0.9 ms per 10 Hz step over 5461 faces, measured 2026-10-04 in Node 22 on a
+  synthetic map, nothing animated. A per-style face list would make it scale with the
+  faces on changed styles. The renderer also composes a drawn brush model's faces that
+  face away, which R_DrawInlineBModel skips; same light, extra cost.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

@@ -165,7 +165,7 @@ export interface FrameStats {
   /** Sky box sides drawn. */
   readonly skySides: number;
   readonly draws: number;
-  /** Faces whose lightmap was composed again and uploaded: drawn faces on a style that changed since they were last drawn. */
+  /** Faces whose lightmap was composed again and uploaded: drawn faces on a style that changed since they were last composed. */
   readonly lightmapUploads: number;
 }
 
