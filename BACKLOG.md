@@ -100,18 +100,21 @@ Remaining:
 - A func_door_secret the settle frames open never moves, so its portals stay open: in
   the game it moves out and back (door_secret_move1..6) and door_secret_done closes
   them (door_use_areaportals false) unless its "wait" is -1, about 5 s after by default.
-- A func_plat that is a team slave is left out of `brushMovers` and drawn where it
-  spawned: a door master's door_use runs door_go_up on it (Move_Calc to its pos2, the
-  bottom, with door_hit_top), Think_CalcMoveSpeed reads its moveinfo.distance 0, and
-  its think runs in its master's slot. Model these with the train movers. A func_button
-  that is a team slave is left out the same way: door_use runs door_go_up on it too,
-  and button_use fires it (Move_Calc) with its think in its master's slot.
+- A func_plat or func_button that is a team slave is left out of `brushMovers` and
+  drawn where it spawned. A door master's door_use runs door_go_up on it, which fires
+  its targets but moves only func_door and func_door_rotating: the member is left at
+  STATE_UP, so a button ignores every later button_fire. Under a door master
+  Think_CalcMoveSpeed gives it NaN speeds (its moveinfo.distance 0 makes the team's
+  time 0). A move its own Use_Plat or button_fire starts runs its thinks in its
+  master's slot (SV_Physics_Pusher). Model these with the train movers.
 - button_wait fires the button's targets (G_UseTargets) when it reaches the top, after
   the settle frames: nothing models uses after them, so a door, plat or portal a fired
   button targets stays as the settle frames left it.
-- Texture animation is not drawn: no texinfo `nexttexinfo` chain is followed
-  (R_TextureAnimation steps world faces at 2 Hz and a brush entity's faces by its
-  s.frame, which button_wait sets to 1 and button_return back to 0).
+- Texture animation is not drawn: no texinfo `nexttexinfo` chain is followed.
+  R_TextureAnimation steps world faces at 2 Hz, and a brush entity's faces by the frame
+  CL_AddPacketEntities picks: from EF_ANIM01 (0/1), EF_ANIM23 (2/3) or EF_ANIM_ALL at
+  2 Hz, EF_ANIM_ALLFAST at 10 Hz, else s.frame. A button cycles 0/1 at rest and 2/3
+  from button_wait until button_done.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
