@@ -106,6 +106,7 @@ describe("linear door mover", () => {
     expect([r[2]!.z[0], r[3]!.z[0]]).toEqual([3.25, 6.5]);
   });
 
+  // SP_func_door turns wait 0 into 3; a mover can still hold 0, and door_hit_top takes it.
   it("goes down the frame after reaching the top with wait 0", () => {
     const d = door({ wait: 0 });
     doorGoUp(d, levelTimeAt(2), false);
@@ -124,7 +125,8 @@ describe("linear door mover", () => {
     const b = door({ endOrigin: [8.36, 0, 4.19] });
     doorGoUp(b, levelTimeAt(1), true);
     expect([...b.velocity]).toEqual([83.5999984741211, 0, 41.900001525878906]);
-    // SV_Push: 0.62499994 * 0.1f is 0.0625 as a float; temp 0.5 + 0.5 rounds to 1.0f.
+    // SV_Push: 0.62499994 * 0.1f is 0.0625 - 2^-28 as a float, temp 0.5 - 2^-25, and
+    // temp + 0.5 lies halfway between floats and rounds to 1.0f (a double truncates to 0).
     const c = door({ distance: 0.0625, endOrigin: [0, 0, 0.0624999925494194] });
     doorGoUp(c, levelTimeAt(1), true);
     expect(c.velocity[2]).toBe(0.6249999403953552);
