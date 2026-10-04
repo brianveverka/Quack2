@@ -1235,7 +1235,8 @@ function platMover(ent: BspEntity, mins: Vec3, maxs: Vec3, origin: Vec3): BrushM
 
 /**
  * The doors (func_door, func_water, which SP_func_water renames func_door, and
- * func_door_rotating) and the plats in no team as the two settle frames leave them:
+ * func_door_rotating) and the plats in no team (or a team of their own) as the two
+ * settle frames leave them:
  * teams in master entity order, each team's doors in team order (the master first when
  * it is a door); a door or plat with no team is a team of one. SP_func_door and SP_func_water set up each linear door
  * (`doorPositions`; a door's "speed", default 100, is doubled in deathmatch, and its
@@ -1264,10 +1265,12 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
   const turrets = settleTurrets(entities);
   const groups = [...findTeams(entities).values()];
   const teamed = new Set(groups.flat());
+  // A team of one is its own master, not a FL_TEAMSLAVE: such a plat moves on its own.
+  const shared = new Set(groups.filter((g) => g.length > 1).flat());
   const doors = new Map<number, MovingBrush>();
   entities.forEach((ent, i) => {
     if (i === 0 || !inGame(ent)) return;
-    const plat = ent.classname === "func_plat" && !teamed.has(i);
+    const plat = ent.classname === "func_plat" && !shared.has(i);
     if (!plat && !movingDoor(ent)) return;
     const model = inlineModel(bsp, ent.model);
     if (model === undefined) return;
@@ -1337,7 +1340,7 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
   for (const { index, up } of moves) {
     const m = moving.get(index);
     if (!m) continue;
-    // Only a plat in no team moves here, and only Use_Plat moves it.
+    // Only a plat in no team (or a team of its own) moves here, and only Use_Plat moves it.
     if (entities[index]!.classname === "func_plat") platGoDown(m, settled, false);
     else if (up) doorGoUp(m, settled, false);
     else doorGoDown(m, settled, false);

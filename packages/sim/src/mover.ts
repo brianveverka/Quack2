@@ -197,7 +197,8 @@ export function doorGoDown(m: BrushMover, levelTime: number, current: boolean): 
 
 /**
  * plat_go_down: to end_origin (pos2, the bottom); `current` as for `doorGoUp`. Use_Plat
- * calls it only while the plat has no think pending, which is the caller's to check.
+ * calls it only while the plat's think is null, which it is until the first Move_Calc
+ * sets one and stays set after (SV_RunThink clears only nextthink); the caller's to check.
  */
 export function platGoDown(m: BrushMover, levelTime: number, current: boolean): void {
   m.state = "down";

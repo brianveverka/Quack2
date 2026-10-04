@@ -29,7 +29,8 @@ or STOP master), the doors the settle frames send moving drawn moving (linear on
 accelerating as Think_AccelMove does when accel or decel differs from speed, rotating ones
 turning as AngleMove_Calc does, their angles sent in 360/256 degree steps and blended by
 LerpAngle), also in teams with other members, and the plats in no team a use there
-sends down (Use_Plat, accelerating as Think_AccelMove does; the sim also has plat_go_up
+sends down (Use_Plat, accelerating as Think_AccelMove does when accel or decel differs
+from speed, else at "speed" a tenth as fast as the key reads; the sim also has plat_go_up
 and plat_hit_top's 3 s return) (`brushMovers`, stepped at the 10 Hz game
 frame by `BrushMotion` and blended as CL_AddPacketEntities does, re-linked each frame
 they move or turn), culled by area, PVS and
@@ -38,11 +39,12 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- The mover lacks the button endfuncs (button_fire, button_wait, button_return,
-  button_done): a func_button a settle-frame use fires is drawn where it spawned. Build
+- The mover lacks the button functions (button_fire and button_return, which run
+  Move_Calc, and its endfuncs button_wait and button_done): a func_button a settle-frame use fires is drawn where it spawned. Build
   button movers in `brushMovers` as the plats are (`platMover`): SP_func_button's
   "speed" defaults to 40 and is not doubled, "accel" and "decel" default to it.
-- The mover lacks the train endfuncs (train_next, train_wait as a think, train_resume):
+- The mover lacks the train functions (the think train_next and train_resume, which run
+  Move_Calc, and its endfunc train_wait):
   trains are placed at the corner `settleSpawnFrames` leaves them and never move. Needs
   a path_corner lookup the sim can step (Move_Calc to the corner less the train's mins),
   shared with `trainNext`/`trainWait` in bmodels.ts.
@@ -100,7 +102,7 @@ Remaining:
 - A func_door_secret the settle frames open never moves, so its portals stay open: in
   the game it moves out and back (door_secret_move1..6) and door_secret_done closes
   them (door_use_areaportals false) unless its "wait" is -1, about 5 s after by default.
-- A func_plat in a team is left out of `brushMovers` and drawn where it spawned: a
+- A func_plat in a team with other members is left out of `brushMovers` and drawn where it spawned: a
   door_use reaching it runs door_go_up on it (Move_Calc to its pos2, the bottom, with
   door_hit_top), Think_CalcMoveSpeed reads its moveinfo.distance 0, and a slave plat's
   think runs in its master's slot. Model these with the button and train movers.

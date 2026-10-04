@@ -509,7 +509,7 @@ describe("plat movers", () => {
     expect([keyed!.endOrigin[2], keyed!.speed, keyed!.accel, keyed!.decel]).toEqual([-20, Math.fround(3.3), 1, 3]);
   });
 
-  it("drops a plat a use sends down as Think_AccelMove does, stopping 1/8 short, once however often it is used", () => {
+  it("drops a plat a use sends down as Think_AccelMove does, stopping 1/8 short, also when used twice", () => {
     // Expected values: g_func.c's plat_CalcAcceleratedMove and plat_Accelerate compiled
     // with gcc (SSE float), stepped through SV_Push's 1/8 unit snap, measured 2026-10-04.
     for (const src of [PLAT, `${PLAT}{ "classname" "trigger_always" "target" "p" }`]) {
@@ -521,8 +521,23 @@ describe("plat movers", () => {
       const z = (ms: number) => m.linkedPoses(ms).get(2)!.origin[2];
       expect([0, 100, 200, 300, 400, 500, 600, 700, 60000].map(z)).toEqual([0, 0, -5, -15, -26.625, -36.375, -41.125, -41.875, -41.875]);
     }
+    // A second Use_Plat in the frame returns (its think is set); a second plat_go_down
+    // there would give the same frames, so this checks only that nothing changes.
     // Drawn at the top where the map loads, as brushModelInstances places it.
     expect(brushModelInstances(bsp, parseEntities(PLAT)).instances.map((b) => b.origin)).toEqual([[0, 0, 0]]);
+  });
+
+  it("moves at a tenth of the speed key per second when speed, accel and decel are equal (Move_Begin)", () => {
+    // 50 / 10 = 5, which Move_Begin takes per second: 0.5 a frame from frame 4.
+    const src = PLAT.replace('"targetname" "p"', '"targetname" "p" "speed" "50" "accel" "50" "decel" "50"');
+    const m = motion(src);
+    expect([200, 300, 1000].map((ms) => m.linkedPoses(ms).get(2)!.origin[2])).toEqual([-0.5, -1, -4.5]);
+    expect(m.posesAt(1050).get(2)!.origin[2]).toBe(-4.75);
+  });
+
+  it("moves a plat in a team of its own, as its own master", () => {
+    const m = motion(PLAT.replace('"targetname" "p"', '"targetname" "p" "team" "solo"'));
+    expect(m.linkedPoses(700).get(2)!.origin[2]).toBe(-41.875);
   });
 
   it("leaves out a plat in a team, and one a killtarget freed", () => {
