@@ -10,17 +10,14 @@ translucent surfaces blended in R_DrawAlphaSurfaces' order, no lightmap on sky, 
 translucent faces, the worldspawn sky box drawn where the world's sky faces bound it
 (R_DrawSkyBox, with skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS,
 area portals (closed except those a START_OPEN door opens at spawn) culling world leafs
-and brush models, inline brush models where the game has them after spawn (untargeted
+and brush models, the world walked per frame as R_RecursiveWorldNode does (R_CullBox on
+nodes and leafs, so the sky box is bounded by the sky faces in view), inline brush models where the game has them after spawn (untargeted
 plats lowered, START_OPEN doors open, trains at their first path_corner or a teleport
 one after it, turrets turned to rest in their pitch/yaw range with their teams), culled
 by area, PVS and frustum, free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data
 (zip64 and self-extractor stubs included), picked archives read by range, checker
 fallback, `pnpm smoke`).
 Remaining:
-- No frustum culling of the world (R_RecursiveWorldNode's R_CullBox on nodes), so the
-  sky box's bounds also take sky faces outside the view, and can cover pixels the engine
-  leaves undrawn. The world draw list is built per cluster and area; this makes it per
-  frame.
 - The engine's second view cluster near water surfaces (R_SetupFrame `viewcluster2`,
   merged in R_MarkLeaves) is not handled.
 - Area portals the game opens in the second settle frame are not modeled: a
@@ -66,11 +63,13 @@ Remaining:
   Only corrupt maps use edge 0. Likewise `pointLeaf` and `boxLeafs` (sim vis.ts) start at
   `models.headNode[0]`, Mod_PointInLeaf and R_RecursiveWorldNode at node 0; qbsp output
   has both 0.
-- The alpha pass walks the whole world BSP every frame a translucent face is in the PVS;
-  ref_gl skips nodes outside the PVS and frustum. Measure on a large map.
 - `buildWorldMesh` drops SURF_NODRAW faces; ref_gl has no NODRAW test, so a SKY|NODRAW
   face a compiler emits would bound the sky box there and not here. Check whether qbsp
   or ericw-tools emit such faces before changing it.
+- The world walk (`walkWorld`, `WorldDraws.update`) runs every frame and allocates its
+  marks and face lists each time; the opaque index list is rebuilt and uploaded whenever
+  the walked face set changes. Measured 2026-10-04 in Node 22 on the fixture (25 nodes,
+  111 faces), turning so every frame rebuilds: 11.4 us per frame. Measure on a large map.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

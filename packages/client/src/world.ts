@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Mesh of every model's faces (the world, model 0, and the inline brush models), in
 // model space: triangle fans, one per face, or one per 64-unit piece of a warped face,
-// per-cluster index lists for the world from the PVS, and per-model index lists.
-// Translucent faces are drawn after everything else, in the order ref_gl's
-// R_DrawAlphaSurfaces gets them. The world's sky faces are not drawn: they only bound
-// the sky box (sky.ts). DOM-free so it is testable under Node.
+// the world's faces per frame as R_RecursiveWorldNode walks them (PVS, areas, view
+// frustum), and per-model index lists. Translucent faces are drawn after everything
+// else, in the order ref_gl's R_DrawAlphaSurfaces gets them. The world's sky faces are
+// not drawn: they only bound the sky box (sky.ts). DOM-free so it is testable under Node.
 
 import {
   CONTENTS_SOLID,
@@ -19,6 +19,7 @@ import {
   texCoord,
   type Bsp,
 } from "@quack2/sim";
+import { boxOutsidePlanes } from "./cull.js";
 import { lightmapUv, type LightmapAtlas } from "./lightmap.js";
 import { subdivideWarpPolygon } from "./warp.js";
 
@@ -184,8 +185,6 @@ export interface DrawList {
   readonly visibleFaces: number;
   /** Translucent faces, in face order, left out of `indices` for the alpha pass. */
   readonly translucent: readonly number[];
-  /** With `separateSky`, the opaque sky faces, in face order, left out of `indices`. */
-  readonly sky: readonly number[];
 }
 
 /**
@@ -226,31 +225,23 @@ export function visibleFaceMask(bsp: Bsp, mesh: WorldMesh, cluster: number, area
 
 /**
  * Triangle-fan indices for the masked opaque faces, grouped by texture and draw flags
- * into one draw each. Translucent faces are listed apart, and so are sky faces with
- * `separateSky`: R_RecursiveWorldNode tests SURF_SKY before the translucent flags and
- * draws none of the world's, while R_DrawInlineBModel draws a brush model's as it does
- * any opaque face.
+ * into one draw each; translucent faces are listed apart. Sky faces draw as any opaque
+ * face, as R_DrawInlineBModel draws a brush model's (the world's go through WorldDraws).
  */
-export function buildDrawList(mesh: WorldMesh, mask: Uint8Array, separateSky = false): DrawList {
+export function buildDrawList(mesh: WorldMesh, mask: Uint8Array): DrawList {
   const groups = new Map<number, number[]>();
   const translucent: number[] = [];
-  const sky: number[] = [];
   let visibleFaces = 0;
   for (let f = 0; f < mask.length; f++) {
     const tex = mesh.faceTexture[f]!;
     if (!mask[f] || tex < 0) continue;
     visibleFaces++;
     const flags = mesh.faceFlags[f]!;
-    if (separateSky && flags & SURF_SKY) {
-      sky.push(f);
-      continue;
-    }
     if (flags & SURF_TRANSLUCENT) {
       translucent.push(f);
       continue;
     }
-    // Keys in texture order, then flags, so the draw order does not depend on face order.
-    const key = tex * 256 + flags;
+    const key = drawKey(mesh, f);
     let list = groups.get(key);
     if (!list) groups.set(key, (list = []));
     pushFace(mesh, f, list);
@@ -265,7 +256,12 @@ export function buildDrawList(mesh: WorldMesh, mask: Uint8Array, separateSky = f
     indices.set(list, o);
     o += list.length;
   }
-  return { indices, draws, visibleFaces, translucent, sky };
+  return { indices, draws, visibleFaces, translucent };
+}
+
+/** A face's draw group: texture, then flags, so the draw order does not depend on face order. */
+function drawKey(mesh: WorldMesh, f: number): number {
+  return mesh.faceTexture[f]! * 256 + mesh.faceFlags[f]!;
 }
 
 /** Indices for `faces` drawn in the order given, one draw per run of faces with the same texture and flags. */
@@ -318,50 +314,195 @@ export function brushModelAlphaOrder(faces: readonly number[]): number[] {
   return [...faces].reverse();
 }
 
+
 /**
- * The world's translucent faces among `faces` in the order R_DrawAlphaSurfaces draws
- * them: R_RecursiveWorldNode visits the eye's side of each node first and prepends each
- * face on the eye's side of its node to the alpha chain, so the chain runs back to front.
- * Faces whose plane side faces away from the eye are left out, as the engine does.
- * Brush models' translucent faces come before these (they are prepended later).
+ * What R_MarkLeaves and the area bits leave R_RecursiveWorldNode for one eye cluster and
+ * area. `nodes`: a leaf under the node is in the PVS (its visframe; areas play no part).
+ * `leafs`: the leaf adds its faces: in the PVS, not CONTENTS_SOLID, and with its area
+ * bit set. Cluster -1, one past the vis data, or a map without vis marks every leaf and
+ * node, as the engine's novis path does. Pass no `areaBits` for an eye in area 0.
  */
-export function worldAlphaOrder(bsp: Bsp, faces: readonly number[], eye: readonly [number, number, number]): number[] {
-  if (faces.length === 0) return [];
-  const want = new Uint8Array(bsp.faces.count);
-  for (const f of faces) want[f] = 1;
-  const { nodes } = bsp;
-  const visit: number[] = [];
+export interface WorldVis {
+  readonly nodes: Uint8Array;
+  readonly leafs: Uint8Array;
+}
+
+export function worldVis(bsp: Bsp, cluster: number, areaBits?: Uint8Array): WorldVis {
+  const { nodes, leafs } = bsp;
+  const nodeVis = new Uint8Array(nodes.count);
+  const leafVis = new Uint8Array(leafs.count);
+  const novis = cluster < 0 || cluster >= bsp.visibility.numClusters;
+  if (novis) {
+    nodeVis.fill(1);
+    leafVis.fill(1);
+  } else {
+    // R_MarkLeaves walks each PVS leaf's parents up to the first already marked.
+    const nodeParent = new Int32Array(nodes.count).fill(-1);
+    const leafParent = new Int32Array(leafs.count).fill(-1);
+    for (let n = 0; n < nodes.count; n++) {
+      for (let s = 0; s < 2; s++) {
+        const c = nodes.children[n * 2 + s]!;
+        if (c >= 0) {
+          if (c < nodes.count && nodeParent[c] === -1 && c !== 0) nodeParent[c] = n;
+        } else if (-1 - c < leafs.count && leafParent[-1 - c] === -1) leafParent[-1 - c] = n;
+      }
+    }
+    const pvs = clusterPvs(bsp, cluster);
+    for (let l = 0; l < leafs.count; l++) {
+      const c = leafs.cluster[l]!;
+      if (c < 0 || !(pvs[c >> 3]! & (1 << (c & 7)))) continue;
+      leafVis[l] = 1;
+      for (let n = leafParent[l]!; n >= 0 && !nodeVis[n]; n = nodeParent[n]!) nodeVis[n] = 1;
+    }
+  }
+  for (let l = 0; l < leafs.count; l++) {
+    if (leafs.contents[l] === CONTENTS_SOLID) leafVis[l] = 0;
+    const a = leafs.area[l]!;
+    if (areaBits && !((areaBits[a >> 3] ?? 0) & (1 << (a & 7)))) leafVis[l] = 0;
+  }
+  return { nodes: nodeVis, leafs: leafVis };
+}
+
+/**
+ * The world faces R_RecursiveWorldNode passes from `eye`, in the order it reaches them.
+ * From node 0 it skips nodes and leafs not marked in `vis` and, with `planes`, those
+ * whose box lies wholly outside one of them (R_CullBox: give it the four side planes).
+ * A leaf marks its faces; after a node's eye-side subtree, each face of the node that
+ * is marked by then and has the eye on its front side is passed, then the other subtree
+ * is walked. Faces not drawn (no texture) are left out.
+ */
+export function walkWorld(bsp: Bsp, mesh: WorldMesh, vis: WorldVis, eye: readonly [number, number, number], planes?: readonly (readonly number[])[]): number[] {
+  const { nodes, leafs, leafFaces } = bsp;
+  const nfaces = bsp.faces.count;
+  const marked = new Uint8Array(nfaces);
   // Each node is entered at most once, so a corrupt map whose children loop cannot hang.
   const entered = new Uint8Array(nodes.count);
-  type Frame = { node: number; back: number };
-  // R_RecursiveWorldNode starts at r_worldmodel->nodes, node 0.
+  const out: number[] = [];
+  type Frame = { node: number; side: number };
   const stack: (number | Frame)[] = [0];
   while (stack.length > 0) {
     const top = stack.pop()!;
     if (typeof top !== "number") {
-      // Front subtree done: this node's faces, then the back subtree.
-      emitFaces(top.node);
-      if (top.back >= 0) stack.push(top.back);
+      const { node, side } = top;
+      const first = nodes.firstFace[node]!;
+      for (let f = first; f < Math.min(first + nodes.numFaces[node]!, nfaces); f++) {
+        if (marked[f] && (bsp.faces.side[f] ? 1 : 0) === side && mesh.faceTexture[f]! >= 0) out.push(f);
+      }
+      stack.push(nodes.children[node * 2 + (side ^ 1)]!);
+      continue;
+    }
+    if (top < 0) {
+      const l = -1 - top;
+      if (l >= leafs.count || !vis.leafs[l]) continue;
+      if (planes && boxOutsidePlanes(planes, leafs.mins, leafs.maxs, l * 3)) continue;
+      const first = leafs.firstLeafFace[l]!;
+      for (let k = first; k < Math.min(first + leafs.numLeafFaces[l]!, leafFaces.length); k++) {
+        const f = leafFaces[k]!;
+        if (f < nfaces) marked[f] = 1;
+      }
       continue;
     }
     const node = top;
-    if (node < 0 || node >= nodes.count || entered[node]) continue;
+    if (node >= nodes.count || entered[node]) continue;
     entered[node] = 1;
-    const side = planeSide(nodes.planeNum[node]!);
-    stack.push({ node, back: nodes.children[node * 2 + (side ^ 1)]! });
+    if (!vis.nodes[node]) continue;
+    if (planes && boxOutsidePlanes(planes, nodes.mins, nodes.maxs, node * 3)) continue;
+    const side = eyePlaneSide(bsp, nodes.planeNum[node]!, eye);
+    stack.push({ node, side });
     stack.push(nodes.children[node * 2 + side]!);
   }
-  return visit.reverse();
+  return out;
+}
 
-  function planeSide(p: number): number {
-    return eyePlaneSide(bsp, p, eye);
+/**
+ * The world's draws for the faces walkWorld passes. R_RecursiveWorldNode tests SURF_SKY
+ * before the translucent flags: sky faces only bound the sky box (`sky`), translucent
+ * ones are prepended to the alpha chain (`alpha`, in R_DrawAlphaSurfaces' order), and
+ * the rest are drawn from `indices`, grouped by texture and flags as buildDrawList
+ * groups them. The indices are rebuilt from per-face slices only when the set of opaque
+ * faces changes, so a still eye costs no rebuild and no upload.
+ */
+export class WorldDraws {
+  /** Opaque faces' indices; the first `indexCount` are valid. */
+  readonly indices: Uint32Array;
+  indexCount = 0;
+  draws: DrawRange[] = [];
+  sky: number[] = [];
+  alpha: number[] = [];
+  /** World opaque faces sorted by draw key, then face number. */
+  private readonly order: Int32Array;
+  /** Per face: its triangles' first index in `all`, and their index count. */
+  private readonly faceFirst: Uint32Array;
+  private readonly faceCount: Uint32Array;
+  private readonly all: Uint32Array;
+  private readonly marked: Uint8Array;
+  /** The opaque faces drawn, in `order`; -1 entries before the first update. */
+  private readonly drawn: Int32Array;
+  private drawnCount = -1;
+
+  constructor(private readonly mesh: WorldMesh) {
+    const n = mesh.faceTexture.length;
+    const faces: number[] = [];
+    for (let f = mesh.firstFace; f < mesh.firstFace + mesh.numFaces; f++) {
+      if (mesh.faceTexture[f]! >= 0 && !(mesh.faceFlags[f]! & (SURF_SKY | SURF_TRANSLUCENT))) faces.push(f);
+    }
+    faces.sort((a, b) => drawKey(mesh, a) - drawKey(mesh, b) || a - b);
+    this.order = Int32Array.from(faces);
+    this.faceFirst = new Uint32Array(n);
+    this.faceCount = new Uint32Array(n);
+    const list: number[] = [];
+    for (const f of faces) {
+      this.faceFirst[f] = list.length;
+      pushFace(mesh, f, list);
+      this.faceCount[f] = list.length - this.faceFirst[f]!;
+    }
+    this.all = Uint32Array.from(list);
+    this.indices = new Uint32Array(list.length);
+    this.marked = new Uint8Array(n);
+    this.drawn = new Int32Array(faces.length);
   }
 
-  function emitFaces(node: number): void {
-    const sidebit = planeSide(nodes.planeNum[node]!);
-    const first = nodes.firstFace[node]!;
-    for (let f = first; f < Math.min(first + nodes.numFaces[node]!, bsp.faces.count); f++) {
-      if (want[f] && (bsp.faces.side[f] ? 1 : 0) === sidebit) visit.push(f);
+  /** Take one frame's walkWorld faces. Returns whether `indices` and `draws` changed. */
+  update(faces: readonly number[]): boolean {
+    const { mesh, marked, drawn } = this;
+    marked.fill(0);
+    const sky: number[] = [];
+    const alpha: number[] = [];
+    for (const f of faces) {
+      const flags = mesh.faceFlags[f]!;
+      if (flags & SURF_SKY) sky.push(f);
+      else if (flags & SURF_TRANSLUCENT) alpha.push(f);
+      else marked[f] = 1;
     }
+    this.sky = sky;
+    this.alpha = alpha.reverse();
+    let count = 0;
+    let same = true;
+    for (const f of this.order) {
+      if (!marked[f]) continue;
+      if (count >= this.drawnCount || drawn[count] !== f) same = false;
+      drawn[count++] = f;
+    }
+    if (same && count === this.drawnCount) return false;
+    this.drawnCount = count;
+    const draws: { -readonly [K in keyof DrawRange]: DrawRange[K] }[] = [];
+    let o = 0;
+    let key = -1;
+    for (let k = 0; k < count; k++) {
+      const f = drawn[k]!;
+      const first = this.faceFirst[f]!;
+      const len = this.faceCount[f]!;
+      this.indices.set(this.all.subarray(first, first + len), o);
+      const fk = drawKey(mesh, f);
+      if (fk === key) draws[draws.length - 1]!.count += len;
+      else {
+        draws.push({ texture: mesh.faceTexture[f]!, flags: mesh.faceFlags[f]!, first: o, count: len });
+        key = fk;
+      }
+      o += len;
+    }
+    this.indexCount = o;
+    this.draws = draws;
+    return true;
   }
 }

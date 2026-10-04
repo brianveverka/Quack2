@@ -141,7 +141,8 @@ export function clustersVisible(clusters: readonly number[], pvs: Uint8Array): b
 
 /**
  * The six clip planes of a view-projection matrix (Gribb and Hartmann), as [a, b, c, d]
- * with a*x + b*y + c*z + d >= 0 inside. Unnormalized: only the sign is used.
+ * with a*x + b*y + c*z + d >= 0 inside, in the order left, right, bottom, top, near,
+ * far: the first four are R_SetFrustum's side planes. Unnormalized: only the sign is used.
  */
 export function frustumPlanes(viewProj: Mat4): number[][] {
   const row = (r: number) => [viewProj[r]!, viewProj[4 + r]!, viewProj[8 + r]!, viewProj[12 + r]!];
@@ -159,12 +160,21 @@ export function frustumPlanes(viewProj: Mat4): number[][] {
  * just as surely, so a box beyond either is culled here too.
  */
 export function boxOutsideFrustum(planes: readonly (readonly number[])[], box: Box): boolean {
-  const { mins, maxs } = box;
-  return planes.some(([a, b, c, d]) => {
+  return boxOutsidePlanes(planes, box.mins, box.maxs);
+}
+
+/**
+ * boxOutsideFrustum for a box stored at `offset` in flat bounds arrays (BSP node and
+ * leaf mins/maxs), as BOX_ON_PLANE_SIDE returning 2: the box is culled only when its
+ * corner farthest along the normal is behind the plane.
+ */
+export function boxOutsidePlanes(planes: readonly (readonly number[])[], mins: ArrayLike<number>, maxs: ArrayLike<number>, offset = 0): boolean {
+  for (const [a, b, c, d] of planes) {
     // The box corner farthest along the plane normal.
-    const x = a! >= 0 ? maxs[0] : mins[0];
-    const y = b! >= 0 ? maxs[1] : mins[1];
-    const z = c! >= 0 ? maxs[2] : mins[2];
-    return a! * x + b! * y + c! * z + d! < 0;
-  });
+    const x = a! >= 0 ? maxs[offset]! : mins[offset]!;
+    const y = b! >= 0 ? maxs[offset + 1]! : mins[offset + 1]!;
+    const z = c! >= 0 ? maxs[offset + 2]! : mins[offset + 2]!;
+    if (a! * x + b! * y + c! * z + d! < 0) return true;
+  }
+  return false;
 }

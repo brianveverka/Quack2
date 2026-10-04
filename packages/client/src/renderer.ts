@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // WebGL2 world renderer: one static vertex buffer for every model, a world index buffer
-// rebuilt when the eye changes cluster or area, a static index buffer for the brush models drawn
-// at their entity origins and angles, one draw per texture and surface flags per model.
-// World leafs and brush models behind a closed area portal, or outside the eye's PVS,
-// are skipped, and brush models outside the view frustum. Warped faces
+// rebuilt when the faces R_RecursiveWorldNode passes change, a static index buffer for
+// the brush models drawn at their entity origins and angles, one draw per texture and
+// surface flags per model. World leafs and brush models behind a closed area portal,
+// outside the eye's PVS, or outside the view frustum are skipped. Warped faces
 // (SURF_WARP) are moved in the vertex shader as EmitWaterPolys does; translucent ones
 // (SURF_TRANS33/66) are blended last, in R_DrawAlphaSurfaces' order. The world's sky
 // faces are not drawn; the sky box is, where they bound it (R_DrawSkyBox).
@@ -32,17 +32,19 @@ import { TURBSIN } from "./warp.js";
 import {
   SURF_TRANSLUCENT,
   VERTEX_FLOATS,
+  WorldDraws,
   brushModelAlphaOrder,
   buildDrawList,
   buildOrderedDraws,
   buildWorldMesh,
-  eyePlaneSide,
   modelFaceMask,
   visibleFaceMask,
-  worldAlphaOrder,
+  walkWorld,
+  worldVis,
   type DrawList,
   type DrawRange,
   type WorldMesh,
+  type WorldVis,
 } from "./world.js";
 
 // The warp is EmitWaterPolys per vertex: r_turbsin packed four to a vec4 (a float[256]
@@ -139,6 +141,8 @@ export interface FrameStats {
   readonly area: number;
   /** World faces in the PVS and in areas connected to the eye's; brush model faces are not counted. */
   readonly visibleFaces: number;
+  /** World faces R_RecursiveWorldNode passes: those, less faces in leafs outside the view frustum or facing away; sky and translucent ones included. */
+  readonly drawnFaces: number;
   /** Brush model instances drawn. */
   readonly brushModels: number;
   /** Brush model instances skipped: in no area connected to the eye's (behind a closed area portal). */
@@ -178,7 +182,11 @@ export class WorldRenderer {
   readonly mesh: WorldMesh;
   /** Texture names drawn as a checker placeholder. */
   missingTextures: readonly string[] = [];
-  /** Brush model culling, on by default; off draws every instance (the engine's r_nocull, for the server's PVS and area tests too). */
+  /**
+   * Culling, on by default. Off, the world skips no node or leaf for the view frustum
+   * (the engine's r_nocull) and every brush model instance is drawn (r_nocull, and the
+   * server's PVS and area tests too).
+   */
   cull = true;
   /** Every area connected to every other, for the world and brush models alike (the server's map_noareas). */
   noAreas = false;
@@ -213,7 +221,9 @@ export class WorldRenderer {
   private readonly flood: Int32Array;
   /** Clusters of the fat PVS the brush models were last tested against. */
   private fatKey: string | undefined = "";
-  private drawList: DrawList = { indices: new Uint32Array(0), draws: [], visibleFaces: 0, translucent: [], sky: [] };
+  private vis: WorldVis = { nodes: new Uint8Array(0), leafs: new Uint8Array(0) };
+  private visibleFaces = 0;
+  private readonly worldDraws: WorldDraws;
   private readonly skyProgram: WebGLProgram;
   private readonly skyVao: WebGLVertexArrayObject;
   private readonly skyVertexBuffer: WebGLBuffer;
@@ -238,6 +248,7 @@ export class WorldRenderer {
     const atlas = buildLightmapAtlas(bsp, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number, lightStyles);
     this.atlas = atlas;
     this.mesh = buildWorldMesh(bsp, atlas);
+    this.worldDraws = new WorldDraws(this.mesh);
 
     this.program = linkProgram(gl, VS, FS);
     this.uViewProj = gl.getUniformLocation(this.program, "uViewProj");
@@ -394,15 +405,23 @@ export class WorldRenderer {
     const area = leafArea > 0 && leafArea < this.flood.length ? leafArea : 0;
     // The world's area bits depend on the eye's area alone: portals do not change yet.
     const worldArea = this.noAreas ? -1 : area;
-    const rebuild = cluster !== this.cluster || worldArea !== this.area;
-    if (rebuild) {
+    if (cluster !== this.cluster || worldArea !== this.area) {
       this.cluster = cluster;
       this.area = worldArea;
       const bits = worldArea > 0 ? areaBits(this.flood, worldArea) : undefined;
-      this.drawList = buildDrawList(this.mesh, visibleFaceMask(bsp, this.mesh, cluster, bits), true);
+      this.vis = worldVis(bsp, cluster, bits);
+      const mask = visibleFaceMask(bsp, this.mesh, cluster, bits);
+      this.visibleFaces = mask.reduce((n, m, f) => (m && this.mesh.faceTexture[f]! >= 0 ? n + 1 : n), 0);
     }
     const aspect = width / height;
     const fy = fovY(FOV_X, aspect);
+    const proj = perspective(fy, aspect, NEAR, FAR);
+    this.viewProj = multiply(proj, viewMatrix(view.origin, view.pitch, view.yaw));
+    const planes = frustumPlanes(this.viewProj);
+    // R_CullBox tests the four side planes only.
+    const faces = walkWorld(bsp, this.mesh, this.vis, view.origin, this.cull ? planes.slice(0, 4) : undefined);
+    const world = this.worldDraws;
+    const rebuild = world.update(faces);
     // Farthest a near-plane point lies from the eye on any axis is at most its corner distance.
     const nearCorner = NEAR * Math.hypot(1, Math.tan((FOV_X * Math.PI) / 360), Math.tan((fy * Math.PI) / 360));
     const fat = fatClusters(bsp, view.origin, cluster, Math.max(8, nearCorner));
@@ -422,9 +441,7 @@ export class WorldRenderer {
     gl.frontFace(gl.CW);
     gl.cullFace(gl.BACK);
 
-    const proj = perspective(fy, aspect, NEAR, FAR);
     gl.useProgram(this.program);
-    this.viewProj = multiply(proj, viewMatrix(view.origin, view.pitch, view.yaw));
     gl.uniformMatrix4fv(this.uViewProj, false, this.viewProj);
     gl.bindVertexArray(this.vao);
     gl.activeTexture(gl.TEXTURE1);
@@ -432,13 +449,13 @@ export class WorldRenderer {
     gl.activeTexture(gl.TEXTURE0);
     // The element array binding is VAO state, so both buffers are bound with the VAO bound.
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
-    if (rebuild) gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, this.drawList.indices, gl.DYNAMIC_DRAW);
+    if (rebuild) gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, world.indices.subarray(0, world.indexCount), gl.DYNAMIC_DRAW);
     gl.uniformMatrix4fv(this.uModel, false, IDENTITY);
     gl.uniform1f(this.uTime, this.time);
     // EmitWaterPolys' scroll for SURF_FLOWING warps, computed as the C does in double.
     this.scroll = -64 * (this.time * 0.5 - Math.trunc(this.time * 0.5));
-    this.drawRanges(this.drawList.draws);
-    let draws = this.drawList.draws.length;
+    this.drawRanges(world.draws);
+    let draws = world.draws.length;
     // R_DrawWorld ends with the sky box, before any entity.
     const sky = this.drawSkyBox(view.origin);
     draws += sky.sides;
@@ -448,7 +465,6 @@ export class WorldRenderer {
     // is inside the fat PVS box, and the model's box touches the leaf the point is in.
     // Where the near plane is inside solid, models and world alike can show a cluster
     // past this, as in the engine.
-    const planes = frustumPlanes(this.viewProj);
     let brushModels = 0, areaCulled = 0, pvsCulled = 0, frustumCulled = 0;
     const eyeArea = this.noAreas ? 0 : area;
     const drawn: InstanceDraws[] = [];
@@ -479,7 +495,7 @@ export class WorldRenderer {
     // them all with the world matrix, so a moved or rotated brush model's translucent
     // faces stay at their compiled spot there; here they move with their entity.
     let alphaFaces = 0;
-    const order = worldAlphaOrder(bsp, this.drawList.translucent, view.origin);
+    const order = world.alpha;
     if (drawn.some((i) => i.alphaDraws.length > 0) || order.length > 0) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -511,7 +527,8 @@ export class WorldRenderer {
       leaf,
       cluster,
       area,
-      visibleFaces: this.drawList.visibleFaces,
+      visibleFaces: this.visibleFaces,
+      drawnFaces: faces.length,
       brushModels,
       areaCulled,
       pvsCulled,
@@ -524,9 +541,7 @@ export class WorldRenderer {
   }
 
   /**
-   * R_AddSkySurface for each visible world sky face on the eye's side of its plane, as
-   * R_RecursiveWorldNode picks them (without its frustum culling, so the rectangles can
-   * be larger), then R_DrawSkyBox: depth tested and written, after the world's opaque
+   * R_AddSkySurface for each world sky face R_RecursiveWorldNode passed, then R_DrawSkyBox: depth tested and written, after the world's opaque
    * faces, so nearer geometry hides the box and anything drawn behind a sky face nearer
    * than the box shows through it, as in the engine.
    */
@@ -537,8 +552,7 @@ export class WorldRenderer {
     let polygons = 0;
     const f32 = Math.fround;
     const ex = f32(eye[0]), ey = f32(eye[1]), ez = f32(eye[2]);
-    for (const f of this.drawList.sky) {
-      if (eyePlaneSide(bsp, bsp.faces.planeNum[f]!, eye) !== (bsp.faces.side[f] ? 1 : 0)) continue;
+    for (const f of this.worldDraws.sky) {
       const p0 = mesh.faceFirstPoly[f]!;
       for (let p = p0; p < p0 + mesh.faceNumPolys[f]!; p++) {
         const v0 = mesh.polyFirstVertex[p]!;

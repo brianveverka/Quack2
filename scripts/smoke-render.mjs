@@ -226,6 +226,14 @@ try {
   check(spawn.cluster >= 0, "spawn view is inside a cluster");
   check(spawn.clearFraction === 0, "spawn view has no background pixels (closed room, no cracks)");
   check(spawn.colors > 100, "spawn view shows textured, lit surfaces (>100 distinct colors)");
+  // R_RecursiveWorldNode's R_CullBox: the walk passes only faces in leafs inside the side
+  // planes, so facing the west wall from the spawn passes far fewer than facing east.
+  const west = await shoot("spawn-west", { origin: [-448, 0, 46], pitch: 0, yaw: 180 });
+  check(
+    spawn.drawnFaces > 0 && spawn.drawnFaces < spawn.visibleFaces && west.drawnFaces < spawn.drawnFaces && west.visibleFaces === spawn.visibleFaces,
+    `the view frustum culls world faces (${spawn.drawnFaces} east, ${west.drawnFaces} west, of ${spawn.visibleFaces} in the PVS)`,
+  );
+  check(west.clearFraction === 0, "the west view has no background pixels");
 
   // Lightmaps reach the screen: the floor in the pillar's shadow is far darker than the
   // floor beside it (luxel RGB sums 21 vs 243, measured 2026-10-03). Averaging a box
@@ -268,7 +276,7 @@ try {
 
   // Outside the map: cluster -1 draws every face, and the void shows the background.
   const outside = await shoot("outside", { origin: [1200, 0, 400], pitch: 20, yaw: 180 });
-  check(outside.cluster === -1 && outside.visibleFaces === outside.worldFaces, "outside the map, every world face is drawn");
+  check(outside.cluster === -1 && outside.visibleFaces === outside.worldFaces, "outside the map, every world face is in the PVS");
   check(outside.clearFraction > 0 && outside.clearFraction < 1, "outside view shows both geometry and background");
 
   // The interactive loop: frames advance on their own, and holding W flies forward.
@@ -553,6 +561,27 @@ try {
   console.log(`  sky, no data: ${JSON.stringify(bare)}`);
   check(!noSkyError && bare.sky?.name === "unit1_" && bare.sky.loaded.length === 0, "sky.bsp loads with the default unit1_ sky and no images");
   check(bare.stats.skyPolygons > 0 && bare.stats.skySides > 0 && bare.clear === 0, "world sky faces bound a sky box that covers them (no background pixels)");
+  // Looking down at the floor, most of the walls and the ceiling are outside the view.
+  const skyCull = await page.evaluate((view) => {
+    const at = (cull) => {
+      window.quack.setCull(cull);
+      window.quack.setView(view);
+      const { data } = window.quack.readPixels();
+      let clear = 0;
+      for (let i = 0; i < data.length; i += 4) if (data[i] === 64 && data[i + 1] === 0 && data[i + 2] === 64) clear++;
+      const { skyPolygons, skySides, drawnFaces } = window.quack.stats;
+      return { skyPolygons, skySides, drawnFaces, clear };
+    };
+    const on = at(true);
+    const off = at(false);
+    window.quack.setCull(true);
+    return { on, off };
+  }, { ...SKY_EYE, pitch: 89 });
+  console.log(`  sky culling: ${JSON.stringify(skyCull)}`);
+  check(
+    skyCull.on.skyPolygons > 0 && skyCull.on.skyPolygons < skyCull.off.skyPolygons && skyCull.on.drawnFaces < skyCull.off.drawnFaces && skyCull.on.clear === 0,
+    "sky faces outside the view frustum do not bound the sky box, which still covers those in it (R_CullBox in the world walk)",
+  );
   check(
     bare.colors.every((c) => c && c[1] === 0 && c[2] === 0),
     "without sky images the box draws r_notexture (red on black) where the sky faces are",
