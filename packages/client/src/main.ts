@@ -6,7 +6,7 @@
 // at any time and re-textures the world. Click to capture the mouse; WASD to fly,
 // Space/C up/down, Shift fast.
 
-import { GameFs, checkBspIntegrity, entityVec3, parseBsp, parseEntities, type BspEntity } from "@quack2/sim";
+import { DEATHMATCH_LIGHTSTYLES, GameFs, checkBspIntegrity, lightStyleValues, entityVec3, parseBsp, parseEntities, type BspEntity } from "@quack2/sim";
 import { MapLoadError, errorMessage, loadMap, loadWalTextures, openGameArchive } from "./assets.js";
 import { brushModelInstances } from "./bmodels.js";
 import { FlyCamera } from "./camera.js";
@@ -47,6 +47,10 @@ export interface QuackDebug {
   readPixels(): { width: number; height: number; data: Uint8Array };
   /** Turn brush model culling on (the default) or off. */
   setCull(on: boolean): void;
+  /** Hold the light style clock at `ms` since the map loaded, or let it run again (undefined). */
+  setLightTime(ms: number | undefined): void;
+  /** Faces whose lightmap the last frame uploaded because a light style changed. */
+  lightmapUploads: number;
 }
 
 declare global {
@@ -82,6 +86,8 @@ async function main(): Promise<void> {
     project: () => undefined,
     readPixels: () => ({ width: 0, height: 0, data: new Uint8Array(0) }),
     setCull: () => {},
+    setLightTime: () => {},
+    lightmapUploads: 0,
   });
   const gl = canvas.getContext("webgl2", { antialias: false });
   if (!gl) return showError("WebGL2 is not available in this browser.");
@@ -148,7 +154,11 @@ async function main(): Promise<void> {
   debug.brushModels = brush.instances.map(
     (b) => `${b.classname} *${b.model} at ${b.origin.join(" ")}${b.angles.some((a) => a !== 0) ? ` angles ${b.angles.join(" ")}` : ""}`,
   );
-  const renderer = new WorldRenderer(gl, bsp, noTextures, brush.instances);
+  // Light styles animate on level time, which starts with the map here.
+  const lightStart = performance.now();
+  let lightTime: number | undefined;
+  const styleValues = lightStyleValues(DEATHMATCH_LIGHTSTYLES, 0);
+  const renderer = new WorldRenderer(gl, bsp, noTextures, brush.instances, styleValues);
   debug.missingTextures = renderer.missingTextures;
   const dataStatus = document.getElementById("data");
   // Debug fields change together at the end, so a reader never sees archives mounted
@@ -211,6 +221,8 @@ async function main(): Promise<void> {
   };
   const draw = () => {
     resize();
+    lightStyleValues(DEATHMATCH_LIGHTSTYLES, lightTime ?? performance.now() - lightStart, styleValues);
+    debug.lightmapUploads = renderer.setLightStyles(styleValues);
     debug.stats = renderer.render(camera, canvas.width, canvas.height);
     debug.frames++;
   };
@@ -227,6 +239,9 @@ async function main(): Promise<void> {
   };
   debug.setCull = (on) => {
     renderer.cull = on;
+  };
+  debug.setLightTime = (ms) => {
+    lightTime = ms;
   };
   debug.readPixels = () => {
     draw();

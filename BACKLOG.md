@@ -4,17 +4,17 @@ Milestones in order; each bullet is roughly one session. Chain sessions take the
 order (see CLAUDE.md, Orchestration).
 
 ## 1. Game data and renderer completeness
-The WebGL2 world renderer is in `packages/client` (faces, lightmaps, PVS, inline brush
-models where the game has them after spawn (untargeted plats lowered, START_OPEN
-doors open, trains at their first path_corner or a teleport one after it, turrets
-turned to rest in their pitch/yaw range with their teams), culled by
-PVS and frustum, free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip
-data (zip64 and self-extractor stubs included), picked archives read by range, checker
-fallback, `pnpm smoke`).
+The WebGL2 world renderer is in `packages/client` (faces, lightmaps with the deathmatch
+light styles animated at 10 Hz, PVS, inline brush models where the game has them after
+spawn (untargeted plats lowered, START_OPEN doors open, trains at their first
+path_corner or a teleport one after it, turrets turned to rest in their pitch/yaw range
+with their teams), culled by PVS and frustum, free-fly camera, `.wal` textures and
+`?map=` BSPs from mounted pak/zip data (zip64 and self-extractor stubs included), picked
+archives read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- Only light style 0 is drawn; styles 1-3 (switchable and animated lights) are ignored.
-- Surface flags: SURF_SKY, SURF_WARP, SURF_TRANS33/66 draw as ordinary opaque faces
-  (NODRAW is skipped). Needs a sky box, warp shader, and a sorted translucent pass.
+- Surface flags: SURF_SKY, SURF_WARP, SURF_TRANS33/66 draw as ordinary opaque, lightmapped
+  faces (NODRAW is skipped); ref_gl gives them no lightmap. Needs a sky box, warp
+  shader, and a sorted translucent pass.
 - No area portal (areabits) culling, for the world or brush models (the server also
   drops entities behind a closed door's area portal); no frustum culling of the world.
   The engine's second view cluster near water surfaces (R_MarkLeaves `viewcluster2`) is
@@ -40,6 +40,11 @@ Remaining:
 - The free-fly camera's spawn yaw (main.ts `spawnPoint`) reads only "angle", through
   Number() rather than atof; it ignores "angles" and the later-key rule that
   `entityAngles` implements.
+- `updateLightmapAtlas` recomposes every face on a changed light style, map-wide;
+  ref_gl rebuilds only surfaces it draws. Measured 2026-10-04 in Node 22 on the fixture,
+  warmed up: 33-34 ns per luxel with one style per face, about 73 with four, so 50k
+  animated luxels cost 2-4 ms per 10 Hz step. Limit it to visible
+  faces if large maps show it.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

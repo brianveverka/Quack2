@@ -7,7 +7,8 @@
 // and drawn at a moved entity origin, and rotated, in copies of the map, and that culled
 // brush models leave the frame unchanged. Another load mounts synthetic
 // game data (a pak and a deflated zip built here, never id data) and checks the textures
-// arrive, and that ?map= finds a BSP packed into a mounted pak.
+// arrive, and that ?map= finds a BSP packed into a mounted pak. A copy of the map with
+// every face on an animated light style checks lightmaps are uploaded as styles change.
 // Usage: node scripts/smoke-render.mjs [outdir]   (default packages/client/dist/smoke)
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
@@ -55,6 +56,16 @@ SYNTHETIC["/data/culled.bsp"] = withEntityString(
   fixtureBsp,
   `${fixtureEntities}{\n"classname" "func_wall"\n"model" "*1"\n"origin" "0 -320 0"\n}\n{\n"classname" "func_wall"\n"model" "*1"\n"origin" "2000 0 0"\n}\n`,
 );
+// Every face's single lightmap on style 2 (the slow pulse: 'a' at 0 ms, 'm' at 1200 ms,
+// 'z' at 2500 ms). Lump 6 is faces, 20 bytes each, styles at byte 12; every fixture face
+// has a lightmap.
+const FIXTURE_FACES = fixtureBsp.readInt32LE(12 + 6 * 8) / 20;
+{
+  const styled = Uint8Array.from(fixtureBsp);
+  const ofs = fixtureBsp.readInt32LE(8 + 6 * 8);
+  for (let f = 0; f < FIXTURE_FACES; f++) styled[ofs + f * 20 + 12] = 2;
+  SYNTHETIC["/data/styled.bsp"] = styled;
+}
 // The moved map packed at a path the server does not have, so only the pak can supply it.
 SYNTHETIC["/data/maps.pak"] = writePak({
   "maps/packed.bsp": SYNTHETIC["/data/moved.bsp"],
@@ -322,6 +333,47 @@ try {
     );
     check(r.differ === 0, `${name} view: culling changes no pixel (${r.differ} bytes differ)`);
   }
+
+  // Light styles: the world goes black with style 2 at 'a', brighter than style 0's
+  // normal light at 'z', and back at 'm' renders byte for byte as the unstyled map, so
+  // every face's lightmap was uploaded to its own rect; each change uploads every face.
+  const lightFrame = (ms) =>
+    page.evaluate((ms) => {
+      window.quack.setView({ origin: [-448, 0, 46], pitch: 0, yaw: 0 });
+      window.quack.setLightTime(ms);
+      const { data } = window.quack.readPixels();
+      const uploads = window.quack.lightmapUploads;
+      // A second frame at the same time uploads nothing.
+      window.quack.readPixels();
+      let sum = 0, clear = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] === 64 && data[i + 1] === 0 && data[i + 2] === 64) clear++;
+        else sum += data[i] + data[i + 1] + data[i + 2];
+      }
+      return { uploads, again: window.quack.lightmapUploads, mean: sum / (data.length / 4), clear, data: Array.from(data) };
+    }, ms);
+  await page.goto(`${ORIGIN}/`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const normal = await lightFrame(0);
+  await page.goto(`${ORIGIN}/?map=data/styled.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const styledError = await page.evaluate(() => window.quack.error);
+  const off = await lightFrame(0);
+  const doubled = await lightFrame(2500);
+  const back = await lightFrame(1200);
+  const differ = back.data.reduce((n, b, i) => n + (b !== normal.data[i] ? 1 : 0), 0);
+  const brief = ({ data, ...r }) => JSON.stringify(r);
+  console.log(`  light styles: normal ${brief(normal)}, a ${brief(off)}, z ${brief(doubled)}, m ${brief(back)}, ${differ} bytes differ at m`);
+  check(!styledError && off.clear === 0 && off.mean === 0, "faces on a light style at 'a' draw black");
+  check(doubled.mean > normal.mean * 1.3, "faces on a light style at 'z' draw brighter than normal light");
+  check(
+    back.data.length === normal.data.length && differ === 0,
+    "faces on a light style at 'm' draw exactly as unstyled faces, after style changes",
+  );
+  check(
+    doubled.uploads === FIXTURE_FACES && back.uploads === FIXTURE_FACES && doubled.again === 0 && back.again === 0,
+    `a style change uploads every face on it once (${FIXTURE_FACES}), an unchanged frame none`,
+  );
 
   // Game data: ?pak= mounts in order; 404s are reported, in URL order, and skipped.
   await page.goto(`${ORIGIN}/?pak=data/absent-1.pak&pak=data/synthetic.pak&pak=data/absent-2.pak&pak=data/synthetic.zip`);
