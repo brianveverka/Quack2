@@ -95,4 +95,5 @@ Remaining:
 - Measure the world walk (`WorldWalk.walk`, `WorldDraws.update`) on a large real map.
   Measured 2026-10-04 only on synthetic kd-trees with no PVS (esbuild bundle, Node 22,
   cull on): 16380 faces, 130-170 us walk and 45-60 us update per frame; 65532 faces,
-  570-610 us and 210-235 us. The sandbox has no game data.
+  570-610 us and 210-235 us (bench not committed; vitest reads 2-5x slower than plain
+  node). The sandbox has no game data.
