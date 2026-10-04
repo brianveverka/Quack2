@@ -864,10 +864,10 @@ function pickTarget(s: Settle, name: string | undefined): number | undefined {
 }
 
 /**
- * An entity as train_next reads it when a train's "target" names it (`pickTarget`): its
- * live s.origin and target when it is a train, else its spawn ones (no other entity it
- * may name moves or steps its target in the settle frames; after them a door's or plat's
- * is not followed).
+ * An entity as train_next reads it when a train's "target" names it (`pickTarget`): a
+ * train's live s.origin and target, and its spawnflags bit 1 is TRAIN_START_ON, which
+ * train_next reads as TELEPORT; any other entity's spawn origin, target and spawnflags
+ * (not where its spawn function or later moves put it: BACKLOG.md).
  */
 function pathCorner(s: Settle, name: string): PathCorner | undefined {
   const t = pickTarget(s, name);
@@ -881,7 +881,7 @@ function pathCorner(s: Settle, name: string): PathCorner | undefined {
     origin: [f32(origin[0]), f32(origin[1]), f32(origin[2])],
     target: train ? train.train!.target : ent.target,
     wait: f32(atof(ent.wait ?? "0")),
-    teleport: (atoi(ent.spawnflags ?? "0") & PATH_CORNER_TELEPORT) !== 0,
+    teleport: train ? train.train!.startOn : (atoi(ent.spawnflags ?? "0") & PATH_CORNER_TELEPORT) !== 0,
     pathtarget: ent.pathtarget,
   };
 }

@@ -696,6 +696,24 @@ describe("train movers", () => {
     expect([[...train.train!.targetEnt!.origin], train.train!.target, [...train.endOrigin]]).toEqual([[385, -127, 301], "q", [770, -254, 302]]);
   });
 
+  it("reads a START_ON train named as a corner as a TELEPORT one (spawnflags bit 1)", () => {
+    // The trigger_always runs the second train's train_next first, setting START_ON: the
+    // first train jumps to it and, its target stepped past q, stops there.
+    const train = brushMovers(
+      bsp,
+      parseEntities(`
+        { "classname" "worldspawn" }
+        { "classname" "trigger_always" "target" "tb" }
+        { "classname" "func_train" "model" "*1" "targetname" "tb" "target" "p" }
+        { "classname" "func_train" "model" "*1" "target" "a1" }
+        { "classname" "path_corner" "targetname" "a1" "target" "tb" }
+        { "classname" "path_corner" "targetname" "p" "origin" "0 0 300" "target" "q" }
+        { "classname" "path_corner" "targetname" "q" "origin" "0 0 600" }
+      `),
+    )[1]![0]!.mover;
+    expect([[...train.origin], train.teleported, train.train!.target, train.train!.targetEnt, train.nextthink]).toEqual([[770, -254, 302], true, undefined, undefined, 0]);
+  });
+
   it("puts the train's mins on the corners in float, so corners its mins round together lie at no distance", () => {
     // 385.00001 rounds to 385 in float: with the fixture's mins the second corner is
     // where the train already is, so train_wait fires its pathtarget in the second frame.

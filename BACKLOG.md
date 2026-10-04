@@ -126,8 +126,11 @@ Remaining:
   blends it (a fast train, or a door team's infinite speeds).
 - A train's corner lookup (`pathCorner`) takes the first entity with the targetname,
   where G_PickTarget picks one of up to 8 at random (rand() % count), and reads a
-  non-train entity's spawn origin and target, not its live ones (a moving door or plat
-  named as a corner after the settle frames).
+  non-train entity's spawn origin and target, not its live ones: a START_OPEN func_door
+  or func_water is at pos2 from spawn, an item droptofloor moves in frame 2, a door or
+  plat moving after the settle frames. It also snapshots target_ent's origin where
+  train_resume reads it live, and a slave train or one with no inline model, which
+  `brushMovers` leaves out, keeps the origin the settle frames left it.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
