@@ -1290,14 +1290,27 @@ function settleSpawnFrames(
     const slot = s.slots[p]!;
     s.budget = MAX_USES;
     if (typeof slot === "number") {
-      // multi_wait, if a use earlier in this frame set a wait due in it.
-      const think = s.multiThink.get(slot) ?? 0;
-      if (think > 0 && think <= SECOND_FRAME_DUE) s.multiThink.set(slot, 0);
+      // multi_wait, if a use earlier in this frame set a wait due in it: in the trigger's own
+      // slot, and before that along a PUSH or STOP master's teamchain (SV_Physics_Pusher),
+      // after the master's own think.
+      const multiWait = (i: number) => {
+        const think = s.multiThink.get(i) ?? 0;
+        if (think > 0 && think <= SECOND_FRAME_DUE) s.multiThink.set(i, 0);
+      };
+      multiWait(slot);
       const train = s.trains.get(slot);
-      if (!train) continue;
-      s.current = slot;
-      stepPusher([train], second);
-      s.current = -1;
+      if (train) {
+        s.current = slot;
+        stepPusher([train], second);
+        s.current = -1;
+      }
+      const members = teams.get(slot);
+      if (members && PUSHER_CLASSES.has(entities[slot]!.classname ?? "")) {
+        for (const m of members) {
+          if (s.freed.has(m)) break;
+          multiWait(m);
+        }
+      }
     } else if (slot !== null && slot !== "doorTrigger" && slot.nextthink > 0 && slot.nextthink <= SECOND_FRAME_DUE) {
       // SV_RunThink: a nextthink at or below 0 never runs. Think_Delay frees the slot after its uses.
       if (slot.inFrame) s.budget = s.spawnedBudget;

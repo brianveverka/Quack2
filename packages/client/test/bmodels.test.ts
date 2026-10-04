@@ -743,9 +743,20 @@ describe("area portals open at spawn", () => {
         expect(open(always("m") + multi("0.0005") + always("m"))).toEqual([]);
         // 0.2f + 0.001f rounds to just above the bound.
         expect(open(always("m") + multi("0.001") + always("m"))).toEqual([3]);
+        // level.time + wait is stored as a float: in double this one would be due.
+        expect(open(always("m") + multi("0.000999995") + always("m"))).toEqual([3]);
+        // A PUSH or STOP master runs its team's thinks in its own slot, ahead of the trigger's.
+        const team = (master: string) =>
+          open(always("m") + `{ "classname" "${master}" "team" "x" }` + always("m") +
+            `{ "classname" "trigger_multiple" "team" "x" "targetname" "m" "target" "q" "wait" "0.0005" }`);
+        expect(team("func_door")).toEqual([]);
+        expect(team("trigger_relay")).toEqual([3]);
         // With no positive wait it thinks G_FreeEdict a frame later: never in this one.
         expect(open(always("m") + multi("-1") + always("m"))).toEqual([3]);
         expect(open(always("m") + `{ "classname" "trigger_once" "targetname" "m" "target" "q" }` + always("m"))).toEqual([3]);
+        // trigger_once and trigger_counter set wait -1 whatever the key says.
+        expect(open(always("m") + `{ "classname" "trigger_once" "targetname" "m" "target" "q" "wait" "0.0005" }` + always("m"))).toEqual([3]);
+        expect(open(always("m") + `{ "classname" "trigger_counter" "targetname" "m" "target" "q" "count" "1" "wait" "0.0005" }` + always("m"))).toEqual([3]);
         // The walk has passed the trigger's slot when the first use sets its wait.
         expect(open(multi("0.0005") + always("m", 2))).toEqual([3]);
       });
