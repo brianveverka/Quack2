@@ -718,6 +718,7 @@ describe("teams Think_CalcMoveSpeed gives non-finite speeds", () => {
   });
 
   it("turns a rotating member at no distance to NaN angles, and AngleMove_Final reads them as unfinished", () => {
+    // Not reachable from spawn: SP_func_door_rotating makes a "distance" of 0 90.
     const t = [door({ distance: 42, endOrigin: [0, 0, 42], speed: 100, accel: 100, decel: 100 }), door({ rotating: true, distance: 0, endOrigin: [0, 0, 0] })];
     calcMoveSpeed(t);
     for (const m of t) doorGoUp(m, levelTimeAt(2), false);

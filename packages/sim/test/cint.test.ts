@@ -5,6 +5,7 @@ import { cInt } from "../src/cint.js";
 describe("cInt", () => {
   it("truncates toward zero within int's range", () => {
     expect([2.9, -2.9, 0.5, 2147483647.9, -2147483648.9].map(cInt)).toEqual([2, -2, 0, 2147483647, -2147483648]);
+    expect(Object.is(cInt(-0.5), 0)).toBe(true);
   });
 
   it("gives INT_MIN for NaN, the infinities and anything past int's range, as x86 does", () => {
