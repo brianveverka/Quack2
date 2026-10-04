@@ -5,7 +5,7 @@ pool. Planned shape: a WebGL2 browser client and an authoritative Node server ru
 shared simulation.
 
 Status: early. The BSP parser, pak/zip readers, and a WebGL2 world renderer (lightmaps
-with animated light styles, warped and translucent surfaces, PVS culling, inline brush models such as doors and plats drawn
+with animated light styles, warped and translucent surfaces, the sky box, PVS culling, inline brush models such as doors and plats drawn
 where the game has them after spawn and culled by PVS and view frustum, free-fly camera,
 `.wal` textures from game data you mount, checker placeholders for anything missing) are
 implemented and tested.
@@ -71,7 +71,9 @@ after the map has loaded, so they only supply textures.
 
 World textures come from `textures/<name>.wal`, the palette from `pics/colormap.pcx`.
 A missing `.wal` draws the checker; a `.wal` with no palette mounted draws a checker at
-the texture's real size. Problems (unreachable URL, corrupt file) are reported in the
+the texture's real size. The sky box comes from the worldspawn `sky` key (default
+`unit1_`): `env/<sky><side>.tga`, else `.pcx` (through the palette), for sides `rt`, `bk`,
+`lf`, `ft`, `up`, `dn`; a side with neither draws the engine's red-dot `r_notexture`. Problems (unreachable URL, corrupt file) are reported in the
 game data line at the bottom of the page and in the console, and never stop the map
 from rendering, unless the map itself was to come from the broken archive: then the
 map fails on the status line, naming the archive it came from, or listing the

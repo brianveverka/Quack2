@@ -3,7 +3,8 @@
 // model space: triangle fans, one per face, or one per 64-unit piece of a warped face,
 // per-cluster index lists for the world from the PVS, and per-model index lists.
 // Translucent faces are drawn after everything else, in the order ref_gl's
-// R_DrawAlphaSurfaces gets them. DOM-free so it is testable under Node.
+// R_DrawAlphaSurfaces gets them. The world's sky faces are not drawn: they only bound
+// the sky box (sky.ts). DOM-free so it is testable under Node.
 
 import {
   SURF_FLOWING,
@@ -182,6 +183,8 @@ export interface DrawList {
   readonly visibleFaces: number;
   /** Translucent faces, in face order, left out of `indices` for the alpha pass. */
   readonly translucent: readonly number[];
+  /** With `separateSky`, the opaque sky faces, in face order, left out of `indices`. */
+  readonly sky: readonly number[];
 }
 
 /**
@@ -214,17 +217,25 @@ export function visibleFaceMask(bsp: Bsp, mesh: WorldMesh, cluster: number): Uin
 
 /**
  * Triangle-fan indices for the masked opaque faces, grouped by texture and draw flags
- * into one draw each. Translucent faces are listed apart.
+ * into one draw each. Translucent faces are listed apart, and so are sky faces with
+ * `separateSky`: R_RecursiveWorldNode tests SURF_SKY before the translucent flags and
+ * draws none of the world's, while R_DrawInlineBModel draws a brush model's as it does
+ * any opaque face.
  */
-export function buildDrawList(mesh: WorldMesh, mask: Uint8Array): DrawList {
+export function buildDrawList(mesh: WorldMesh, mask: Uint8Array, separateSky = false): DrawList {
   const groups = new Map<number, number[]>();
   const translucent: number[] = [];
+  const sky: number[] = [];
   let visibleFaces = 0;
   for (let f = 0; f < mask.length; f++) {
     const tex = mesh.faceTexture[f]!;
     if (!mask[f] || tex < 0) continue;
     visibleFaces++;
     const flags = mesh.faceFlags[f]!;
+    if (separateSky && flags & SURF_SKY) {
+      sky.push(f);
+      continue;
+    }
     if (flags & SURF_TRANSLUCENT) {
       translucent.push(f);
       continue;
@@ -245,7 +256,7 @@ export function buildDrawList(mesh: WorldMesh, mask: Uint8Array): DrawList {
     indices.set(list, o);
     o += list.length;
   }
-  return { indices, draws, visibleFaces, translucent };
+  return { indices, draws, visibleFaces, translucent, sky };
 }
 
 /** Indices for `faces` drawn in the order given, one draw per run of faces with the same texture and flags. */
@@ -274,6 +285,23 @@ function pushFace(mesh: WorldMesh, f: number, list: number[]): void {
 }
 
 /**
+ * The eye's side of a plane as R_RecursiveWorldNode computes it: 0 in front or on it, 1
+ * behind. In float, axial planes (type 0-2) by one coordinate, any other type by the dot
+ * product.
+ */
+export function eyePlaneSide(bsp: Bsp, p: number, eye: readonly [number, number, number]): number {
+  const { planes } = bsp;
+  const type = planes.type[p]!;
+  const n = planes.normal;
+  const f = Math.fround;
+  const dot =
+    type >= 0 && type < 3
+      ? f(f(eye[type]!) - planes.dist[p]!)
+      : f(f(f(f(f(eye[0]) * n[p * 3]!) + f(f(eye[1]) * n[p * 3 + 1]!)) + f(f(eye[2]) * n[p * 3 + 2]!)) - planes.dist[p]!);
+  return dot >= 0 ? 0 : 1;
+}
+
+/**
  * The order R_DrawAlphaSurfaces draws a model's translucent faces in: R_DrawInlineBModel
  * walks them in face order, each one prepended to the alpha chain, so last face first.
  */
@@ -292,7 +320,7 @@ export function worldAlphaOrder(bsp: Bsp, faces: readonly number[], eye: readonl
   if (faces.length === 0) return [];
   const want = new Uint8Array(bsp.faces.count);
   for (const f of faces) want[f] = 1;
-  const { nodes, planes } = bsp;
+  const { nodes } = bsp;
   const visit: number[] = [];
   // Each node is entered at most once, so a corrupt map whose children loop cannot hang.
   const entered = new Uint8Array(nodes.count);
@@ -316,19 +344,8 @@ export function worldAlphaOrder(bsp: Bsp, faces: readonly number[], eye: readonl
   }
   return visit.reverse();
 
-  /**
-   * The eye's side of a plane as R_RecursiveWorldNode computes it: in float, axial planes
-   * (type 0-2) by one coordinate, any other type by the dot product.
-   */
   function planeSide(p: number): number {
-    const type = planes.type[p]!;
-    const n = planes.normal;
-    const f = Math.fround;
-    const dot =
-      type >= 0 && type < 3
-        ? f(f(eye[type]!) - planes.dist[p]!)
-        : f(f(f(f(f(eye[0]) * n[p * 3]!) + f(f(eye[1]) * n[p * 3 + 1]!)) + f(f(eye[2]) * n[p * 3 + 2]!)) - planes.dist[p]!);
-    return dot >= 0 ? 0 : 1;
+    return eyePlaneSide(bsp, p, eye);
   }
 
   function emitFaces(node: number): void {

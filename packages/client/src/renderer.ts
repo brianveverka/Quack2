@@ -4,13 +4,16 @@
 // at their entity origins and angles, one draw per texture and surface flags per model.
 // Brush models outside the eye's PVS or the view frustum are skipped. Warped faces
 // (SURF_WARP) are moved in the vertex shader as EmitWaterPolys does; translucent ones
-// (SURF_TRANS33/66) are blended last, in R_DrawAlphaSurfaces' order.
+// (SURF_TRANS33/66) are blended last, in R_DrawAlphaSurfaces' order. The world's sky
+// faces are not drawn; the sky box is, where they bound it (R_DrawSkyBox).
 
 import { SURF_FLOWING, SURF_TRANS33, SURF_TRANS66, SURF_WARP, pointLeaf, type Bsp } from "@quack2/sim";
 import type { BrushModelInstance } from "./bmodels.js";
 import { boxClusters, boxOutsideFrustum, clustersVisible, fatClusters, frustumPlanes, instanceBox, pvsUnion, type Box } from "./cull.js";
 import { buildLightmapAtlas, updateLightmapAtlas, type LightmapAtlas } from "./lightmap.js";
 import { fovY, modelMatrix, multiply, perspective, viewMatrix, type Mat4 } from "./math.js";
+import { addSkyPolygon, clearSkyBounds, newSkyBounds, skyBoxQuads, skyMatrix, type SkySettings } from "./sky.js";
+import { notexture } from "./skyimage.js";
 import { resolveTextures, type TextureImage, type TextureSource } from "./textures.js";
 import { TURBSIN } from "./warp.js";
 import {
@@ -20,6 +23,7 @@ import {
   buildDrawList,
   buildOrderedDraws,
   buildWorldMesh,
+  eyePlaneSide,
   modelFaceMask,
   visibleFaceMask,
   worldAlphaOrder,
@@ -78,6 +82,30 @@ void main() {
   outColor = vec4(tex.rgb * texture(uLightmap, vLM).rgb, tex.a * uAlpha);
 }`;
 
+// The sky box: unlit and opaque, as R_DrawSkyBox draws it.
+const SKY_VS = `#version 300 es
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aST;
+uniform mat4 uViewProj;
+uniform mat4 uModel;
+out vec2 vUV;
+void main() {
+  vUV = aST;
+  gl_Position = uViewProj * uModel * vec4(aPos, 1.0);
+}`;
+
+const SKY_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uTex;
+in vec2 vUV;
+out vec4 outColor;
+void main() {
+  outColor = vec4(texture(uTex, vUV).rgb, 1.0);
+}`;
+
+/** Floats per sky box vertex: box-space xyz, texture st (skyBoxQuads). */
+const SKY_VERTEX_FLOATS = 5;
+
 /** Background where no face covers a pixel; distinctive so tests can count leak pixels. */
 export const CLEAR_COLOR = [64, 0, 64] as const;
 export const FOV_X = 90;
@@ -104,6 +132,10 @@ export interface FrameStats {
   readonly frustumCulled: number;
   /** Translucent faces sent to the alpha pass, brush models' included (their back faces too, which the GPU culls). */
   readonly alphaFaces: number;
+  /** Sky polygon pieces that bounded the sky box (the engine's c_sky). */
+  readonly skyPolygons: number;
+  /** Sky box sides drawn. */
+  readonly skySides: number;
   readonly draws: number;
 }
 
@@ -156,7 +188,17 @@ export class WorldRenderer {
   private cluster = Number.NaN;
   /** Clusters of the fat PVS the brush models were last tested against. */
   private fatKey: string | undefined = "";
-  private drawList: DrawList = { indices: new Uint32Array(0), draws: [], visibleFaces: 0, translucent: [] };
+  private drawList: DrawList = { indices: new Uint32Array(0), draws: [], visibleFaces: 0, translucent: [], sky: [] };
+  private readonly skyProgram: WebGLProgram;
+  private readonly skyVao: WebGLVertexArrayObject;
+  private readonly skyVertexBuffer: WebGLBuffer;
+  private readonly uSkyViewProj: WebGLUniformLocation | null;
+  private readonly uSkyModel: WebGLUniformLocation | null;
+  private readonly skyBounds = newSkyBounds();
+  /** Sky images in SKY_SUFFIXES order. */
+  private skyTextures: WebGLTexture[] = [];
+  /** What R_SetSky was given; no sky name and no rotation until setSky. */
+  private sky: SkySettings = { name: "", rotate: 0, axis: [0, 0, 0] };
 
   constructor(
     private readonly gl: WebGL2RenderingContext,
@@ -235,14 +277,52 @@ export class WorldRenderer {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
 
     this.setTextures(textureSource);
-    this.lightmap = uploadTexture(gl, atlas, false);
+    this.lightmap = uploadTexture(gl, atlas, "lightmap");
+
+    this.skyProgram = linkProgram(gl, SKY_VS, SKY_FS);
+    this.uSkyViewProj = gl.getUniformLocation(this.skyProgram, "uViewProj");
+    this.uSkyModel = gl.getUniformLocation(this.skyProgram, "uModel");
+    gl.useProgram(this.skyProgram);
+    gl.uniform1i(gl.getUniformLocation(this.skyProgram, "uTex"), 0);
+    this.skyVao = gl.createVertexArray();
+    gl.bindVertexArray(this.skyVao);
+    this.skyVertexBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.skyVertexBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, 6 * 4 * SKY_VERTEX_FLOATS * 4, gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, SKY_VERTEX_FLOATS * 4, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, SKY_VERTEX_FLOATS * 4, 12);
+    // Each side is a GL_QUADS quad of four vertices: two triangles sharing its first corner.
+    const quadIndices = new Uint16Array(6 * 6);
+    for (let q = 0; q < 6; q++) quadIndices.set([0, 1, 2, 0, 2, 3].map((i) => q * 4 + i), q * 6);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, quadIndices, gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    this.setSky(this.sky, []);
+  }
+
+  /**
+   * R_SetSky: the worldspawn sky settings and the six images in SKY_SUFFIXES order; a
+   * missing image draws r_notexture, as the engine does.
+   */
+  setSky(settings: SkySettings, images: readonly (TextureImage | undefined)[]): void {
+    const { gl } = this;
+    this.sky = settings;
+    for (const t of this.skyTextures) gl.deleteTexture(t);
+    const fallback = notexture();
+    // it_sky images are not mipmapped and keep GL's default repeat; MakeSkyVec's clamp
+    // keeps bilinear filtering off the far edge. r_notexture is a mipmapped wall image
+    // in the engine; stretched over a sky side it is only ever magnified, so the same
+    // upload serves.
+    this.skyTextures = [0, 1, 2, 3, 4, 5].map((i) => uploadTexture(gl, images[i] ?? fallback, "sky"));
   }
 
   /** Replace every surface texture, e.g. after game data is mounted. */
   setTextures(source: TextureSource): void {
     const { images, missing } = resolveTextures(this.mesh.textures, source);
     for (const t of this.textures) this.gl.deleteTexture(t.tex);
-    this.textures = images.map((img) => ({ tex: uploadTexture(this.gl, img, true), width: img.width, height: img.height }));
+    this.textures = images.map((img) => ({ tex: uploadTexture(this.gl, img, "surface"), width: img.width, height: img.height }));
     this.missingTextures = missing;
   }
 
@@ -283,7 +363,7 @@ export class WorldRenderer {
     const rebuild = cluster !== this.cluster;
     if (rebuild) {
       this.cluster = cluster;
-      this.drawList = buildDrawList(this.mesh, visibleFaceMask(bsp, this.mesh, cluster));
+      this.drawList = buildDrawList(this.mesh, visibleFaceMask(bsp, this.mesh, cluster), true);
     }
     const aspect = width / height;
     const fy = fovY(FOV_X, aspect);
@@ -323,6 +403,11 @@ export class WorldRenderer {
     this.scroll = -64 * (this.time * 0.5 - Math.trunc(this.time * 0.5));
     this.drawRanges(this.drawList.draws);
     let draws = this.drawList.draws.length;
+    // R_DrawWorld ends with the sky box, before any entity.
+    const sky = this.drawSkyBox(view.origin);
+    draws += sky.sides;
+    gl.useProgram(this.program);
+    gl.bindVertexArray(this.vao);
     // Any model point on screen is seen along a ray from a point of the near plane, which
     // is inside the fat PVS box, and the model's box touches the leaf the point is in.
     // Where the near plane is inside solid, models and world alike can show a cluster
@@ -381,7 +466,63 @@ export class WorldRenderer {
       gl.disable(gl.BLEND);
     }
     gl.bindVertexArray(null);
-    return { leaf, cluster, visibleFaces: this.drawList.visibleFaces, brushModels, pvsCulled, frustumCulled, alphaFaces, draws };
+    return {
+      leaf,
+      cluster,
+      visibleFaces: this.drawList.visibleFaces,
+      brushModels,
+      pvsCulled,
+      frustumCulled,
+      alphaFaces,
+      skyPolygons: sky.polygons,
+      skySides: sky.sides,
+      draws,
+    };
+  }
+
+  /**
+   * R_AddSkySurface for each visible world sky face on the eye's side of its plane, as
+   * R_RecursiveWorldNode picks them (without its frustum culling, so the rectangles can
+   * be larger), then R_DrawSkyBox: depth tested and written, after the world's opaque
+   * faces, so nearer geometry hides the box and anything drawn behind a sky face nearer
+   * than the box shows through it, as in the engine.
+   */
+  private drawSkyBox(eye: readonly [number, number, number]): { polygons: number; sides: number } {
+    const { gl, bsp, mesh } = this;
+    const bounds = this.skyBounds;
+    clearSkyBounds(bounds);
+    let polygons = 0;
+    const f32 = Math.fround;
+    const ex = f32(eye[0]), ey = f32(eye[1]), ez = f32(eye[2]);
+    for (const f of this.drawList.sky) {
+      if (eyePlaneSide(bsp, bsp.faces.planeNum[f]!, eye) !== (bsp.faces.side[f] ? 1 : 0)) continue;
+      const p0 = mesh.faceFirstPoly[f]!;
+      for (let p = p0; p < p0 + mesh.faceNumPolys[f]!; p++) {
+        const v0 = mesh.polyFirstVertex[p]!;
+        const n = mesh.polyNumVertices[p]!;
+        const points = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) {
+          const o = (v0 + i) * VERTEX_FLOATS;
+          points[i * 3] = mesh.vertices[o]! - ex;
+          points[i * 3 + 1] = mesh.vertices[o + 1]! - ey;
+          points[i * 3 + 2] = mesh.vertices[o + 2]! - ez;
+        }
+        polygons += addSkyPolygon(bounds, points, n);
+      }
+    }
+    const { vertices, quads } = skyBoxQuads(bounds, this.sky.rotate);
+    if (quads.length === 0) return { polygons, sides: 0 };
+    gl.useProgram(this.skyProgram);
+    gl.uniformMatrix4fv(this.uSkyViewProj, false, this.viewProj);
+    gl.uniformMatrix4fv(this.uSkyModel, false, skyMatrix(eye, this.time, this.sky.rotate, this.sky.axis));
+    gl.bindVertexArray(this.skyVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.skyVertexBuffer);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, vertices);
+    quads.forEach((q, k) => {
+      gl.bindTexture(gl.TEXTURE_2D, this.skyTextures[q.image]!);
+      gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, k * 6 * 2);
+    });
+    return { polygons, sides: quads.length };
   }
 
   private drawRanges(ranges: readonly DrawRange[]): void {
@@ -403,21 +544,22 @@ function sameOrder(a: readonly number[], b: readonly number[]): boolean {
   return a.length === b.length && a.every((f, i) => f === b[i]);
 }
 
-function uploadTexture(gl: WebGL2RenderingContext, img: TextureImage, repeat: boolean): WebGLTexture {
+function uploadTexture(gl: WebGL2RenderingContext, img: TextureImage, kind: "surface" | "lightmap" | "sky"): WebGLTexture {
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, img.width, img.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, img.data);
-  const wrap = repeat ? gl.REPEAT : gl.CLAMP_TO_EDGE;
+  const wrap = kind === "lightmap" ? gl.CLAMP_TO_EDGE : gl.REPEAT;
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
-  if (repeat) {
+  if (kind === "surface") {
     // Surface textures: mipmapped, crisp up close like the software renderer.
     gl.generateMipmap(gl.TEXTURE_2D);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   } else {
     // Lightmap atlas: bilinear between luxels, no mips (they would bleed across faces).
+    // Sky: bilinear (gl_filter_max) and unmipmapped, as GL_Upload32 leaves it_sky.
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   }
