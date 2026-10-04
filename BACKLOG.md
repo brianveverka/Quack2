@@ -39,8 +39,7 @@ Remaining:
 - A team whose master a settle-frame killtarget frees stops moving from that frame (its
   members move and think only through the master's SV_Physics_Pusher), but
   `settleTurrets` ignores frees: a freed breach master is left out while its team is
-  drawn turned to rest. A freed func_train master's team slaves are drawn at their spawn
-  origin either way.
+  drawn turned to rest.
 - win32 Quake 2 runs every frame at x87 24-bit precision (`_controlfp(_PC_24)` in
   sys_win.c WinMain), which rounds the C's `double` steps to a 24-bit mantissa too
   (unless a GL driver resets it mid-frame; see `lightmapExtents`).
