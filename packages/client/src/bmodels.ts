@@ -402,30 +402,292 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
   return { instances, errors };
 }
 
+/** g_func.c DOOR_TOGGLE: a used door that is up or going up goes back down. */
+const DOOR_TOGGLE = 32;
 /**
- * Area portals the game has opened before any client sees the map (CM_SetAreaPortalState
- * starts them all closed; SP_func_areaportal leaves them so). Only doors open any: a
- * START_OPEN func_door or func_door_rotating with no "health" and no "targetname" gets
- * Think_SpawnDoorTrigger as its first think (the first settle frame), which, unless the
- * door is a team slave, opens every portal door_use_areaportals finds: in-game entities
- * whose classname is func_areaportal and whose "targetname" is the door's "target",
- * both compared case insensitively (G_Find, Q_stricmp). A portal is its "style".
- * Portals the game opens later in the settle frames (a trigger_always firing a
- * func_areaportal or a door) are not modeled.
+ * SV_RunThink in the second settle frame runs a think due by level.time (2 * FRAMETIME,
+ * stored as a float) plus 0.001, in double.
+ */
+const SECOND_FRAME_DUE = Math.fround(2 * FRAMETIME) + 0.001;
+/**
+ * Uses one trigger_always may set off, and how deeply they may nest; the rest are
+ * dropped. A trigger_relay loop recurses until the game crashes, and three relays that
+ * each target all of them branch at every level, so the depth limit alone would not end
+ * the walk.
+ */
+const MAX_USES = 100000;
+const MAX_USE_DEPTH = 256;
+
+/** What fires targets: a map entity, or a DelayedUse (index -1) carrying a trigger's target and killtarget. */
+interface User {
+  index: number;
+  classname: string;
+  target: string | undefined;
+  killtarget: string | undefined;
+  delay: number;
+}
+
+/** Game state the settle frames' use chains read and change. */
+interface Settle {
+  entities: readonly BspEntity[];
+  /** Entity indices by lowercased "targetname", in entity order. */
+  byTargetname: Map<string, number[]>;
+  /** Entities a killtarget freed. */
+  freed: Set<number>;
+  /** Team members, master first, by master index. */
+  teams: Map<number, number[]>;
+  slaves: Set<number>;
+  /** moveinfo.state of the entities used so far; the rest are at `spawnState`. */
+  moveState: Map<number, MoveState>;
+  /** Plats Use_Plat sent down: Move_Calc gave them a think, so later uses return. */
+  platsMoving: Set<number>;
+  /** Use_Areaportal's per-entity toggle (ent->count). */
+  portalCount: Map<number, number>;
+  /** gi.SetAreaPortalState writes, last one wins; portals never written stay closed. */
+  portals: Map<number, boolean>;
+  /** Uses left for the current trigger_always before MAX_USES cuts the walk off. */
+  budget: number;
+  depth: number;
+}
+
+/** g_func.c STATE_TOP (0, also every edict that never sets it), STATE_BOTTOM, STATE_UP, STATE_DOWN. */
+type MoveState = "top" | "bottom" | "up" | "down";
+
+/**
+ * moveinfo.state after spawn: doors, func_water and func_button start at STATE_BOTTOM, a
+ * func_plat at STATE_BOTTOM unless it has a "targetname" (STATE_UP); every other class
+ * leaves it 0, STATE_TOP.
+ */
+function spawnState(ent: BspEntity): MoveState {
+  switch (ent.classname) {
+    case "func_door":
+    case "func_door_rotating":
+    case "func_water":
+    case "func_button":
+      return "bottom";
+    case "func_plat":
+      return ent.targetname === undefined ? "bottom" : "up";
+  }
+  return "top";
+}
+
+function moveState(s: Settle, index: number): MoveState {
+  return s.moveState.get(index) ?? spawnState(s.entities[index]!);
+}
+
+/**
+ * The classname an entity has after its spawn function ran: SP_func_water and
+ * SP_func_door_secret rename themselves func_door. (A func_door_secret team member only
+ * fires targets as a door after a DOOR_TOGGLE master sent it down, and its first
+ * door_go_up at STATE_TOP already gave it a null think the server errors on; kept for
+ * fidelity.)
+ */
+function liveClassname(ent: BspEntity): string {
+  return ent.classname === "func_water" || ent.classname === "func_door_secret" ? "func_door" : (ent.classname ?? "");
+}
+
+/** G_Find on "targetname": in-game entities not freed, matched case insensitively, in entity order (worldspawn included). */
+function* findTargets(s: Settle, name: string): Generator<number> {
+  for (const i of s.byTargetname.get(asciiLower(name)) ?? []) {
+    // Checked as the scan reaches each entity, so a killtarget freeing one ahead skips it.
+    if (!s.freed.has(i)) yield i;
+  }
+}
+
+function userOf(s: Settle, index: number): User {
+  const e = s.entities[index]!;
+  return { index, classname: liveClassname(e), target: e.target, killtarget: e.killtarget, delay: Math.fround(atof(e.delay ?? "0")) };
+}
+
+/** door_use_areaportals: set every portal the entity's "target" names (func_areaportal by classname, any case). */
+function doorUseAreaportals(s: Settle, index: number, open: boolean): void {
+  const target = s.entities[index]!.target;
+  if (target === undefined) return;
+  for (const t of findTargets(s, target)) {
+    if (stricmpEqual(s.entities[t]!.classname ?? "", "func_areaportal")) s.portals.set(atoi(s.entities[t]!.style ?? "0"), open);
+  }
+}
+
+/**
+ * G_UseTargets within the settle frames. A user with a nonzero "delay" queues a
+ * DelayedUse and fires nothing here. One due by the second frame's level.time + 0.001 (a
+ * delay under about 0.001, or negative) still runs in that frame in the game if G_Spawn
+ * places it after the edict being run; that is not modeled. Messages and sounds do not
+ * change the map.
+ */
+function useTargets(s: Settle, user: User): void {
+  if (user.delay !== 0) return;
+  const gone = () => user.index >= 0 && s.freed.has(user.index);
+  if (user.killtarget !== undefined) {
+    for (const t of findTargets(s, user.killtarget)) {
+      // G_FreeEdict refuses worldspawn (and the client and body queue edicts before the map's).
+      if (t !== 0) s.freed.add(t);
+      if (gone()) return;
+    }
+  }
+  if (user.target === undefined) return;
+  const isDoor = stricmpEqual(user.classname, "func_door") || stricmpEqual(user.classname, "func_door_rotating");
+  for (const t of findTargets(s, user.target)) {
+    // Doors set their portals in door_use_areaportals instead.
+    if (isDoor && stricmpEqual(s.entities[t]!.classname ?? "", "func_areaportal")) continue;
+    if (t !== user.index) use(s, t);
+    if (gone()) return;
+  }
+}
+
+/**
+ * An entity's use function, for the classes whose use changes area portals now or the
+ * moveinfo.state door_go_up reads. The rest (trains, func_wall and others) are not
+ * modeled and do nothing here.
+ */
+function use(s: Settle, index: number): void {
+  if (s.budget <= 0 || s.depth >= MAX_USE_DEPTH) return;
+  s.budget--;
+  s.depth++;
+  try {
+    useOne(s, index);
+  } finally {
+    s.depth--;
+  }
+}
+
+function useOne(s: Settle, index: number): void {
+  const ent = s.entities[index]!;
+  switch (ent.classname) {
+    case "func_areaportal": {
+      // Use_Areaportal toggles the entity's own count, not the portal's current state.
+      const count = (s.portalCount.get(index) ?? 0) ^ 1;
+      s.portalCount.set(index, count);
+      s.portals.set(atoi(ent.style ?? "0"), count === 1);
+      return;
+    }
+    case "func_door":
+    case "func_door_rotating":
+    case "func_water":
+      doorUse(s, index);
+      return;
+    case "func_door_secret": {
+      // door_secret_use runs only while the door is at its spawn origin, which must be 0 0 0.
+      const o = entityVec3(ent, "origin") ?? [0, 0, 0];
+      if (o[0] === 0 && o[1] === 0 && o[2] === 0) doorUseAreaportals(s, index, true);
+      return;
+    }
+    case "trigger_relay":
+      useTargets(s, userOf(s, index));
+      return;
+    // These change no portal, but door_go_up reads the state they leave.
+    case "func_button": {
+      // button_use -> button_fire: returns if up or at the top, else starts up.
+      const state = moveState(s, index);
+      if (state !== "up" && state !== "top") s.moveState.set(index, "up");
+      return;
+    }
+    case "func_plat":
+      // Use_Plat returns once Move_Calc has given the plat a think, else plat_go_down.
+      if (!s.platsMoving.has(index)) {
+        s.platsMoving.add(index);
+        s.moveState.set(index, "down");
+      }
+      return;
+  }
+}
+
+/** Whether a door's spawn function gave it DOOR_TOGGLE: the spawnflag, or a func_water whose "wait" is -1 or unset. */
+function doorToggles(ent: BspEntity): boolean {
+  if (atoi(ent.spawnflags ?? "0") & DOOR_TOGGLE) return true;
+  return ent.classname === "func_water" && [0, -1].includes(Math.fround(atof(ent.wait ?? "0")));
+}
+
+/**
+ * door_use: a team slave ignores it; otherwise every member of the team, whatever its
+ * class, goes up (door_go_up), or, for a DOOR_TOGGLE master already up or going up, down.
+ * door_go_up returns for a member up, going up or at STATE_TOP (`spawnState`). A member
+ * freed by a killtarget ends the walk.
+ */
+function doorUse(s: Settle, index: number): void {
+  if (s.slaves.has(index)) return;
+  const members = s.teams.get(index) ?? [index];
+  const state = moveState(s, index);
+  const down = doorToggles(s.entities[index]!) && (state === "up" || state === "top");
+  for (const m of members) {
+    // A freed member is a zeroed edict: door_go_up returns at once (STATE_TOP) and its
+    // teamchain, which door_use follows next, is null.
+    if (s.freed.has(m)) break;
+    if (down) {
+      // door_go_down writes no portal until the door reaches the bottom, after the settle frames.
+      s.moveState.set(m, "down");
+      continue;
+    }
+    const ms = moveState(s, m);
+    if (ms === "up" || ms === "top") continue;
+    s.moveState.set(m, "up");
+    useTargets(s, userOf(s, m));
+    // A door its own killtarget freed has no "target" left to find portals by.
+    if (s.freed.has(m)) break;
+    doorUseAreaportals(s, m, true);
+  }
+}
+
+/**
+ * Area portals open once the game has run the two frames SV_SpawnServer settles the map
+ * with (CM_SetAreaPortalState starts them all closed; SP_func_areaportal leaves them so;
+ * a portal is its entity's "style").
+ *
+ * First frame: a START_OPEN func_door or func_door_rotating with no "health" and no
+ * "targetname" runs Think_SpawnDoorTrigger, which, unless the door is a team slave,
+ * opens every portal door_use_areaportals finds: in-game entities whose classname is
+ * func_areaportal and whose "targetname" is the door's "target", compared case
+ * insensitively (G_Find, Q_stricmp).
+ *
+ * Second frame: every in-game trigger_always, in entity order, fires its targets through
+ * a DelayedUse (SP_trigger_always raises "delay" to at least 0.2 s; one above that comes
+ * due later and is skipped). G_UseTargets first frees its killtargets, then uses its
+ * targets: a func_areaportal toggles, a door goes up with its team (each member at the
+ * bottom fires its own targets, except portals, and opens its portals), a
+ * func_door_secret at origin 0 0 0 opens its portals, a trigger_relay fires its targets.
+ * Other use functions are not modeled.
  */
 export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
+  const teams = new Map<number, number[]>();
   const slaves = new Set<number>();
-  for (const members of findTeams(entities).values()) members.slice(1).forEach((i) => slaves.add(i));
-  const open = new Set<number>();
+  for (const members of findTeams(entities).values()) {
+    teams.set(members[0]!, members);
+    members.slice(1).forEach((i) => slaves.add(i));
+  }
+  const byTargetname = new Map<string, number[]>();
+  entities.forEach((e, i) => {
+    if (e.targetname === undefined || !inGame(e)) return;
+    const key = asciiLower(e.targetname);
+    const list = byTargetname.get(key);
+    if (list) list.push(i);
+    else byTargetname.set(key, [i]);
+  });
+  const s: Settle = {
+    entities,
+    byTargetname,
+    freed: new Set(),
+    teams,
+    slaves,
+    moveState: new Map(),
+    platsMoving: new Set(),
+    portalCount: new Map(),
+    portals: new Map(),
+    budget: MAX_USES,
+    depth: 0,
+  };
   entities.forEach((door, i) => {
     if (door.classname !== "func_door" && door.classname !== "func_door_rotating") return;
-    if (!inGame(door) || slaves.has(i) || door.target === undefined) return;
+    if (!inGame(door) || slaves.has(i)) return;
     if (!(atoi(door.spawnflags ?? "0") & DOOR_START_OPEN)) return;
     if (atoi(door.health ?? "0") || door.targetname !== undefined) return;
-    for (const t of entities) {
-      if (t.targetname === undefined || !stricmpEqual(t.targetname, door.target) || !inGame(t)) continue;
-      if (stricmpEqual(t.classname ?? "", "func_areaportal")) open.add(atoi(t.style ?? "0"));
-    }
+    doorUseAreaportals(s, i, true);
   });
-  return open;
+  entities.forEach((e, i) => {
+    if (i === 0 || e.classname !== "trigger_always" || !inGame(e)) return;
+    const delay = Math.fround(atof(e.delay ?? "0"));
+    if (Math.max(delay, Math.fround(0.2)) > SECOND_FRAME_DUE) return;
+    s.budget = MAX_USES;
+    useTargets(s, { index: -1, classname: "DelayedUse", target: e.target, killtarget: e.killtarget, delay: 0 });
+  });
+  return new Set([...s.portals].filter(([, open]) => open).map(([p]) => p));
 }

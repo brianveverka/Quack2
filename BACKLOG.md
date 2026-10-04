@@ -10,7 +10,8 @@ translucent surfaces blended in R_DrawAlphaSurfaces' order, no lightmap on sky, 
 translucent faces, the worldspawn sky box drawn where the world's sky faces bound it
 (R_DrawSkyBox, with skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS
 (with R_SetupFrame's second view cluster 16 units below or above the eye), area portals
-(closed except those a START_OPEN door opens at spawn) culling world leafs and brush
+(closed except those the two settle frames open: START_OPEN doors, and trigger_always
+firing portals, doors, secret doors and relays) culling world leafs and brush
 models, the world walked per frame as R_RecursiveWorldNode does (R_CullBox on
 nodes and leafs, so the sky box is bounded by the sky faces in view), inline brush
 models where the game has them after spawn (untargeted plats lowered, START_OPEN doors
@@ -20,10 +21,6 @@ free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data (zip
 self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- Area portals the game opens in the second settle frame are not modeled: a
-  trigger_always (DelayedUse at 0.2 s) firing a func_areaportal toggles it open, and one
-  firing a door opens the door's portals. Shares the search for what targets an entity
-  with the func_train item below.
 - The world's PVS is the eye's own cluster; brush models use a fat PVS reaching past
   the near plane. An eye within a few units of a thin wall can show world faces of a
   cluster the eye's one does not see. Use the same fat PVS for the world.
@@ -32,7 +29,8 @@ Remaining:
 - A targeted func_train that a trigger_always fires (DelayedUse at 0.2 s, the second
   settle frame) also runs train_next before clients see it, so it too jumps on to a
   TELEPORT path_corner after its first; only untargeted and START_ON trains do here.
-  Needs a search for what targets the train.
+  `openAreaPortals` (bmodels.ts) already walks the second frame's use chains; add a
+  func_train case to its `use` dispatch and share that walk with `brushModelInstances`.
 - A turret team whose master (first member) is not a turret keeps its spawn angles here;
   the game runs it under the master's movetype (a MOVETYPE_NONE or TOSS master never
   runs the slaves' thinks, a PUSH one does). Needs the movetype per spawn function. Of
@@ -70,6 +68,11 @@ Remaining:
   marks and face lists each time; the opaque index list is rebuilt and uploaded whenever
   the walked face set changes. Measured 2026-10-04 in Node 22 on the fixture (25 nodes,
   111 faces), turning so every frame rebuilds: 11.4 us per frame. Measure on a large map.
+- The second settle frame's use chains change only area portals here. A brush entity a
+  killtarget frees is still drawn, and a door they send up is drawn at rest although it
+  starts moving the next frame. Only func_areaportal, doors, func_door_secret and
+  trigger_relay uses are modeled, and a door's or relay's own "delay" always defers its
+  targets (a tiny or negative one can come due within the second frame in the game).
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
