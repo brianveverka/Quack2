@@ -1203,7 +1203,8 @@ function rotatingDoor(ent: BspEntity, origin: Vec3): BrushMoverInit {
  * SP_func_plat's mover: pos1, the top, is its spawn origin, and pos2 lies "height" (an
  * int) below it, or the plat's height less "lip" (an int, default 8), in float. "speed",
  * "accel" and "decel" (default 20, 5 and 5, else a tenth of the value given) are per
- * frame, as Think_AccelMove takes them, and "speed" is not doubled. A plat with a
+ * frame where Think_AccelMove takes them (Move_Begin, when all three are equal, takes
+ * "speed" per second), and "speed" is not doubled. A plat with a
  * "targetname" starts at the top at STATE_UP, any other at the bottom.
  * moveinfo.distance is left 0 and "wait" is unused: plat_hit_top always waits 3 s.
  */
@@ -1235,8 +1236,8 @@ function platMover(ent: BspEntity, mins: Vec3, maxs: Vec3, origin: Vec3): BrushM
 
 /**
  * The doors (func_door, func_water, which SP_func_water renames func_door, and
- * func_door_rotating) and the plats in no team (or a team of their own) as the two
- * settle frames leave them:
+ * func_door_rotating) and the plats that are no team's slave as the two settle frames
+ * leave them:
  * teams in master entity order, each team's doors in team order (the master first when
  * it is a door); a door or plat with no team is a team of one. SP_func_door and SP_func_water set up each linear door
  * (`doorPositions`; a door's "speed", default 100, is doubled in deathmatch, and its
@@ -1253,8 +1254,8 @@ function platMover(ent: BspEntity, mins: Vec3, maxs: Vec3, origin: Vec3): BrushM
  * is in degrees, and every other class (a func_button, a func_wall) leaves
  * moveinfo.distance 0, which makes the doors' speeds infinite, so a linear door moves
  * all the way in one frame (Move_Final) and a rotating one turns all the way in one
- * (AngleMove_Final). A team keeps only its doors: the other members, plats included,
- * stay where `brushModelInstances` puts them. A func_door_secret, which SP_func_door_secret also
+ * (AngleMove_Final). A team keeps only its doors and a plat master: the other members,
+ * slave plats included, stay where `brushModelInstances` puts them. A func_door_secret, which SP_func_door_secret also
  * renames, is not modeled moving. A team with a door that has no inline model is left
  * out. A team's chain ends at the first member a killtarget freed (G_FreeEdict zeroes
  * its teamchain), and a team whose master was freed never moves again
@@ -1265,12 +1266,12 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
   const turrets = settleTurrets(entities);
   const groups = [...findTeams(entities).values()];
   const teamed = new Set(groups.flat());
-  // A team of one is its own master, not a FL_TEAMSLAVE: such a plat moves on its own.
-  const shared = new Set(groups.filter((g) => g.length > 1).flat());
+  // A team's master, a team of one included, is not a FL_TEAMSLAVE: Use_Plat moves it.
+  const slaves = new Set(groups.flatMap((g) => g.slice(1)));
   const doors = new Map<number, MovingBrush>();
   entities.forEach((ent, i) => {
     if (i === 0 || !inGame(ent)) return;
-    const plat = ent.classname === "func_plat" && !shared.has(i);
+    const plat = ent.classname === "func_plat" && !slaves.has(i);
     if (!plat && !movingDoor(ent)) return;
     const model = inlineModel(bsp, ent.model);
     if (model === undefined) return;
@@ -1340,7 +1341,7 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
   for (const { index, up } of moves) {
     const m = moving.get(index);
     if (!m) continue;
-    // Only a plat in no team (or a team of its own) moves here, and only Use_Plat moves it.
+    // Only a plat that is no team's slave moves here, and only Use_Plat moves it.
     if (entities[index]!.classname === "func_plat") platGoDown(m, settled, false);
     else if (up) doorGoUp(m, settled, false);
     else doorGoDown(m, settled, false);

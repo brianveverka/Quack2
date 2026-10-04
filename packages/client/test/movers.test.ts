@@ -540,16 +540,21 @@ describe("plat movers", () => {
     expect(m.linkedPoses(700).get(2)!.origin[2]).toBe(-41.875);
   });
 
-  it("leaves out a plat in a team, and one a killtarget freed", () => {
+  it("moves a plat that masters a team, alone: its slave wall stays", () => {
+    const m = motion(PLAT.replace('"targetname" "p"', '"targetname" "p" "team" "t"') + `{ "classname" "func_wall" "model" "*1" "team" "t" }`);
+    expect([...m.linkedPoses(700)].map(([e, p]) => [e, p.origin[2]])).toEqual([[2, -41.875]]);
+  });
+
+  it("leaves out a plat that is a team slave, and one a killtarget freed", () => {
     const teamed = brushMovers(
       bsp,
       parseEntities(`
         { "classname" "worldspawn" }
-        { "classname" "func_plat" "model" "*1" "team" "t" }
         { "classname" "func_door" "model" "*1" "team" "t" }
+        { "classname" "func_plat" "model" "*1" "team" "t" }
       `),
     );
-    expect(teamed.map((t) => t.map((d) => d.entity))).toEqual([[2]]);
+    expect(teamed.map((t) => t.map((d) => d.entity))).toEqual([[1]]);
     expect(brushMovers(bsp, parseEntities(`${PLAT}{ "classname" "trigger_always" "killtarget" "p" }`))).toEqual([]);
   });
 });

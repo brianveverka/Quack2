@@ -8,7 +8,7 @@ Status: early. The BSP parser, pak/zip readers, and a WebGL2 world renderer (lig
 with animated light styles, warped and translucent surfaces, the sky box, PVS, area
 portal and view frustum culling, inline brush models such as doors and plats drawn
 where the game has them after spawn and culled by area portal, PVS and view frustum,
-teams of doors (linear and rotating) and plats in no team the map's spawn sets moving drawn moving, a free-fly camera,
+teams of doors (linear and rotating) and plats (not team slaves) the map's spawn sets moving drawn moving, a free-fly camera,
 `.wal` textures from game data you mount, checker placeholders for anything missing)
 are implemented and tested.
 Player movement, the server, and netcode are not written yet. See [BACKLOG.md](BACKLOG.md).
