@@ -8,6 +8,7 @@ export * from "./textures.js";
 export * from "./wal.js";
 export * from "./assets.js";
 export * from "./bmodels.js";
+export * from "./movers.js";
 export * from "./cull.js";
 export * from "./world.js";
 export * from "./warp.js";

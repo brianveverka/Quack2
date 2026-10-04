@@ -15,7 +15,8 @@
 // whose walls and ceiling are sky checks the sky box: r_notexture without data, each
 // side's synthetic image in its direction and orientation with it, and skyrotate. A copy
 // split into two areas by an area portal checks that a closed portal hides the world and
-// brush models beyond it, and that a START_OPEN door that targets it opens it.
+// brush models beyond it, and that a START_OPEN door that targets it opens it. A copy
+// whose func_wall is a door a trigger_always sends up checks the debug origins move.
 // Usage: node scripts/smoke-render.mjs [outdir]   (default packages/client/dist/smoke)
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
@@ -57,6 +58,11 @@ SYNTHETIC["/data/rotated.bsp"] = withEntityString(
   fixtureBsp,
   fixtureEntities.replace('"model" "*1"', '"model" "*1"\n"origin" "0 192 0"\n"angle" "90"'),
 );
+// Door: the func_wall made a func_door moving up (50 - lip 8 = 42 at speed 200) that a
+// trigger_always sends up in the second settle frame.
+const doorEntities = fixtureEntities.replace('"classname" "func_wall"', '"classname" "func_door"\n"targetname" "smokedoor"\n"angle" "-1"');
+if (doorEntities === fixtureEntities) throw new Error("fixture has no func_wall to make a door");
+SYNTHETIC["/data/door.bsp"] = withEntityString(fixtureBsp, `${doorEntities}{\n"classname" "trigger_always"\n"target" "smokedoor"\n}\n`);
 // Culling: the func_wall at its compiled spot, again at the south spot, and again outside
 // the map, where its box touches only solid leafs (no PVS cluster, and area 0, which
 // the server's area test drops before the PVS one is reached).
@@ -396,6 +402,22 @@ try {
   check(rotatedFrames.every((f) => f < 0.06), "rotating the func_wall changes only the wall's own pixels");
   check(left > 0.9, "the rotated func_wall leaves its compiled spot");
   check(arrived > 0.9, "the rotated func_wall shows where yaw 90 then its origin put it");
+
+  // Door motion: brushOrigins steps the door from the settle frames and blends game
+  // frames as the client does (frame 3 starts it, 4 at 20, 6 at the top, 42; frame n is
+  // sent at (n - 2) * 100 ms). The renderer does not draw it moving yet.
+  await page.goto(`${ORIGIN}/?map=data/door.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const doorMotion = await page.evaluate(() => ({
+    brushModels: window.quack.brushModels,
+    origins: [0, 150, 400, 150].map((ms) => window.quack.brushOrigins(ms)),
+  }));
+  console.log(`  door: ${JSON.stringify(doorMotion)}`);
+  check(
+    JSON.stringify(doorMotion.brushModels) === JSON.stringify(["func_door *1 at 0 0 0"]) &&
+      JSON.stringify(doorMotion.origins) === JSON.stringify([[[0, 0, 0]], [[0, 0, 10]], [[0, 0, 42]], [[0, 0, 10]]]),
+    "a door the settle frames send up moves in brushOrigins: at rest, half way to frame 4's 20 at 150 ms, at the top by 400 ms",
+  );
 
   // Culling never changes a pixel: each view renders the same with culling off. From the
   // north spot the south wall is beside the view and the one outside the map is in no
