@@ -225,8 +225,10 @@ export class WorldRenderer {
   private cluster2 = Number.NaN;
   /** Area of the eye the world draw list was built for, -1 with noAreas. */
   private area = Number.NaN;
-  /** Flood number per area (floodAreas) for the portals open at spawn. */
-  private readonly flood: Int32Array;
+  /** Flood number per area (floodAreas) for the open portals (`setOpenPortals`). */
+  private flood: Int32Array;
+  /** The set `flood` was last asked for. */
+  private openPortals: ReadonlySet<number>;
   private vis: WorldVis = { nodes: new Uint8Array(0), leafs: new Uint8Array(0) };
   private visibleFaces = 0;
   private readonly worldWalk: WorldWalk;
@@ -252,6 +254,7 @@ export class WorldRenderer {
     openPortals: ReadonlySet<number> = new Set(),
   ) {
     this.flood = floodAreas(bsp, openPortals);
+    this.openPortals = openPortals;
     this.instances = new PlacedInstances(bsp);
     const atlas = buildLightmapAtlas(bsp, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number, lightStyles);
     this.atlas = atlas;
@@ -411,6 +414,20 @@ export class WorldRenderer {
     this.instances.move(drawn, linked);
   }
 
+  /**
+   * Set the open area portals (the rest are closed), as cl.frame.areabits changes with
+   * the frame: the world and brush models of the next render are culled by them.
+   */
+  setOpenPortals(open: ReadonlySet<number>): void {
+    if (open === this.openPortals) return;
+    this.openPortals = open;
+    const flood = floodAreas(this.bsp, open);
+    if (flood.every((f, a) => f === this.flood[a])) return;
+    this.flood = flood;
+    // The world's draw list is cached by the eye's area; its area bits are stale now.
+    this.area = Number.NaN;
+  }
+
   /** Set the level time in milliseconds that warps move with. */
   setTime(ms: number): void {
     // r_newrefdef.time is a float, in seconds.
@@ -426,7 +443,8 @@ export class WorldRenderer {
     // A leaf area outside the areas lump (a corrupt map) counts as area 0, so the map still draws.
     const leafArea = bsp.leafs.area[serverLeaf] ?? 0;
     const area = leafArea > 0 && leafArea < this.flood.length ? leafArea : 0;
-    // The world's area bits depend on the eye's area alone: portals do not change yet.
+    // The world's area bits depend on the eye's area and on the flood, which
+    // `setOpenPortals` clears the cached area for when it changes.
     const worldArea = this.noAreas ? -1 : area;
     if (cluster !== this.cluster || cluster2 !== this.cluster2 || worldArea !== this.area) {
       this.cluster = cluster;

@@ -413,8 +413,13 @@ function vectorScale(v: Vec3f, scale: number, out: Vec3f): void {
  * moving member is pushed by velocity * FRAMETIME, clamped to 1/8 unit as SV_Push does,
  * and turned by avelocity * FRAMETIME, which is not clamped; then each member runs its
  * think if due (SV_RunThink). Nothing blocks a push here.
+ *
+ * Returns the members whose think ran door_hit_bottom this frame, in the order they ran:
+ * the caller closes their area portals (door_use_areaportals). A think that leaves a
+ * member at STATE_BOTTOM with door_hit_bottom as its endfunc ran it: Move_Done and
+ * AngleMove_Done are the only ways there after spawn, and the endfunc stays set.
  */
-export function stepPusher(team: readonly BrushMover[], levelTime: number): void {
+export function stepPusher(team: readonly BrushMover[], levelTime: number): BrushMover[] {
   for (const m of team) {
     const v = m.velocity;
     const av = m.avelocity;
@@ -428,7 +433,13 @@ export function stepPusher(team: readonly BrushMover[], levelTime: number): void
     }
     for (let i = 0; i < 3; i++) m.angles[i] = Math.fround(m.angles[i]! + Math.fround(av[i]! * FRAMETIME_F));
   }
-  for (const m of team) runThink(m, levelTime);
+  const hitBottom: BrushMover[] = [];
+  for (const m of team) {
+    const was = m.state;
+    runThink(m, levelTime);
+    if (m.state === "bottom" && was !== "bottom" && m.endfunc === "doorHitBottom") hitBottom.push(m);
+  }
+  return hitBottom;
 }
 
 function runThink(m: BrushMover, levelTime: number): void {

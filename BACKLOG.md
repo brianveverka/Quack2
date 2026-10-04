@@ -16,7 +16,8 @@ worldspawn sky box drawn where the world's sky faces bound it (R_DrawSkyBox, wit
 skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS (with
 R_SetupFrame's second view cluster 16 units below or above the eye), area portals
 (closed except those the two settle frames open: START_OPEN doors, and trigger_always
-firing portals, doors, secret doors and relays) culling world leafs and brush models,
+firing portals, doors, secret doors and relays; a door's door_hit_bottom closes its own
+again in the game frame it is back down) culling world leafs and brush models,
 brush entities a killtarget frees in the settle frames left out, and func_wall and
 func_object entities a use there shows or hides drawn or left out to match,
 the world walked per frame as R_RecursiveWorldNode does (R_CullBox on nodes and leafs,
@@ -35,8 +36,6 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- door_hit_bottom does not close the door's area portals when a door the settle frames
-  sent moving comes back down.
 - The mover lacks the plat, train and button endfuncs (plat_hit_top/bottom, train_wait,
   button_wait/done); only door endfuncs run.
 - Nothing blocks a push (needs the box trace, milestone 2): no door_blocked, and
@@ -90,6 +89,9 @@ Remaining:
   with the breach's at-rest yaw, but the mover does not model the override, so the door
   turns its yaw back to its start or end angles as it moves. The seed is also the yaw
   at rest, not after the two settle frames: a slow breach reaches it later in the game.
+- A func_door_secret the settle frames open never moves, so its portals stay open: in
+  the game it moves out and back (door_secret_move1..6) and door_secret_done closes
+  them (door_use_areaportals false) unless its "wait" is -1, about 5 s after by default.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

@@ -3,7 +3,8 @@
 // at a time by the sim, each frame's origins sent at the network's 1/8 unit
 // (MSG_WriteCoord, MSG_ReadCoord) and angles at its 360/256 degrees (MSG_WriteAngle,
 // MSG_ReadAngle), and drawn blended between the last two frames as CL_AddEntities and
-// CL_AddPacketEntities (client/cl_ents.c) do. DOM-free.
+// CL_AddPacketEntities (client/cl_ents.c) do; and the area portals open in each frame,
+// which door_hit_bottom closes. DOM-free.
 
 import { levelTimeAt, stepPusher } from "@quack2/sim";
 import type { MovingDoor } from "./bmodels.js";
@@ -58,6 +59,12 @@ export function lerpAngle(a2: number, a1: number, frac: number): number {
  * slave that is where the master's push already left it, so that frame the game snaps
  * the slave where this lerps it; its prev angles are its current ones, so it snaps to
  * those too.
+ *
+ * A door that comes back down closes its area portals (door_use_areaportals in
+ * door_hit_bottom) in the game frame it reaches the bottom. That frame's areabits, which
+ * the client draws the world with, and the server's area test of the entities it sends
+ * both see them closed, so they apply from the first client time that draws towards it,
+ * not blended.
  */
 export class BrushMotion {
   private teams: readonly (readonly MovingDoor[])[] = [];
@@ -66,9 +73,17 @@ export class BrushMotion {
   /** Networked poses at framenum - 1 and framenum, by entity index. */
   private prev = new Map<number, MoverPose>();
   private cur = new Map<number, MoverPose>();
+  /** Area portals open after framenum; replaced, never changed in place, so a set handed out stays as it was. */
+  private portals: ReadonlySet<number> = new Set();
 
-  /** `spawn` builds the movers as the settle frames leave them; it runs again to go back in time. */
-  constructor(private readonly spawn: () => readonly (readonly MovingDoor[])[]) {
+  /**
+   * `spawn` builds the movers as the settle frames leave them; it runs again to go back
+   * in time. `openAtSpawn` is the area portals the settle frames left open (`openAreaPortals`).
+   */
+  constructor(
+    private readonly spawn: () => readonly (readonly MovingDoor[])[],
+    private readonly openAtSpawn: ReadonlySet<number> = new Set(),
+  ) {
     this.reset();
   }
 
@@ -77,6 +92,7 @@ export class BrushMotion {
     this.framenum = SETTLE_FRAMES;
     this.cur = this.snapshot();
     this.prev = this.cur;
+    this.portals = new Set(this.openAtSpawn);
   }
 
   private snapshot(): Map<number, MoverPose> {
@@ -99,7 +115,18 @@ export class BrushMotion {
     while (this.framenum < target) {
       this.framenum++;
       const levelTime = levelTimeAt(this.framenum);
-      for (const team of this.teams) stepPusher(team.map((d) => d.mover), levelTime);
+      let closed: Set<number> | undefined;
+      for (const team of this.teams) {
+        const hitBottom = stepPusher(team.map((d) => d.mover), levelTime);
+        for (const m of hitBottom) {
+          for (const p of team.find((d) => d.mover === m)!.portals) {
+            if (!this.portals.has(p)) continue;
+            closed ??= new Set(this.portals);
+            closed.delete(p);
+          }
+        }
+      }
+      if (closed) this.portals = closed;
       this.prev = this.cur;
       this.cur = this.snapshot();
     }
@@ -119,6 +146,12 @@ export class BrushMotion {
       for (const { entity, mover } of team) out.set(entity, { origin: [...mover.origin], angles: [...mover.angles] });
     }
     return out;
+  }
+
+  /** The area portals open in the game frame client time `ms` draws towards; the set is the caller's to keep but not to change. */
+  openPortalsAt(ms: number): ReadonlySet<number> {
+    this.stepTo(ms);
+    return this.portals;
   }
 
   /**

@@ -268,6 +268,49 @@ describe("rotating door mover", () => {
   });
 });
 
+describe("stepPusher's door_hit_bottom report", () => {
+  /** The frames, from+1 .. to, in which stepPusher reported each mover, by its index in `team`. */
+  const hits = (team: BrushMover[], from: number, to: number) => {
+    const out: [number, number][] = [];
+    for (let f = from + 1; f <= to; f++) for (const m of stepPusher(team, levelTimeAt(f))) out.push([f, team.indexOf(m)]);
+    return out;
+  };
+
+  it("reports each member in the frame it reaches the bottom, in team order, and not at the top", () => {
+    // The linear door is home in frame 45 (see above), the rotating one (90 degrees at
+    // 100 a second, wait 3) in frame 51; a linear door twice as far at twice the speed is
+    // home in 45 too, reported after the first.
+    const team = [door(), rotating(), door({ distance: 240, endOrigin: [0, 0, 240], speed: 400, accel: 400, decel: 400 })];
+    for (const m of team) doorGoUp(m, levelTimeAt(2), false);
+    expect(hits(team, 2, 60)).toEqual([
+      [45, 0],
+      [45, 2],
+      [51, 1],
+    ]);
+  });
+
+  it("reports a door that goes down and reaches the bottom in one think", () => {
+    // No distance: door_go_down from its own think runs Move_Begin, Move_Final and
+    // Move_Done at once, so the door is never seen going down.
+    const d = door({ distance: 0, endOrigin: [0, 0, 0], wait: 0 });
+    doorGoUp(d, levelTimeAt(2), false);
+    const states: string[] = [];
+    const r: [number, number][] = [];
+    for (let f = 3; f <= 6; f++) {
+      if (stepPusher([d], levelTimeAt(f)).includes(d)) r.push([f, 0]);
+      states[f] = d.state;
+    }
+    expect(states.slice(3)).toEqual(["top", "bottom", "bottom", "bottom"]);
+    expect(r).toEqual([[4, 0]]);
+  });
+
+  it("reports nothing for a door that stays at the bottom or the top", () => {
+    const toggled = door({ toggle: true });
+    doorGoUp(toggled, levelTimeAt(2), false);
+    expect(hits([door(), toggled], 2, 80)).toEqual([]);
+  });
+});
+
 describe("calcMoveSpeed", () => {
   it("gives infinite speeds when a member has no distance, and that member NaN", () => {
     const team = [
