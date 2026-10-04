@@ -17,9 +17,10 @@ frame as R_RecursiveWorldNode does (R_CullBox on nodes and leafs, so the sky box
 bounded by the sky faces in view), inline brush models where the game has them after
 spawn (untargeted plats lowered, START_OPEN doors open, trains at their first
 path_corner or a teleport one after it, also when a trigger_always uses them, turrets
-turned to rest in their pitch/yaw range with their teams), culled by area, PVS and frustum, free-fly camera, `.wal` textures and
-`?map=` BSPs from mounted pak/zip data (zip64 and self-extractor stubs included), picked
-archives read by range, checker fallback, `pnpm smoke`).
+turned to rest in their pitch/yaw range with their teams), culled by area, PVS and
+frustum, free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data
+(zip64 and self-extractor stubs included), picked archives read by range, checker
+fallback, `pnpm smoke`).
 Remaining:
 - A turret team whose master (first member) is not a turret keeps its spawn angles here;
   the game runs it under the master's movetype (a MOVETYPE_NONE or TOSS master never
@@ -62,17 +63,21 @@ Remaining:
 - The second settle frame's use chains change only area portals and trains here. A
   brush entity a killtarget frees is still drawn, and a door they send up is drawn at
   rest although it starts moving the next frame. Only func_areaportal, doors,
-  func_door_secret, trigger_relay and func_train uses are modeled, and a door's or relay's own "delay" always defers its
-  targets (a tiny or negative one can come due within the second frame in the game).
+  func_door_secret, trigger_relay and func_train uses are modeled (and a train's
+  pathtarget at a corner it reaches at once), and a door's or relay's own "delay"
+  always defers its targets (a tiny or negative one can come due within the second
+  frame in the game).
 - win32 Quake 2 runs every frame at x87 24-bit precision (`_controlfp(_PC_24)` in
   sys_win.c WinMain), which rounds the C's `double` steps to a 24-bit mantissa too
   (unless a GL driver resets it mid-frame; see `lightmapExtents`).
   Ports that follow the C's double (warp.ts, renderer.ts, skyimage.ts, bmodels.ts) match
   SSE builds instead; decide which build is the reference, then audit them.
-- A func_train that is a team slave runs its train_next think at its own entity slot in
-  `settleSpawnFrames`; the game runs it in its master's slot (SV_Physics_Pusher), and
-  never if the master is not MOVETYPE_PUSH, so an untargeted slave train would stay at
-  its first corner. Needs the movetype per spawn function, as the turret team item does.
+- A func_train that is a team slave runs its thinks (func_train_find, train_next) at its
+  own entity slot in `settleSpawnFrames`; the game runs them in its master's slot, and
+  only under a MOVETYPE_PUSH or STOP master (SV_Physics_Pusher). Under a NONE master the
+  slave never thinks and stays at its spawn origin; under a TOSS master it takes the
+  master's origin (SV_Physics_Toss). Needs the movetype per spawn function, as the
+  turret team item does.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

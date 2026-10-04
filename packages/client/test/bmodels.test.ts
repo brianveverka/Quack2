@@ -286,6 +286,10 @@ describe("brush model instances", () => {
         ).toEqual([50]);
       });
 
+      it("a train freed by a killtarget before its own think does not run train_next", () => {
+        expect(x(`{ "classname" "trigger_always" "killtarget" "t" } { "classname" "func_train" "model" "*1" "target" "a" "targetname" "t" "spawnflags" "1" }`)).toEqual([10]);
+      });
+
       it("a START_ON TOGGLE train it stops keeps its first corner only if stopped before its own think", () => {
         const train = `{ "classname" "func_train" "model" "*1" "target" "a" "targetname" "t" "spawnflags" "3" }`;
         const always = `{ "classname" "trigger_always" "target" "t" }`;
@@ -294,6 +298,26 @@ describe("brush model instances", () => {
         // Without TOGGLE the use is ignored either way.
         expect(x(always + `{ "classname" "func_train" "model" "*1" "target" "a" "targetname" "t" "spawnflags" "1" }`)).toEqual([20]);
       });
+    });
+
+    it("finishes a train's own-think move to a corner at no distance at once (Move_Final -> train_wait)", () => {
+      const corners = (zb: string) => `{ "classname" "worldspawn" }
+        { "classname" "func_train" "model" "*1" "target" "za" }
+        { "classname" "path_corner" "targetname" "za" "target" "zb" "origin" "10 0 0" }
+        { "classname" "path_corner" "targetname" "zb" "target" "zc" ${zb} }
+        { "classname" "path_corner" "targetname" "zc" "origin" "30 0 0" "spawnflags" "1" }`;
+      const x = (zb: string) => place(corners(zb)).map((b) => b.origin[0] - 385);
+      expect(x(`"origin" "10 0 0"`)).toEqual([30]); // wait 0: train_next again, through the teleport
+      expect(x(`"origin" "10.0000001 0 0"`)).toEqual([30]); // equal as floats
+      expect(x(`"origin" "10.001 0 0"`)).toEqual([10]); // some distance: moves next frame
+      expect(x(`"origin" "10 0 0" "wait" "2"`)).toEqual([10]); // waits past the settle frames
+      expect(x(`"origin" "10 0 0" "wait" "-1"`)).toEqual([10]); // not TOGGLE: stays
+      // A loop of coincident corners is cut off, not run forever.
+      expect(
+        place(`{ "classname" "worldspawn" } { "classname" "func_train" "model" "*1" "target" "l1" }
+          { "classname" "path_corner" "targetname" "l1" "target" "l2" "origin" "10 0 0" }
+          { "classname" "path_corner" "targetname" "l2" "target" "l1" "origin" "10 0 0" }`).map((b) => b.origin[0] - 385),
+      ).toEqual([10]);
     });
 
     it("turns a turret_breach to rest: pitch to 0 within its range, yaw into minyaw..maxyaw", () => {
@@ -426,6 +450,15 @@ describe("area portals open at spawn", () => {
         { "classname" "trigger_always" "target" "a" }
         { "classname" "trigger_always" "target" "b" }`);
       expect([...openAreaPortals(shared)]).toEqual([1]);
+    });
+
+    it("a train's own think fires a coincident corner's pathtarget (train_wait)", () => {
+      const train = (wait: string) => `{ "classname" "func_train" "target" "a" }
+        { "classname" "path_corner" "targetname" "a" "target" "b" "origin" "1 2 3" }
+        { "classname" "path_corner" "targetname" "b" "pathtarget" "q" "origin" "1 2 3" ${wait} }`;
+      expect(open(train(""))).toEqual([3]);
+      expect(open(train(`"wait" "5"`))).toEqual([3]);
+      expect(open(train(`"delay" "1"`))).toEqual([]);
     });
 
     it("fires only if due by the second frame: delay up to 0.2 s, as SP_trigger_always raises it", () => {

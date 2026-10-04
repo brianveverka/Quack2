@@ -625,27 +625,70 @@ function trainFind(s: Settle, index: number): Train {
 
 /**
  * train_next: steps self->target on to the next corner. A TELEPORT corner (spawnflag 1,
- * whatever the class) puts the train's mins on it at once and steps on again; a second
- * one in a row stops there. Any other corner starts a Move_Calc, which moves nothing in
- * the settle frames: run from the train's own think it sets a velocity the next frame
- * applies, run from a use it defers Move_Begin a frame.
+ * whatever the class) puts the train's mins on it at once and steps on again; at a
+ * second one in a row the train stays put, though self->target has stepped past it.
+ * Any other corner starts a Move_Calc, which moves nothing in the settle frames: run
+ * from a use it defers Move_Begin a frame; run from the train's own think (`think`) it
+ * sets a velocity the next frame applies, except that a corner at no distance (with a
+ * positive speed) finishes the move at once and runs train_wait.
  */
-function trainNext(s: Settle, train: Train): void {
+function trainNext(s: Settle, index: number, train: Train, think: boolean): void {
   let first = true;
   for (;;) {
     const t = pickTarget(s, train.target);
     if (t === undefined) return;
     const ent = s.entities[t]!;
     train.target = ent.target;
+    const corner = entityVec3(ent, "origin") ?? [0, 0, 0];
     if (atoi(ent.spawnflags ?? "0") & PATH_CORNER_TELEPORT) {
       if (!first) return;
       first = false;
-      train.at = entityVec3(ent, "origin") ?? [0, 0, 0];
+      train.at = corner;
       continue;
     }
     train.targetEnt = true;
+    // Move_Calc -> Move_Begin -> Move_Final -> Move_Done: the origins compare as floats
+    // (ED_ParseField's sscanf); the train's mins, subtracted from both, are not modeled.
+    const at = train.at;
+    const speed = Math.fround(atof(s.entities[index]!.speed ?? "0")) || 100;
+    if (think && speed > 0 && at && corner.every((c, k) => Math.fround(c) === Math.fround(at[k]!))) trainWait(s, index, train, t);
     train.startOn = true;
     return;
+  }
+}
+
+/**
+ * train_wait at the corner `t`, from the train's own think: its "pathtarget" fires
+ * through G_UseTargets with the corner's own delay and killtarget; then a corner with
+ * no "wait" runs train_next again, a negative one on a TOGGLE train runs it and stops
+ * the train, and a positive one waits past the settle frames. A loop of coincident
+ * corners recurses in the game until it crashes; the use budget and depth cut it off.
+ */
+function trainWait(s: Settle, index: number, train: Train, t: number): void {
+  if (s.budget <= 0 || s.depth >= MAX_USE_DEPTH) return;
+  s.budget--;
+  s.depth++;
+  try {
+    const corner = s.entities[t]!;
+    if (corner.pathtarget !== undefined) {
+      useTargets(s, {
+        index: t,
+        classname: liveClassname(corner),
+        target: corner.pathtarget,
+        killtarget: corner.killtarget,
+        delay: Math.fround(atof(corner.delay ?? "0")),
+      });
+      if (s.freed.has(index)) return;
+    }
+    const wait = Math.fround(atof(corner.wait ?? "0"));
+    if (wait === 0) {
+      trainNext(s, index, train, true);
+    } else if (wait < 0 && train.toggle) {
+      trainNext(s, index, train, true);
+      train.startOn = false;
+    }
+  } finally {
+    s.depth--;
   }
 }
 
@@ -664,7 +707,7 @@ function trainUse(s: Settle, index: number): void {
   } else if (train.targetEnt) {
     train.startOn = true;
   } else {
-    trainNext(s, train);
+    trainNext(s, index, train, false);
   }
 }
 
@@ -725,8 +768,8 @@ function doorUse(s: Settle, index: number): void {
  * func_areaportal toggles, a door goes up with its team (each member at the bottom fires
  * its own targets, except portals, and opens its portals), a func_door_secret at origin
  * 0 0 0 opens its portals, a trigger_relay fires its targets, a train runs train_use.
- * Other use functions are not modeled, nor is a team slave train's think running at its
- * master's slot.
+ * Other use functions are not modeled, nor are a team slave train's thinks (both
+ * func_train_find and train_next) running in its master's slot.
  */
 function settleSpawnFrames(entities: readonly BspEntity[]): { portals: Set<number>; trains: Map<number, Train> } {
   const teams = new Map<number, number[]>();
@@ -771,7 +814,8 @@ function settleSpawnFrames(entities: readonly BspEntity[]): { portals: Set<numbe
     const train = s.trains.get(i);
     if (train?.thinking && !s.freed.has(i)) {
       train.thinking = false;
-      trainNext(s, train);
+      s.budget = MAX_USES;
+      trainNext(s, i, train, true);
     }
     if (i === 0 || e.classname !== "trigger_always" || !inGame(e)) return;
     const delay = Math.fround(atof(e.delay ?? "0"));
