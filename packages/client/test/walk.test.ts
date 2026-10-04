@@ -421,6 +421,20 @@ describe("WorldDraws", () => {
     expect(draws.update(rest.slice(1))).toBe(true);
   });
 
+  it("reports a change confined to the last word of opaque faces", () => {
+    const draws = new WorldDraws(mesh);
+    const all = [...Array(WORLD_FACES).keys()];
+    expect(draws.update(all)).toBe(true);
+    const full = draws.indexCount;
+    // The opaque face drawn last sits in the bit set's last word.
+    const last = draws.draws[draws.draws.length - 1]!;
+    const lastFace = all.filter((f) => mesh.faceTexture[f] === last.texture && mesh.faceFlags[f] === last.flags).pop()!;
+    expect(draws.update(all.filter((f) => f !== lastFace))).toBe(true);
+    expect(draws.indexCount).toBeLessThan(full);
+    expect(draws.update(all)).toBe(true);
+    expect(draws.indexCount).toBe(full);
+  });
+
   it("the first update reports a change even with no faces", () => {
     expect(new WorldDraws(mesh).update([])).toBe(true);
   });

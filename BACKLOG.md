@@ -92,3 +92,7 @@ Remaining:
   translucent faces draw as their texture; ref_gl draws min(texture * gl_intensity, 255)
   * inverse_intensity, which caps every channel at 127 at the default intensity 2. Needs a real
   map and the engine running to compare against; the sandbox has neither.
+- Measure the world walk (`WorldWalk.walk`, `WorldDraws.update`) on a large real map.
+  Measured 2026-10-04 only on synthetic kd-trees with no PVS (esbuild bundle, Node 22,
+  cull on): 16380 faces, 130-170 us walk and 45-60 us update per frame; 65532 faces,
+  570-610 us and 210-235 us. The sandbox has no game data.
