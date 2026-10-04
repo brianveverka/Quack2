@@ -5,18 +5,16 @@ order (see CLAUDE.md, Orchestration).
 
 ## 1. Game data and renderer completeness
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps, PVS, inline brush
-models at their entity origin and spawn angles, culled by PVS and frustum, free-fly
-camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data (zip64 and
-self-extractor stubs included), picked archives read by range, checker fallback,
-`pnpm smoke`).
+models where the game has them after spawn (untargeted plats lowered, START_OPEN
+doors open, trains at their first path_corner or a teleport one after it), culled by
+PVS and frustum, free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip
+data (zip64 and self-extractor stubs included), picked archives read by range, checker
+fallback, `pnpm smoke`).
 Remaining:
-- Brush models are placed by their spawn "origin" and angles, but the game moves
-  some at spawn: an untargeted func_plat starts lowered (g_func.c SP_func_plat), a
-  START_OPEN door or func_water starts open (a START_OPEN func_door_rotating starts
-  turned to its open angles), a func_train snaps to its first path_corner, a
-  turret_breach (and its turret_base) turns from its spawn angles into its
+- turret_breach (and its teamed turret_base) turns from its spawn angles into its
   minpitch/maxpitch and minyaw/maxyaw range over the first seconds
-  (turret_breach_think). Needs entity spawn state, with movers.
+  (g_turret.c turret_breach_think); drawn at its spawn angles here. Needs entity think
+  over time, or at least the resting angles it turns to.
 - Entity keys match case sensitively; the game's ED_ParseField uses Q_stricmp, so a
   map with "Origin" or "Angle" places the entity differently here, and one with
   "Model" is not drawn.
@@ -32,6 +30,10 @@ Remaining:
   cluster the eye's one does not see. Use the same fat PVS for the world.
 - `lightmapExtents` computes in double, the engine in float; may differ by a luxel on
   non-axial texinfo. Check against a map with rotated or scaled textures.
+- A targeted func_train that a trigger_always fires (DelayedUse at 0.2 s, the second
+  settle frame) also runs train_next before clients see it, so it too jumps on to a
+  TELEPORT path_corner after its first; only untargeted and START_ON trains do here.
+  Needs a search for what targets the train.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
