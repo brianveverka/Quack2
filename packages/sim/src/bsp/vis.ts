@@ -19,16 +19,19 @@ export function pointLeaf(bsp: Bsp, x: number, y: number, z: number, headNode = 
 
 /**
  * Every leaf an axis-aligned box touches, solid ones included, after CM_BoxLeafnums but
- * with no cap on the count. A box on a node's plane goes to both children, where the
- * engine's axial fast path (BOX_ON_PLANE_SIDE) sends a box whose max is on the plane
- * only to the back: this is a superset, never missing a leaf. Each node is visited
- * once, so a corrupt map whose children loop or share subtrees still terminates.
+ * with no cap on the count, in its order (front child first). By default a box on a
+ * node's plane goes to both children, where the engine's axial fast path
+ * (BOX_ON_PLANE_SIDE) sends a box whose max is on an axial plane only to the back and
+ * one whose min is on it only to the front: a superset, never missing a leaf. With
+ * `axialTies` the fast path is followed, for the engine's exact leaf list. Each node is
+ * visited once, so a corrupt map whose children loop or share subtrees still terminates.
  */
 export function boxLeafs(
   bsp: Bsp,
   mins: readonly [number, number, number],
   maxs: readonly [number, number, number],
   headNode = bsp.models.headNode[0] ?? 0,
+  axialTies = false,
 ): number[] {
   const { nodes, planes } = bsp;
   const out: number[] = [];
@@ -48,6 +51,15 @@ export function boxLeafs(
     if (num >= nodes.count || seenNodes[num]) continue;
     seenNodes[num] = 1;
     const p = nodes.planeNum[num]!;
+    const type = planes.type[p]!;
+    if (axialTies && type >= 0 && type < 3) {
+      const dist = planes.dist[p]!;
+      const front = dist <= mins[type]!;
+      const back = !front && dist >= maxs[type]!;
+      if (!front) stack.push(nodes.children[num * 2 + 1]!);
+      if (!back) stack.push(nodes.children[num * 2]!);
+      continue;
+    }
     // Distances of the box corners nearest and farthest along the plane normal.
     let lo = -planes.dist[p]!;
     let hi = lo;

@@ -12,14 +12,16 @@
 // Copies with surface flags set check warps move with level time and draw unlit, and
 // translucent faces blend with what is behind them at their alpha. A copy whose walls and
 // ceiling are sky checks the sky box: r_notexture without data, each side's synthetic
-// image in its direction and orientation with it, and skyrotate.
+// image in its direction and orientation with it, and skyrotate. A copy split into two
+// areas by an area portal checks that a closed portal hides the world and brush models
+// beyond it, and that a START_OPEN door that targets it opens it.
 // Usage: node scripts/smoke-render.mjs [outdir]   (default packages/client/dist/smoke)
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { syntheticPalette, withEntityString, writePak, writePalettePcx, writeTga, writeWal, writeZip } from "./synthetic-data.mjs";
+import { syntheticPalette, withEntityString, withLump, writePak, writePalettePcx, writeTga, writeWal, writeZip } from "./synthetic-data.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const dist = join(root, "packages/client/dist");
@@ -55,7 +57,8 @@ SYNTHETIC["/data/rotated.bsp"] = withEntityString(
   fixtureEntities.replace('"model" "*1"', '"model" "*1"\n"origin" "0 192 0"\n"angle" "90"'),
 );
 // Culling: the func_wall at its compiled spot, again at the south spot, and again outside
-// the map, where its box touches only solid leafs (no PVS cluster).
+// the map, where its box touches only solid leafs (no PVS cluster, and area 0, which
+// the server's area test drops before the PVS one is reached).
 SYNTHETIC["/data/culled.bsp"] = withEntityString(
   fixtureBsp,
   `${fixtureEntities}{\n"classname" "func_wall"\n"model" "*1"\n"origin" "0 -320 0"\n}\n{\n"classname" "func_wall"\n"model" "*1"\n"origin" "2000 0 0"\n}\n`,
@@ -110,6 +113,31 @@ const skyImages = (name) => ({
 });
 SYNTHETIC["/data/sky.pak"] = writePak({ ...skyImages("unit1_"), ...skyImages("spin_") });
 if (!SYNTHETIC["/data/sky-rotate.bsp"]) throw new Error("no sky-rotate map");
+// Two areas: leafs wholly east of the dividing wall (x 8 up) are area 2, the rest keep
+// area 1, joined by area portal 1 (lumps 17 areas and 18 areaportals; leafs are lump 8,
+// 28 bytes each, area at byte 6, mins x at 8). A func_wall stands in the east. The
+// portal is closed in "areas.bsp"; in "areas-open.bsp" a START_OPEN door (outside the
+// map, where nothing sees it) targets the func_areaportal and so opens it at spawn.
+{
+  const split = Uint8Array.from(fixtureBsp);
+  const view = Buffer.from(split.buffer);
+  const ofs = view.readInt32LE(8 + 8 * 8);
+  let east = 0;
+  for (let o = ofs; o < ofs + view.readInt32LE(12 + 8 * 8); o += 28) {
+    if (view.readInt16LE(o + 6) && view.readInt16LE(o + 8) >= 8) {
+      view.writeInt16LE(2, o + 6);
+      east++;
+    }
+  }
+  if (east === 0) throw new Error("fixture has no leafs east of x 8");
+  const ints = (...v) => new Uint8Array(Int32Array.from(v).buffer);
+  const lumps = withLump(withLump(split, 17, ints(0, 0, 1, 0, 1, 1)), 18, ints(1, 2, 1, 1));
+  const portal = `{\n"classname" "func_areaportal"\n"targetname" "p"\n"style" "1"\n}\n`;
+  const eastWall = `{\n"classname" "func_wall"\n"model" "*1"\n"origin" "700 0 0"\n}\n`;
+  const door = `{\n"classname" "func_door"\n"model" "*1"\n"origin" "2000 0 0"\n"target" "p"\n"spawnflags" "1"\n}\n`;
+  SYNTHETIC["/data/areas.bsp"] = withEntityString(lumps, fixtureEntities + eastWall + portal);
+  SYNTHETIC["/data/areas-open.bsp"] = withEntityString(lumps, fixtureEntities + eastWall + portal + door);
+}
 // The moved map packed at a path the server does not have, so only the pak can supply it.
 SYNTHETIC["/data/maps.pak"] = writePak({
   "maps/packed.bsp": SYNTHETIC["/data/moved.bsp"],
@@ -350,10 +378,10 @@ try {
   await page.goto(`${ORIGIN}/?map=data/culled.bsp`);
   await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
   const CULL_VIEWS = [
-    { ...WALL_VIEWS[0], expect: { brushModels: 1, pvsCulled: 1, frustumCulled: 1 } },
-    { ...WALL_VIEWS[1], expect: { brushModels: 1, pvsCulled: 1, frustumCulled: 1 } },
-    { name: "spawn", view: { origin: [-448, 0, 46], pitch: 0, yaw: 0 }, expect: { brushModels: 2, pvsCulled: 1, frustumCulled: 0 } },
-    { name: "outside", view: { origin: [1200, 0, 400], pitch: 20, yaw: 180 }, expect: { brushModels: 2, pvsCulled: 0, frustumCulled: 1 } },
+    { ...WALL_VIEWS[0], expect: { brushModels: 1, areaCulled: 1, pvsCulled: 0, frustumCulled: 1 } },
+    { ...WALL_VIEWS[1], expect: { brushModels: 1, areaCulled: 1, pvsCulled: 0, frustumCulled: 1 } },
+    { name: "spawn", view: { origin: [-448, 0, 46], pitch: 0, yaw: 0 }, expect: { brushModels: 2, areaCulled: 1, pvsCulled: 0, frustumCulled: 0 } },
+    { name: "outside", view: { origin: [1200, 0, 400], pitch: 20, yaw: 180 }, expect: { brushModels: 2, areaCulled: 0, pvsCulled: 0, frustumCulled: 1 } },
   ];
   for (const { name, view, expect } of CULL_VIEWS) {
     const r = await page.evaluate((view) => {
@@ -361,8 +389,8 @@ try {
         window.quack.setCull(cull);
         window.quack.setView(view);
         const { data } = window.quack.readPixels();
-        const { brushModels, pvsCulled, frustumCulled } = window.quack.stats;
-        return { stats: { brushModels, pvsCulled, frustumCulled }, data };
+        const { brushModels, areaCulled, pvsCulled, frustumCulled } = window.quack.stats;
+        return { stats: { brushModels, areaCulled, pvsCulled, frustumCulled }, data };
       };
       const on = frame(true);
       const off = frame(false);
@@ -373,8 +401,8 @@ try {
     }, view);
     console.log(`  culled ${name}: ${JSON.stringify(r)}`);
     check(
-      JSON.stringify(r.on) === JSON.stringify(expect) && JSON.stringify(r.off) === JSON.stringify({ brushModels: 3, pvsCulled: 0, frustumCulled: 0 }),
-      `${name} view culls ${expect.pvsCulled} brush model(s) by PVS and ${expect.frustumCulled} by frustum, draws ${expect.brushModels}`,
+      JSON.stringify(r.on) === JSON.stringify(expect) && JSON.stringify(r.off) === JSON.stringify({ brushModels: 3, areaCulled: 0, pvsCulled: 0, frustumCulled: 0 }),
+      `${name} view culls ${expect.areaCulled} brush model(s) by area, ${expect.pvsCulled} by PVS and ${expect.frustumCulled} by frustum, draws ${expect.brushModels}`,
     );
     check(r.differ === 0, `${name} view: culling changes no pixel (${r.differ} bytes differ)`);
   }
@@ -553,6 +581,53 @@ try {
   check(same(still0.colors[0], SKY_COLORS.bk) && still0.stats.skySides === 6, "a rotating sky draws all six sides, unturned at level time 0");
   // 90 degrees counterclockwise about +z after 1 s: rt now faces +y, its left edge toward -x.
   check(same(turned.colors, RT_QUADRANTS.slice(0, 2)), "after 1 s at 90 degrees a second about +z, rt faces +y");
+
+  // Area portals. From the north-west room (area 1) looking east through the doorway in
+  // the dividing wall: the closed portal leaves the east half's world faces and its
+  // func_wall undrawn (the background shows through the doorway); opened by the door, or
+  // ignored (map_noareas), the frame is the same as with no areas at all.
+  const areaFrame = (view, noAreas) =>
+    page.evaluate(
+      ({ view, noAreas }) => {
+        window.quack.setNoAreas(noAreas);
+        window.quack.setView(view);
+        const { width, height, data } = window.quack.readPixels();
+        window.quack.setNoAreas(false);
+        let clear = 0;
+        for (let i = 0; i < data.length; i += 4) if (data[i] === 64 && data[i + 1] === 0 && data[i + 2] === 64) clear++;
+        const { area, visibleFaces, brushModels, areaCulled, pvsCulled } = window.quack.stats;
+        return { stats: { area, visibleFaces, brushModels, areaCulled, pvsCulled }, clearFraction: clear / (width * height), open: window.quack.openPortals, data: Array.from(data) };
+      },
+      { view, noAreas },
+    );
+  const AREA_WEST = { origin: [-160, 48, 64], pitch: 0, yaw: 0 };
+  const AREA_EAST = { origin: [160, 48, 64], pitch: 0, yaw: 180 };
+  const strip = ({ data, ...r }) => r;
+  const areasError = await loadMap("map=data/areas.bsp");
+  const closedWest = await areaFrame(AREA_WEST, false);
+  await page.screenshot({ path: join(outDir, "areas-closed.png") });
+  const ignoredWest = await areaFrame(AREA_WEST, true);
+  const closedEast = await areaFrame(AREA_EAST, false);
+  const openError = await loadMap("map=data/areas-open.bsp");
+  const openWest = await areaFrame(AREA_WEST, false);
+  console.log(`  areas: ${JSON.stringify({ closedWest: strip(closedWest), ignoredWest: strip(ignoredWest), closedEast: strip(closedEast), openWest: strip(openWest) })}`);
+  check(!areasError && !openError && same(closedWest.open, []) && same(openWest.open, [1]), "func_areaportal starts closed; a START_OPEN door that targets it opens it");
+  check(closedWest.stats.area === 1 && closedEast.stats.area === 2, "the eye's leaf area is reported");
+  check(
+    closedWest.clearFraction > 0.01 && closedWest.stats.visibleFaces < ignoredWest.stats.visibleFaces,
+    `a closed portal hides the world beyond it (${closedWest.stats.visibleFaces} of ${ignoredWest.stats.visibleFaces} faces, ${(closedWest.clearFraction * 100).toFixed(1)}% background)`,
+  );
+  check(
+    closedWest.stats.areaCulled === 1 && ignoredWest.stats.brushModels === 1 && closedWest.stats.brushModels === 0,
+    "a closed portal hides the brush model beyond it",
+  );
+  check(closedEast.clearFraction > 0.01 && closedEast.stats.areaCulled === 1, "from the east, the west's world and func_wall are hidden instead");
+  check(
+    openWest.clearFraction === 0 && same(openWest.data, ignoredWest.data),
+    "an open portal draws as if there were no areas (map_noareas), pixel for pixel",
+  );
+  // The door outside the map is in area 0; the east func_wall is drawn.
+  check(openWest.stats.brushModels === 1 && openWest.stats.areaCulled === 1, "an open portal lets the brush model beyond it draw");
 
   // Game data: ?pak= mounts in order; 404s are reported, in URL order, and skipped.
   await page.goto(`${ORIGIN}/?pak=data/absent-1.pak&pak=data/synthetic.pak&pak=data/absent-2.pak&pak=data/synthetic.zip`);

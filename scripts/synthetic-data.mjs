@@ -269,17 +269,26 @@ export function syntheticPalette() {
 }
 
 /**
- * Copy of a BSP whose entity lump (lump 0) is `entities`: the new lump is appended,
- * NUL-terminated, and the header pointed at it. Every other lump is unchanged.
+ * Copy of a BSP whose lump `lump` holds `bytes`: the new lump is appended, 4-aligned,
+ * and the header pointed at it. Every other lump is unchanged.
+ */
+export function withLump(bsp, lump, bytes) {
+  const offset = (bsp.length + 3) & ~3;
+  const out = new Uint8Array(offset + bytes.length);
+  out.set(bsp);
+  out.set(bytes, offset);
+  const view = new DataView(out.buffer);
+  view.setInt32(8 + lump * 8, offset, true);
+  view.setInt32(12 + lump * 8, bytes.length, true);
+  return out;
+}
+
+/**
+ * Copy of a BSP whose entity lump (lump 0) is `entities`, NUL-terminated (see withLump).
  */
 export function withEntityString(bsp, entities) {
   const text = ascii(entities);
-  const offset = (bsp.length + 3) & ~3;
-  const out = new Uint8Array(offset + text.length + 1);
-  out.set(bsp);
-  out.set(text, offset);
-  const view = new DataView(out.buffer);
-  view.setInt32(8, offset, true);
-  view.setInt32(12, text.length + 1, true);
-  return out;
+  const lump = new Uint8Array(text.length + 1);
+  lump.set(text);
+  return withLump(bsp, 0, lump);
 }

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { parseBsp } from "@quack2/sim";
+import { areaBits, parseBsp } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
 import { FlyCamera } from "../src/camera.js";
+import { closedFlood, openFlood, withEastArea } from "./areas-fixture.js";
 import { buildLightmapAtlas, lightmapUv, type LightmapAtlas } from "../src/lightmap.js";
 import { fovY, multiply, perspective, transformPoint, viewMatrix } from "../src/math.js";
 import { CHECKER_SIZE, checkerTexture, resolveTextures } from "../src/textures.js";
@@ -215,6 +216,59 @@ describe("PVS face selection", () => {
       next += d.count;
     }
     expect(next).toBe(list.indices.length);
+  });
+
+  describe("area bits", () => {
+    const split = withEastArea(bsp);
+    const count = (m: Uint8Array) => m.reduce((a, v) => a + v, 0);
+    /** Faces listed by the leafs that pass `keep`. */
+    const leafFaces = (keep: (l: number) => boolean) => {
+      const out = new Set<number>();
+      for (let l = 0; l < split.leafs.count; l++) {
+        if (!keep(l)) continue;
+        const first = split.leafs.firstLeafFace[l]!;
+        for (let k = 0; k < split.leafs.numLeafFaces[l]!; k++) out.add(split.leafFaces[first + k]!);
+      }
+      return out;
+    };
+
+    it("leafs behind a closed portal add no faces; faces they share with a drawn leaf stay", () => {
+      // Cluster 2 (the north-west room, area 1) sees into the east half.
+      const pvs = visibleFaceMask(split, mesh, 2);
+      const closed = visibleFaceMask(split, mesh, 2, areaBits(closedFlood(split), 1));
+      const west = leafFaces((l) => split.leafs.area[l] === 1);
+      const east = leafFaces((l) => split.leafs.area[l] === 2);
+      let dropped = 0;
+      for (let f = 0; f < WORLD_FACES; f++) {
+        if (!pvs[f]) expect(closed[f]).toBe(0);
+        else if (west.has(f)) expect(closed[f]).toBe(1);
+        else if (east.has(f)) {
+          expect(closed[f]).toBe(0);
+          dropped++;
+        }
+      }
+      expect(dropped).toBeGreaterThan(10);
+      expect(count(closed)).toBe(count(pvs) - dropped);
+    });
+
+    it("an open portal's areas draw as the PVS alone does", () => {
+      expect(visibleFaceMask(split, mesh, 2, areaBits(openFlood(split), 1))).toEqual(visibleFaceMask(split, mesh, 2));
+    });
+
+    it("from the east, the west's faces go instead", () => {
+      const closed = visibleFaceMask(split, mesh, 0, areaBits(closedFlood(split), 2));
+      const west = leafFaces((l) => split.leafs.area[l] === 1);
+      const east = leafFaces((l) => split.leafs.area[l] === 2);
+      for (const f of west) if (!east.has(f)) expect(closed[f]).toBe(0);
+      expect(count(closed)).toBeGreaterThan(0);
+    });
+
+    it("without vis, every non-solid leaf in a connected area adds its faces (the novis path keeps the area test)", () => {
+      const closed = visibleFaceMask(split, mesh, -1, areaBits(closedFlood(split), 1));
+      const west = leafFaces((l) => split.leafs.area[l] === 1);
+      for (let f = 0; f < WORLD_FACES; f++) expect(closed[f]).toBe(west.has(f) ? 1 : 0);
+      expect(count(visibleFaceMask(split, mesh, -1, areaBits(openFlood(split), 1)))).toBe(WORLD_FACES);
+    });
   });
 
   it("a brush model's mask selects its own faces only", () => {

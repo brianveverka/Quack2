@@ -1,10 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { clusterPvs, parseBsp, pointLeaf } from "@quack2/sim";
+import { boxLeafs, clusterPvs, parseBsp, pointLeaf } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
 import type { BrushModelInstance } from "../src/bmodels.js";
-import { boxClusters, boxOutsideFrustum, clustersVisible, fatClusters, frustumPlanes, instanceBox, pvsUnion, type Box } from "../src/cull.js";
+import {
+  areasVisible,
+  boxAreas,
+  boxClusters,
+  boxOutsideFrustum,
+  clustersVisible,
+  fatClusters,
+  frustumPlanes,
+  instanceBox,
+  linkBox,
+  pvsUnion,
+  type Box,
+} from "../src/cull.js";
+import { closedFlood, openFlood, withEastArea } from "./areas-fixture.js";
 import { fovY, modelMatrix, multiply, perspective, transformPoint, viewMatrix } from "../src/math.js";
 
 const bsp = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
@@ -130,5 +143,89 @@ describe("brush model frustum", () => {
       }
     }
     expect(culled).toBeGreaterThan(0);
+  });
+});
+
+describe("brush model areas", () => {
+  const split = withEastArea(bsp);
+
+  it("link box: the model bounds spread by one more unit, at the entity origin", () => {
+    expect(linkBox(bsp, wall([0, -320, 0]))).toEqual({ mins: [-386, -194, -2], maxs: [-318, -126, 50] });
+  });
+
+  it("link box when rotated: a cube of the largest single bound, plus a unit, around the origin", () => {
+    // Bounds spread by a unit: x -385..-319, y 127..193, z -1..49; the largest is 385.
+    expect(linkBox(bsp, wall([0, 192, 0], [0, 90, 0]))).toEqual({ mins: [-386, 192 - 386, -386], maxs: [386, 192 + 386, 386] });
+  });
+
+  it("a box whose min is on an axial plane is only in front of it", () => {
+    // Min x -512 is on the west wall's plane (normal +x): the wall leaf 19 is behind it.
+    // The general test agrees here (only a max on the plane differs).
+    const box: Box = { mins: [-512, -100, 10], maxs: [-500, -90, 20] };
+    expect(boxLeafs(split, box.mins, box.maxs, undefined, true)).toEqual([17]);
+  });
+
+  it("lists leafs front child first, as CM_BoxLeafnums_r recurses", () => {
+    // Measured on the fixture and traced by hand through its nodes; every split plane is
+    // axial with a +axis normal, so the larger-coordinate side comes first: north before
+    // south (y -32), east before west (x -8 and 8).
+    const box: Box = { mins: [-20, -100, 10], maxs: [20, 100, 20] };
+    expect(boxLeafs(split, box.mins, box.maxs, undefined, true)).toEqual([4, 5, 6, 7, 11, 14, 15, 16, 17]);
+  });
+
+  it("keeps the last area differing from the first as areanum2 (SV_LinkEdict)", () => {
+    // A third area: the south-west room (leaf 17, x -512..-8, y -256..-32).
+    const three = withEastArea(bsp);
+    const area = Int16Array.from(three.leafs.area);
+    area[17] = 3;
+    const split3 = { ...three, leafs: { ...three.leafs, area } };
+    const box: Box = { mins: [-20, -100, 10], maxs: [20, 100, 20] };
+    const inOrder = boxLeafs(split3, box.mins, box.maxs, undefined, true).map((l) => split3.leafs.area[l]!).filter((a) => a !== 0);
+    expect(new Set(inOrder)).toEqual(new Set([1, 2, 3]));
+    const second = [...inOrder].reverse().find((a) => a !== inOrder[0])!;
+    expect(inOrder.find((a) => a !== inOrder[0])).not.toBe(second);
+    expect(boxAreas(split3, box)).toEqual([inOrder[0], second]);
+  });
+
+  it("an entity in one area has it as areanum and no areanum2", () => {
+    expect(boxAreas(split, linkBox(split, wall([0, 0, 0])))).toEqual([1, 0]);
+    expect(boxAreas(split, linkBox(split, wall([700, 0, 0])))).toEqual([2, 0]);
+  });
+
+  it("an entity straddling the portal has both areas, the first in tree order first", () => {
+    const box: Box = { mins: [-20, 100, 10], maxs: [20, 110, 20] };
+    const areas = boxAreas(split, box);
+    const inOrder = boxLeafs(split, box.mins, box.maxs, undefined, true).map((l) => split.leafs.area[l]!).filter((a) => a !== 0);
+    expect(new Set(inOrder)).toEqual(new Set([1, 2]));
+    expect(areas).toEqual([inOrder[0], [...inOrder].reverse().find((a) => a !== inOrder[0])]);
+  });
+
+  it("follows the engine's axial-plane ties: a box whose max is on a plane is only behind it", () => {
+    // The link box's max x is -512, on the west wall's plane: CM_BoxLeafnums sends it only
+    // into the wall, so the entity is in area 0; both sides would put it in area 1.
+    const box = linkBox(split, wall([-194, -450, 0]));
+    expect(box.maxs[0]).toBe(-512);
+    expect(boxAreas(split, box)).toEqual([0, 0]);
+    const both = boxLeafs(split, box.mins, box.maxs).map((l) => split.leafs.area[l]);
+    expect(both).toContain(1);
+  });
+
+  it("an entity touching only solid leafs is in area 0", () => {
+    expect(boxAreas(split, linkBox(split, wall([2000, 0, 0])))).toEqual([0, 0]);
+  });
+
+  it("is sent when either area is connected to the eye's (SV_BuildClientFrame)", () => {
+    const closed = closedFlood(split);
+    expect(areasVisible(closed, 1, [1, 0])).toBe(true);
+    expect(areasVisible(closed, 1, [2, 0])).toBe(false);
+    expect(areasVisible(closed, 2, [1, 2])).toBe(true);
+    expect(areasVisible(closed, 1, [2, 1])).toBe(true);
+    expect(areasVisible(closed, 1, [0, 0])).toBe(false);
+    expect(areasVisible(openFlood(split), 1, [2, 0])).toBe(true);
+  });
+
+  it("an eye in area 0 passes every entity, as the PVS test does there", () => {
+    expect(areasVisible(closedFlood(split), 0, [2, 0])).toBe(true);
+    expect(areasVisible(closedFlood(split), 0, [0, 0])).toBe(true);
   });
 });
