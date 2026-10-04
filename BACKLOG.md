@@ -6,14 +6,10 @@ order (see CLAUDE.md, Orchestration).
 ## 1. Game data and renderer completeness
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps, PVS, inline brush
 models at their entity origin and spawn angles, culled by PVS and frustum, free-fly
-camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data, picked archives read
-by range, checker fallback, `pnpm smoke`).
+camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data (zip64 and
+self-extractor stubs included), picked archives read by range, checker fallback,
+`pnpm smoke`).
 Remaining:
-- Brightness is not checked against the engine: GL Quake 2 scales textures by
-  `gl_intensity` (default 2) and the lightmap blend differs from a plain multiply.
-  Compare a screenshot of a real map against the engine before tuning.
-- Zips with a prepended stub whose offsets were not adjusted (unfixed SFX) and zip64
-  archives (Info-ZIP `-fz`, stdin) are rejected; Python's zipfile opens the former.
 - Brush models are placed by their spawn "origin" and angles, but the game moves
   some at spawn: an untargeted func_plat starts lowered (g_func.c SP_func_plat), a
   START_OPEN door or func_water starts open (a START_OPEN func_door_rotating starts
@@ -59,3 +55,9 @@ Remaining:
 ## 5. Map pool and rotation
 - Fetch maps from the open community pool at runtime, with license metadata per map.
 - Map rotation and voting on the server.
+
+## Needs Brian
+- Brightness is not checked against the engine: GL Quake 2 scales textures by
+  `gl_intensity` (default 2) and the lightmap blend differs from a plain multiply.
+  Compare a screenshot of a real map against the engine before tuning. Needs a real
+  map and the engine running to compare against; the sandbox has neither.
