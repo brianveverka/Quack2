@@ -27,10 +27,6 @@ yaw SelectSpawnPoint gives the first deathmatch player, `.wal` textures and `?ma
 from mounted pak/zip data (zip64 and self-extractor stubs included), picked archives
 read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- The world walk (`walkWorld`, `WorldDraws.update`) runs every frame and allocates its
-  marks and face lists each time; the opaque index list is rebuilt and uploaded whenever
-  the walked face set changes. Measured 2026-10-04 in Node 22 on the fixture (25 nodes,
-  111 faces), turning so every frame rebuilds: 11.4 us per frame. Measure on a large map.
 - The second settle frame's use chains change only area portals and trains here. A
   brush entity a killtarget frees is still drawn, and a door they send up is drawn at
   rest although it starts moving the next frame. Only func_areaportal, doors,

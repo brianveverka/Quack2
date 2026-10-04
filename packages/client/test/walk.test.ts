@@ -10,7 +10,7 @@ import { closedFlood, withEastArea } from "./areas-fixture.js";
 import { frustumPlanes } from "../src/cull.js";
 import { buildLightmapAtlas } from "../src/lightmap.js";
 import { angleVectors, fovY, multiply, perspective, viewMatrix } from "../src/math.js";
-import { WorldDraws, buildDrawList, buildWorldMesh, eyePlaneSide, renderLeaf, viewClusters, visibleFaceMask, walkWorld, worldVis, type WorldMesh } from "../src/world.js";
+import { WorldDraws, WorldWalk, buildDrawList, buildWorldMesh, eyePlaneSide, renderLeaf, viewClusters, visibleFaceMask, walkWorld, worldVis, type WorldMesh } from "../src/world.js";
 
 const fixture = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
 const mesh = buildWorldMesh(fixture, buildLightmapAtlas(fixture));
@@ -195,6 +195,24 @@ describe("walkWorld", () => {
     }
     // Most views look away from some of the world.
     expect(culledSome).toBeGreaterThan(VIEWS.length / 2);
+  });
+
+  it("passes the same faces from one WorldWalk reused across views, past its counter wrapping", () => {
+    const walker = new WorldWalk(fixture);
+    const counter = walker as unknown as { frame: number };
+    for (const view of VIEWS) {
+      const vis = worldVis(fixture, clusterAt(fixture, view.origin));
+      const culled = walkWorld(fixture, mesh, vis, view.origin, sidePlanes(view));
+      expect([...walker.walk(mesh, vis, view.origin, sidePlanes(view))]).toEqual(culled);
+      expect([...walker.walk(mesh, vis, view.origin)]).toEqual(walkWorld(fixture, mesh, vis, view.origin));
+      // Stamp every node and face with frame 1, then wrap the counter back to 1: those
+      // stamps must not count as this walk's.
+      counter.frame = 0;
+      walker.walk(mesh, worldVis(fixture, -1), view.origin);
+      counter.frame = 0xffffffff;
+      expect([...walker.walk(mesh, vis, view.origin, sidePlanes(view))]).toEqual(culled);
+      expect(counter.frame).toBe(1);
+    }
   });
 
   it("passes only PVS faces facing the eye", () => {

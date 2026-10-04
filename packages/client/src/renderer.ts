@@ -33,6 +33,7 @@ import {
   SURF_TRANSLUCENT,
   VERTEX_FLOATS,
   WorldDraws,
+  WorldWalk,
   brushInstanceAlphaOrder,
   brushModelAlphaOrder,
   buildDrawList,
@@ -41,7 +42,6 @@ import {
   modelFaceMask,
   viewClusters,
   visibleFaceMask,
-  walkWorld,
   worldVis,
   type DrawList,
   type DrawRange,
@@ -242,6 +242,7 @@ export class WorldRenderer {
   private fatKey: string | undefined = "";
   private vis: WorldVis = { nodes: new Uint8Array(0), leafs: new Uint8Array(0) };
   private visibleFaces = 0;
+  private readonly worldWalk: WorldWalk;
   private readonly worldDraws: WorldDraws;
   private readonly skyProgram: WebGLProgram;
   private readonly skyVao: WebGLVertexArrayObject;
@@ -267,6 +268,7 @@ export class WorldRenderer {
     const atlas = buildLightmapAtlas(bsp, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number, lightStyles);
     this.atlas = atlas;
     this.mesh = buildWorldMesh(bsp, atlas);
+    this.worldWalk = new WorldWalk(bsp);
     this.worldDraws = new WorldDraws(this.mesh);
 
     this.program = linkProgram(gl, VS, FS);
@@ -453,7 +455,7 @@ export class WorldRenderer {
     this.viewProj = multiply(proj, viewMatrix(view.origin, view.pitch, view.yaw));
     const planes = frustumPlanes(this.viewProj);
     // R_CullBox tests the four side planes only.
-    const faces = walkWorld(bsp, this.mesh, this.vis, view.origin, this.cull ? planes.slice(0, 4) : undefined);
+    const faces = this.worldWalk.walk(this.mesh, this.vis, view.origin, this.cull ? planes.slice(0, 4) : undefined);
     const world = this.worldDraws;
     const rebuild = world.update(faces);
     // Farthest a near-plane point lies from the eye on any axis is at most its corner distance.
