@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { describe, expect, it } from "vitest";
 import {
+  buttonFire,
   calcMoveSpeed,
   doorGoDown,
   doorGoUp,
@@ -321,6 +322,71 @@ describe("plat mover", () => {
     expect(r[39]!.state[0]).toBe("top");
     expect([40, 41, 42, 43, 44, 45, 46, 47, 48, 49].map((f) => r[f]!.z[0])).toEqual([100, 100, 95, 85, 70, 50, 30, 15, 5, 0]);
     expect([40, 48, 49, 60].map((f) => r[f]!.state[0])).toEqual(["down", "down", "bottom", "bottom"]);
+  });
+});
+
+// A func_button with its defaults moving up: 50 high less lip 4, speed, accel and decel 40, wait 3.
+const button = (over: Partial<BrushMoverInit> = {}): BrushMover =>
+  brushMover({
+    origin: [0, 0, 0],
+    startOrigin: [0, 0, 0],
+    endOrigin: [0, 0, 46],
+    distance: 0,
+    speed: 40,
+    accel: 40,
+    decel: 40,
+    wait: 3,
+    toggle: false,
+    state: "bottom",
+    ...over,
+  });
+
+describe("button mover", () => {
+  it("goes up, waits, and comes back (button_fire, button_wait, button_return, button_done)", () => {
+    const b = button();
+    buttonFire(b, levelTimeAt(2), false);
+    expect([b.state, b.endfunc, b.think]).toEqual(["up", "buttonWait", "moveBegin"]);
+    const r = run([b], 2, 70);
+    // Move_Begin in frame 3: 11 frames of 4 units, then Move_Final's 2 in frame 15,
+    // where Move_Done runs button_wait.
+    expect([3, 4, 5, 14, 15].map((f) => r[f]!.z[0])).toEqual([0, 4, 8, 44, 46]);
+    expect([14, 15].map((f) => r[f]!.state[0])).toEqual(["up", "top"]);
+    // button_return is due at 1.5 + 3, frame 45, and starts moving at once.
+    expect([44, 45].map((f) => r[f]!.state[0])).toEqual(["top", "down"]);
+    expect([45, 46, 47, 56, 57].map((f) => r[f]!.z[0])).toEqual([46, 42, 38, 2, 0]);
+    expect([56, 57, 70].map((f) => r[f]!.state[0])).toEqual(["down", "bottom", "bottom"]);
+    expect([b.nextthink, [...b.velocity]]).toEqual([0, [0, 0, 0]]);
+  });
+
+  it("ignores a fire while going up or at the top, and stays up with a negative wait", () => {
+    // Accelerating (per-frame speed 4, accel 1): a second Move_Calc mid-move would set
+    // current_speed back to 0.
+    const b = button({ wait: -1, speed: 4, accel: 1, decel: 1 });
+    buttonFire(b, levelTimeAt(2), false);
+    run([b], 2, 8);
+    const moving = [b.think, b.nextthink, b.currentSpeed, b.remainingDistance];
+    expect(b.currentSpeed).toBeGreaterThan(0);
+    buttonFire(b, levelTimeAt(8), true);
+    expect([b.think, b.nextthink, b.currentSpeed, b.remainingDistance]).toEqual(moving);
+    const r = run([b], 8, 100);
+    expect([r[100]!.state[0], b.nextthink]).toEqual(["top", 0]);
+    buttonFire(b, levelTimeAt(100), true);
+    expect([b.state, b.nextthink]).toEqual(["top", 0]);
+  });
+
+  it("fires again once back at the bottom, moving at once from its own frame", () => {
+    const b = button();
+    buttonFire(b, levelTimeAt(2), false);
+    run([b], 2, 57);
+    buttonFire(b, levelTimeAt(57), true);
+    expect([b.state, b.think, [...b.velocity]]).toEqual(["up", "moveFinal", [0, 0, 40]]);
+  });
+
+  it("reports nothing to stepPusher's caller when it comes back down", () => {
+    const b = button();
+    buttonFire(b, levelTimeAt(2), false);
+    for (let f = 3; f <= 70; f++) expect(stepPusher([b], levelTimeAt(f))).toEqual([]);
+    expect(b.state).toBe("bottom");
   });
 });
 

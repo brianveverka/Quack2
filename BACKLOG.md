@@ -31,7 +31,9 @@ turning as AngleMove_Calc does, their angles sent in 360/256 degree steps and bl
 LerpAngle), also in teams with other members, and the plats that are no team's slave a
 use there sends down (Use_Plat, accelerating as Think_AccelMove does when accel or decel
 differs from speed, else at a constant speed per second; the sim also has plat_go_up
-and plat_hit_top's 3 s return) (`brushMovers`, stepped at the 10 Hz game
+and plat_hit_top's 3 s return), and the buttons that are no team's slave a use there
+fires (button_fire up, button_wait, and button_return back down after "wait")
+(`brushMovers`, stepped at the 10 Hz game
 frame by `BrushMotion` and blended as CL_AddPacketEntities does, re-linked each frame
 they move or turn), culled by area, PVS and
 frustum, free-fly camera at the spawn spot and yaw SelectSpawnPoint gives the first
@@ -39,11 +41,6 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- The mover lacks the button functions (button_fire and button_return, which run
-  Move_Calc, and its endfuncs button_wait and button_done): a func_button a settle-frame
-  use fires is drawn where it spawned. Build button movers in `brushMovers` as the
-  plats are (`platMover`): SP_func_button's "speed" defaults to 40 and is not doubled,
-  "accel" and "decel" default to it.
 - The mover lacks the train functions (the think train_next and train_resume, which run
   Move_Calc, and its endfunc train_wait):
   trains are placed at the corner `settleSpawnFrames` leaves them and never move. Needs
@@ -103,10 +100,25 @@ Remaining:
 - A func_door_secret the settle frames open never moves, so its portals stay open: in
   the game it moves out and back (door_secret_move1..6) and door_secret_done closes
   them (door_use_areaportals false) unless its "wait" is -1, about 5 s after by default.
-- A func_plat that is a team slave is left out of `brushMovers` and drawn where it
-  spawned: a door master's door_use runs door_go_up on it (Move_Calc to its pos2, the
-  bottom, with door_hit_top), Think_CalcMoveSpeed reads its moveinfo.distance 0, and
-  its think runs in its master's slot. Model these with the button and train movers.
+- A func_plat or func_button that is a team slave is left out of `brushMovers` and
+  drawn where it spawned. A door master's door_use runs door_go_up on it, which moves
+  only func_door and func_door_rotating: a member at STATE_BOTTOM is set to STATE_UP
+  unmoved and fires its targets, so a button ignores button_fire until a DOOR_TOGGLE
+  master's next door_use runs door_go_down (STATE_DOWN, again unmoved); a targeted plat
+  starts at STATE_UP, so door_go_up returns at once and fires nothing; a button in its
+  wait (STATE_TOP) has button_return put off by its "wait". Under a door master
+  Think_CalcMoveSpeed gives it NaN speed, accel and decel (its moveinfo.distance 0
+  makes the team's time 0), so a move its own Use_Plat or button_fire starts goes
+  through Think_AccelMove with NaN. Any such move runs its thinks in its master's slot
+  (SV_Physics_Pusher). Model these with the train movers.
+- button_wait fires the button's targets (G_UseTargets) when it reaches the top, after
+  the settle frames: nothing models uses after them, so a door, plat or portal a fired
+  button targets stays as the settle frames left it.
+- Texture animation is not drawn: no texinfo `nexttexinfo` chain is followed.
+  R_TextureAnimation steps world faces at 2 Hz, and a brush entity's faces by the frame
+  CL_AddPacketEntities picks: from EF_ANIM01 (0/1), EF_ANIM23 (2/3) or EF_ANIM_ALL at
+  2 Hz, EF_ANIM_ALLFAST at 10 Hz, else s.frame. A button cycles 0/1 at rest and 2/3
+  from button_wait until button_done.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

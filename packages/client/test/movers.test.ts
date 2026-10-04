@@ -194,15 +194,17 @@ describe("door movers", () => {
         { "classname" "func_button" "model" "*1" "team" "none" }
       `),
     );
-    expect(teams.map((t) => t.map((d) => d.entity))).toEqual([[1, 2], [4], [5], [7]]);
+    // A button master moves with its door slave; button slaves stay where they spawned.
+    expect(teams.map((t) => t.map((d) => d.entity))).toEqual([[1, 2], [3, 4], [5], [7]]);
     const [rot, rotSlave] = teams[0]!.map((d) => d.mover);
-    const [btnSlave, water, unmoving] = teams.slice(1).map((t) => t[0]!.mover);
+    const [btn, btnSlave] = teams[1]!.map((d) => d.mover);
+    const [water, unmoving] = teams.slice(2).map((t) => t[0]!.mover);
     // A rotating master's "distance" is an int (30) in degrees and its speed is not doubled.
     expect([rot!.distance, rot!.speed]).toEqual([30, Math.fround(30 / Math.fround(30 / 50))]);
     const speed = Math.fround(42 / Math.fround(30 / 50));
     expect([rotSlave!.speed, rotSlave!.accel, rotSlave!.decel]).toEqual([speed, speed, speed]);
     // A func_button master has no Think_CalcMoveSpeed; a func_water master neither.
-    expect(btnSlave!.speed).toBe(200);
+    expect([btn!.speed, btnSlave!.speed]).toEqual([40, 200]);
     expect(water!.speed).toBe(25);
     // A rotating master teamed with a button: the button's distance 0 makes it infinite.
     expect(unmoving!.speed).toBe(Infinity);
@@ -556,5 +558,67 @@ describe("plat movers", () => {
     );
     expect(teamed.map((t) => t.map((d) => d.entity))).toEqual([[1]]);
     expect(brushMovers(bsp, parseEntities(`${PLAT}{ "classname" "trigger_always" "killtarget" "p" }`))).toEqual([]);
+  });
+});
+
+describe("button movers", () => {
+  // Fixture model 1 spreads to 50 units high: a button moving up goes 50 - lip 4 = 46.
+  const BUTTON = `
+    { "classname" "worldspawn" }
+    { "classname" "trigger_always" "target" "b" }
+    { "classname" "func_button" "model" "*1" "targetname" "b" "angle" "-1" }
+  `;
+
+  it("reads a button's \"lip\" as an int", () => {
+    const [b] = brushMovers(bsp, parseEntities(`{ "classname" "worldspawn" }{ "classname" "func_button" "model" "*1" "angle" "-1" "lip" "5.9" }`));
+    expect(b![0]!.mover.endOrigin[2]).toBe(45);
+  });
+
+  it("sets up a button as SP_func_button does, START_OPEN or not", () => {
+    const [plain, keyed] = brushMovers(
+      bsp,
+      parseEntities(`
+        { "classname" "worldspawn" }
+        { "classname" "func_button" "model" "*1" "origin" "0 0 8" }
+        { "classname" "func_button" "model" "*1" "angle" "-1" "lip" "10" "speed" "50" "decel" "20" "wait" "-1" "spawnflags" "1" }
+      `),
+    ).map((t) => t[0]!.mover);
+    // Angle 0 moves along +x: 66 wide less lip 4.
+    expect([[...plain!.origin], [...plain!.startOrigin], [...plain!.endOrigin], plain!.state]).toEqual([[0, 0, 8], [0, 0, 8], [62, 0, 8], "bottom"]);
+    expect([plain!.speed, plain!.accel, plain!.decel, plain!.wait, plain!.distance, plain!.toggle]).toEqual([40, 40, 40, 3, 0, false]);
+    expect([[...keyed!.origin], [...keyed!.endOrigin], keyed!.speed, keyed!.accel, keyed!.decel, keyed!.wait]).toEqual([[0, 0, 0], [0, 0, 40], 50, 50, 20, -1]);
+  });
+
+  it("moves a button a use fires up and back down after its wait", () => {
+    for (const src of [BUTTON, `${BUTTON}{ "classname" "trigger_always" "target" "b" }`]) {
+      const teams = brushMovers(bsp, parseEntities(src));
+      expect(teams.map((t) => t.map((d) => [d.entity, d.portals]))).toEqual([[[2, []]]]);
+      expect([teams[0]![0]!.mover.state, teams[0]![0]!.mover.endfunc]).toEqual(["up", "buttonWait"]);
+      const m = motion(src);
+      const z = (ms: number) => m.linkedPoses(ms).get(2)!.origin[2];
+      expect([0, 100, 200, 1200, 1300, 4300, 4400, 5400, 5500, 60000].map(z)).toEqual([0, 0, 4, 44, 46, 46, 42, 2, 0, 0]);
+    }
+    expect(brushModelInstances(bsp, parseEntities(BUTTON)).instances.map((b) => b.origin)).toEqual([[0, 0, 0]]);
+  });
+
+  it("leaves a button no use fires at rest", () => {
+    const m = motion(BUTTON.replace('"target" "b"', '"target" "other"'));
+    expect(m.linkedPoses(5000).get(2)?.origin ?? [0, 0, 0]).toEqual([0, 0, 0]);
+    const teams = brushMovers(bsp, parseEntities(BUTTON.replace('"target" "b"', '"target" "other"')));
+    expect([teams[0]![0]!.mover.state, teams[0]![0]!.mover.think]).toEqual(["bottom", undefined]);
+  });
+
+  it("moves a button that masters a team, and leaves out one that is a team slave", () => {
+    const m = motion(BUTTON.replace('"angle" "-1"', '"angle" "-1" "team" "t"') + `{ "classname" "func_wall" "model" "*1" "team" "t" }`);
+    expect([...m.linkedPoses(1300)].map(([e, p]) => [e, p.origin[2]])).toEqual([[2, 46]]);
+    const teamed = brushMovers(
+      bsp,
+      parseEntities(`
+        { "classname" "worldspawn" }
+        { "classname" "func_door" "model" "*1" "team" "t" }
+        { "classname" "func_button" "model" "*1" "team" "t" }
+      `),
+    );
+    expect(teamed.map((t) => t.map((d) => d.entity))).toEqual([[1]]);
   });
 });

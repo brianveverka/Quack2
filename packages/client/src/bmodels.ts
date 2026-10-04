@@ -19,6 +19,7 @@ import {
   entityVec3,
   levelTimeAt,
   platGoDown,
+  buttonFire,
   type Bsp,
   type BspEntity,
   type BrushMover,
@@ -139,16 +140,14 @@ interface DoorPositions {
 }
 
 /**
- * SP_func_door and SP_func_water, in float as the game stores and computes them: pos2
- * lies the entity's size along the move direction, less "lip" (8 by default for doors
- * only), from pos1, the spawn origin; START_OPEN swaps the two, and the door starts at
- * pos1. `mins`/`maxs` as for `spawnMove`.
+ * SP_func_door, SP_func_water and SP_func_button, in float as the game stores and
+ * computes them: pos2 lies the entity's size along the move direction, less "lip" (an
+ * int; `defaultLip` when 0), from pos1, the spawn origin. `mins`/`maxs` as for `spawnMove`.
  */
-function doorPositions(ent: BspEntity, mins: readonly number[], maxs: readonly number[], origin: Vec3): DoorPositions {
-  const flags = atoi(ent.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK;
+function linearPositions(ent: BspEntity, mins: readonly number[], maxs: readonly number[], origin: Vec3, defaultLip: number): DoorPositions {
   const dir = moveDir(ent);
   const size = [0, 1, 2].map((k) => f32(f32(maxs[k]!) - f32(mins[k]!)));
-  const lip = atoi(ent.lip ?? "0") || (ent.classname === "func_door" ? 8 : 0);
+  const lip = atoi(ent.lip ?? "0") || defaultLip;
   let distance = f32(Math.abs(dir[0]) * size[0]!);
   distance = f32(distance + f32(Math.abs(dir[1]) * size[1]!));
   distance = f32(distance + f32(Math.abs(dir[2]) * size[2]!));
@@ -156,7 +155,17 @@ function doorPositions(ent: BspEntity, mins: readonly number[], maxs: readonly n
   const near = origin.map(f32) as Vec3;
   // VectorMA, float throughout.
   const far = near.map((o, k) => f32(o + f32(distance * dir[k]!))) as Vec3;
-  return flags & DOOR_START_OPEN ? { pos1: far, pos2: near, distance } : { pos1: near, pos2: far, distance };
+  return { pos1: near, pos2: far, distance };
+}
+
+/**
+ * A linear door's `linearPositions` ("lip" defaults to 8 for func_door, 0 for
+ * func_water); START_OPEN swaps pos1 and pos2, and the door starts at pos1.
+ */
+function doorPositions(ent: BspEntity, mins: readonly number[], maxs: readonly number[], origin: Vec3): DoorPositions {
+  const flags = atoi(ent.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK;
+  const p = linearPositions(ent, mins, maxs, origin, ent.classname === "func_door" ? 8 : 0);
+  return flags & DOOR_START_OPEN ? { pos1: p.pos2, pos2: p.pos1, distance: p.distance } : p;
 }
 
 /**
@@ -667,8 +676,8 @@ interface Settle {
   /** moveinfo.state of the entities used so far; the rest are at `spawnState`. */
   moveState: Map<number, MoveState>;
   /**
-   * door_go_up (up) and door_go_down calls on doors, and plat_go_down calls from
-   * Use_Plat, in the order the game makes them.
+   * door_go_up (up) and door_go_down calls on doors, plat_go_down calls from Use_Plat
+   * and button_fire calls (up) from button_use, in the order the game makes them.
    */
   moves: { index: number; up: boolean }[];
   /** Plats Use_Plat sent down: Move_Calc gave them a think, so later uses return. */
@@ -837,11 +846,14 @@ function useOne(s: Settle, index: number): void {
     case "func_train":
       trainUse(s, index);
       return;
-    // These change no portal, but door_go_up reads the state they leave.
     case "func_button": {
-      // button_use -> button_fire: returns if up or at the top, else starts up.
+      // button_use -> button_fire: returns if up or at the top, else starts up. Its
+      // targets fire at the top (button_wait), after the settle frames.
       const state = moveState(s, index);
-      if (state !== "up" && state !== "top") s.moveState.set(index, "up");
+      if (state !== "up" && state !== "top") {
+        s.moveState.set(index, "up");
+        s.moves.push({ index, up: true });
+      }
       return;
     }
     case "func_plat":
@@ -1143,13 +1155,13 @@ export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
   return settleSpawnFrames(entities).portals;
 }
 
-/** A door or plat, the entity it is, and the area portals its door_hit_bottom closes. */
+/** A door, plat or button, the entity it is, and the area portals its door_hit_bottom closes. */
 export interface MovingBrush {
   readonly entity: number;
   readonly mover: BrushMover;
   /**
    * The portals door_use_areaportals finds for a door's "target" (`areaportalsOf`), in
-   * the order it sets them; none for a plat.
+   * the order it sets them; none for a plat or a button.
    */
   readonly portals: readonly number[];
 }
@@ -1235,11 +1247,36 @@ function platMover(ent: BspEntity, mins: Vec3, maxs: Vec3, origin: Vec3): BrushM
 }
 
 /**
+ * SP_func_button's mover: pos1 is its spawn origin, and pos2 lies its size along the
+ * move direction (G_SetMovedir) less "lip" (an int, default 4) from it, in float as a
+ * door's (`linearPositions`); no spawnflag changes them. "speed" defaults to 40 and is not doubled; "accel" and
+ * "decel" default to it, and "wait" 0 becomes 3 (negative stays at the top). It starts
+ * at STATE_BOTTOM, and moveinfo.distance is left 0.
+ */
+function buttonMover(ent: BspEntity, mins: Vec3, maxs: Vec3, origin: Vec3): BrushMoverInit {
+  const { pos1, pos2 } = linearPositions(ent, mins, maxs, origin, 4);
+  const field = (key: string) => f32(atof(ent[key] ?? "0"));
+  const speed = field("speed") || 40;
+  return {
+    origin: pos1,
+    startOrigin: pos1,
+    endOrigin: pos2,
+    distance: 0,
+    speed,
+    accel: field("accel") || speed,
+    decel: field("decel") || speed,
+    wait: field("wait") || 3,
+    toggle: false,
+    state: "bottom",
+  };
+}
+
+/**
  * The doors (func_door, func_water, which SP_func_water renames func_door, and
- * func_door_rotating) and the plats that are no team's slave as the two settle frames
- * leave them:
+ * func_door_rotating) and the plats and buttons that are no team's slave as the two
+ * settle frames leave them:
  * teams in master entity order, each team's doors in team order (the master first when
- * it is a door); a door or plat with no team is a team of one. SP_func_door and SP_func_water set up each linear door
+ * it is a door); a door, plat or button with no team is a team of one. SP_func_door and SP_func_water set up each linear door
  * (`doorPositions`; a door's "speed", default 100, is doubled in deathmatch, and its
  * "accel" and "decel" default to that, "wait" 0 becomes 3; func_water takes "speed",
  * default 25, for all three, and "wait" 0 becomes -1, which makes it DOOR_TOGGLE), and
@@ -1248,14 +1285,14 @@ function platMover(ent: BspEntity, mins: Vec3, maxs: Vec3, origin: Vec3): BrushM
  * of Think_SpawnDoorTrigger) matches its team's speeds; a func_water has no think. In
  * the second the settle frames' uses send doors up or down (`doorUse`), from a
  * DelayedUse's slot, so each starts moving a frame later; a use sends a plat down
- * (Use_Plat, `platMover`) the same way.
+ * (Use_Plat, `platMover`) and a button up (button_fire, `buttonMover`) the same way.
  *
  * Think_CalcMoveSpeed reads every member of the chain: a func_door_rotating's distance
  * is in degrees, and every other class (a func_button, a func_wall) leaves
  * moveinfo.distance 0, which makes the doors' speeds infinite, so a linear door moves
  * all the way in one frame (Move_Final) and a rotating one turns all the way in one
- * (AngleMove_Final). A team keeps only its doors and a plat master: the other members,
- * slave plats included, stay where `brushModelInstances` puts them. A func_door_secret, which SP_func_door_secret also
+ * (AngleMove_Final). A team keeps only its doors and a plat or button master: the other
+ * members, slave plats and buttons included, stay where `brushModelInstances` puts them. A func_door_secret, which SP_func_door_secret also
  * renames, is not modeled moving. A team with a door that has no inline model is left
  * out. A team's chain ends at the first member a killtarget freed (G_FreeEdict zeroes
  * its teamchain), and a team whose master was freed never moves again
@@ -1266,19 +1303,26 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
   const turrets = settleTurrets(entities);
   const groups = [...findTeams(entities).values()];
   const teamed = new Set(groups.flat());
-  // A team's master, a team of one included, is not a FL_TEAMSLAVE: Use_Plat moves it.
+  // A team's master, a team of one included, is not a FL_TEAMSLAVE: Use_Plat or
+  // button_use moves it.
   const slaves = new Set(groups.flatMap((g) => g.slice(1)));
   const doors = new Map<number, MovingBrush>();
   entities.forEach((ent, i) => {
     if (i === 0 || !inGame(ent)) return;
     const plat = ent.classname === "func_plat" && !slaves.has(i);
-    if (!plat && !movingDoor(ent)) return;
+    const button = ent.classname === "func_button" && !slaves.has(i);
+    if (!plat && !button && !movingDoor(ent)) return;
     const model = inlineModel(bsp, ent.model);
     if (model === undefined) return;
     const origin = entityVec3(ent, "origin") ?? [0, 0, 0];
     if (plat) {
       const { mins, maxs } = modelBounds(bsp, model);
       doors.set(i, { entity: i, mover: brushMover(platMover(ent, mins, maxs, origin)), portals: [] });
+      return;
+    }
+    if (button) {
+      const { mins, maxs } = modelBounds(bsp, model);
+      doors.set(i, { entity: i, mover: brushMover(buttonMover(ent, mins, maxs, origin)), portals: [] });
       return;
     }
     // A door in a turret's team starts turned by the yaw its breach comes to rest at, as
@@ -1341,8 +1385,11 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
   for (const { index, up } of moves) {
     const m = moving.get(index);
     if (!m) continue;
-    // Only a plat that is no team's slave moves here, and only Use_Plat moves it.
-    if (entities[index]!.classname === "func_plat") platGoDown(m, settled, false);
+    // Only a plat or button that is no team's slave moves here, and only Use_Plat or
+    // button_use moves it.
+    const classname = entities[index]!.classname;
+    if (classname === "func_plat") platGoDown(m, settled, false);
+    else if (classname === "func_button") buttonFire(m, settled, false);
     else if (up) doorGoUp(m, settled, false);
     else doorGoDown(m, settled, false);
   }
