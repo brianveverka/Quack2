@@ -108,8 +108,8 @@ function reference(bsp: Bsp, view: View | undefined, eye: Vec3, cluster: number,
     const side = dot >= 0 ? 0 : 1;
     walk(nodes.children[child * 2 + side]!);
     for (let k = 0; k < nodes.numFaces[child]!; k++) {
-      const f = nodes.firstFace[child]! + k;
-      if (marked.has(f) && (bsp.faces.side[f] ? 1 : 0) === side) out.push(f);
+      const face = nodes.firstFace[child]! + k;
+      if (marked.has(face) && (bsp.faces.side[face] ? 1 : 0) === side) out.push(face);
     }
     walk(nodes.children[child * 2 + 1 - side]!);
   };
@@ -252,5 +252,27 @@ describe("WorldDraws", () => {
     expect(draws.indexCount).toBe(0);
     expect(draws.draws).toEqual([]);
     expect(draws.update([])).toBe(false);
+  });
+
+  it("rebuilds nothing when only sky or translucent faces change", () => {
+    const faceFlags = Uint8Array.from(mesh.faceFlags);
+    faceFlags[0] = SURF_SKY;
+    faceFlags[1] = SURF_TRANS33;
+    faceFlags[2] = SURF_TRANS66;
+    const draws = new WorldDraws({ ...mesh, faceFlags });
+    const rest = [...Array(WORLD_FACES).keys()].slice(3);
+    expect(draws.update([0, 1, 2, ...rest])).toBe(true);
+    expect([draws.sky, draws.alpha]).toEqual([[0], [2, 1]]);
+    const indices = Array.from(draws.indices.subarray(0, draws.indexCount));
+    expect(draws.update(rest)).toBe(false);
+    expect([draws.sky, draws.alpha]).toEqual([[], []]);
+    expect(draws.update([1, ...rest])).toBe(false);
+    expect(draws.alpha).toEqual([1]);
+    expect(Array.from(draws.indices.subarray(0, draws.indexCount))).toEqual(indices);
+    expect(draws.update(rest.slice(1))).toBe(true);
+  });
+
+  it("the first update reports a change even with no faces", () => {
+    expect(new WorldDraws(mesh).update([])).toBe(true);
   });
 });

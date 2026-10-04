@@ -12,12 +12,12 @@ translucent faces, the worldspawn sky box drawn where the world's sky faces boun
 area portals (closed except those a START_OPEN door opens at spawn) culling world leafs
 and brush models, the world walked per frame as R_RecursiveWorldNode does (R_CullBox on
 nodes and leafs, so the sky box is bounded by the sky faces in view), inline brush
-models where the game has them after spawn (untargeted
-plats lowered, START_OPEN doors open, trains at their first path_corner or a teleport
-one after it, turrets turned to rest in their pitch/yaw range with their teams), culled
-by area, PVS and frustum, free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data
-(zip64 and self-extractor stubs included), picked archives read by range, checker
-fallback, `pnpm smoke`).
+models where the game has them after spawn (untargeted plats lowered, START_OPEN doors
+open, trains at their first path_corner or a teleport one after it, turrets turned to
+rest in their pitch/yaw range with their teams), culled by area, PVS and frustum,
+free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data (zip64 and
+self-extractor stubs included), picked archives read by range, checker fallback,
+`pnpm smoke`).
 Remaining:
 - The engine's second view cluster near water surfaces (R_SetupFrame `viewcluster2`,
   merged in R_MarkLeaves) is not handled.
