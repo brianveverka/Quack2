@@ -7,10 +7,10 @@
 - Sessions here usually run in a cloud sandbox on a fresh clone. Nothing outside the
   repo exists: no local machine, no homelab, no user-level skills or settings.
 - Commit finished units of work without asking, and push the task branch after each
-  commit: unpushed work is lost when the sandbox goes away. Once the review loop is done,
-  open its PR (or find the draft the harness opened), mark it ready and enable auto-merge
-  without asking (see Git workflow and Orchestration). A branch the session harness
-  assigns is used as the task branch instead of creating one.
+  commit until its PR is marked ready: unpushed work is lost when the sandbox goes away.
+  Once the review loop is done, open its PR (or find the draft the harness opened), mark
+  it ready and enable auto-merge without asking (see Git workflow and Orchestration). A
+  branch the session harness assigns is used as the task branch instead of creating one.
 - Never push to `main`. Never force-push.
 
 ## Response style
@@ -107,13 +107,15 @@
 ## Review loop
 For each unit of work:
 
-1. **Work, noting concerns as you hit them,** each with its measurement, under a
-   `Concerns:` heading in the commit message body. Not at the end. They go into the
-   reviewer's brief; any still open when the PR is marked ready move to the PR body or
-   BACKLOG.md.
+1. **Work, noting concerns as you hit them,** each with its measurement, in a running
+   list outside the repo. Not at the end. At commit the list goes under a `Concerns:`
+   heading in the commit message body and into the reviewer's brief; any still open when
+   the PR is marked ready move to the PR body or BACKLOG.md.
 2. **Commit and push.** Record the commit ID. This is what makes "review what changed"
    answerable. The push is only a backup: a draft PR the harness opens for it cannot
-   auto-merge. Don't mark the PR ready or enable auto-merge until step 6.
+   auto-merge. Don't mark the PR ready or enable auto-merge until step 6. Once it is
+   ready, any push can merge: review a new commit at its tier before pushing it, and
+   start further work on a new branch.
 3. **Adversarial review, scoped to that commit,** at its tier (below). Hand it to a fresh
    reviewer (subagent or separate session), read-only. It reports; it does not fix.
    Brief it to:
@@ -129,19 +131,21 @@ For each unit of work:
    review gets one coherent diff. A reviewer's diagnosis is a claim, not a finding. Verify
    the cause, not just the symptom; a reviewer can be right that something is broken and
    wrong about why.
-5. **Second review, scoped to step 4's commit only,** when that commit changes code or
-   config, or fixes a BROKEN or MISSED finding. Not a re-sweep. Fixes introduce defects.
-   Skip it when the fixes are COSMETIC or wording only.
-6. **Fix in a new commit, push, then open the PR or mark it ready** per Git workflow.
+5. **Second review, scoped to step 4's commit only,** when that commit changes a
+   full-loop file or fixes a BROKEN or MISSED finding, in any tier. Not a re-sweep. Fixes
+   introduce defects. Otherwise skip it.
+6. **Fix in a new commit and push,** then open the PR or mark it ready and enable
+   auto-merge together, per Git workflow (Orchestration steps 1-3 in a chain).
    Don't amend or rebase to tidy up: squash merge collapses the branch into one commit on
    `main`, and pushed commits are never rewritten.
 
 **Tiers**, by blast radius, not size; a commit takes the tier of its riskiest file:
-- Full loop: code, tests, scripts, CI, tool or permission settings.
-- One review, no second: docs only, CLAUDE.md included. The reviewer checks every claim
-  against the code, CI config and tool behavior.
-- No review: typo or format fixes, and BACKLOG.md bullets moved or deleted. The PR body
-  says `Review: skipped (<reason>)`.
+- Full loop: any file that is not Markdown: code, tests, fixtures, scripts, CI, package,
+  build and tool config, permission settings.
+- Docs: Markdown only, CLAUDE.md included. One review that checks every claim against
+  the code, CI config and tool behavior; a second only as step 5 says.
+- No review: typo or format fixes in Markdown, and BACKLOG.md bullets moved or deleted.
+  The PR body says `Review: skipped (<reason>)`.
 
 **What gets fixed now:** decide by coupling, not timing. Caused by this change, or blocks
 the next one: fix now. Belongs to code that's about to be replaced: defer.
@@ -236,10 +240,11 @@ the chain. Everything else is decided in-session and does not stop the chain.
   `create_pull_request`, `update_pull_request` with `draft: false`, then
   `enable_pr_auto_merge` with `SQUASH`.
 - `main` is protected and requires the CI `check` job (as of 2026-10-03), so auto-merge
-  waits for it. Enable auto-merge right after opening the PR, while `check` is still
-  pending. If GitHub refuses with "clean status" (nothing pending: checks already passed,
-  or the requirement has lapsed), squash-merge it when Orchestration step 2 allows (in
-  any session, chained or not); otherwise stop and ask the user to merge.
+  waits for it. Enable auto-merge right after marking the PR ready (step 6 of the Review
+  loop), while `check` is still pending. If GitHub refuses with "clean status" (nothing
+  pending: checks already passed, or the requirement has lapsed), squash-merge it when
+  Orchestration step 2 allows (in any session, chained or not); otherwise stop and ask
+  the user to merge.
 
 ## Project
 
