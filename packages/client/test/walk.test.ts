@@ -10,7 +10,7 @@ import { closedFlood, withEastArea } from "./areas-fixture.js";
 import { frustumPlanes } from "../src/cull.js";
 import { buildLightmapAtlas } from "../src/lightmap.js";
 import { angleVectors, fovY, multiply, perspective, viewMatrix } from "../src/math.js";
-import { WorldDraws, buildDrawList, buildWorldMesh, eyePlaneSide, renderLeaf, viewClusters, visibleFaceMask, walkWorld, worldVis, type WorldMesh } from "../src/world.js";
+import { WorldDraws, WorldWalk, buildDrawList, buildWorldMesh, eyePlaneSide, renderLeaf, viewClusters, visibleFaceMask, walkWorld, worldVis, type WorldMesh } from "../src/world.js";
 
 const fixture = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
 const mesh = buildWorldMesh(fixture, buildLightmapAtlas(fixture));
@@ -195,6 +195,24 @@ describe("walkWorld", () => {
     }
     // Most views look away from some of the world.
     expect(culledSome).toBeGreaterThan(VIEWS.length / 2);
+  });
+
+  it("passes the same faces from one WorldWalk reused across views, past its counter wrapping", () => {
+    const walker = new WorldWalk(fixture);
+    const counter = walker as unknown as { frame: number };
+    for (const view of VIEWS) {
+      const vis = worldVis(fixture, clusterAt(fixture, view.origin));
+      const culled = walkWorld(fixture, mesh, vis, view.origin, sidePlanes(view));
+      expect([...walker.walk(mesh, vis, view.origin, sidePlanes(view))]).toEqual(culled);
+      expect([...walker.walk(mesh, vis, view.origin)]).toEqual(walkWorld(fixture, mesh, vis, view.origin));
+      // Stamp every node and face with frame 1, then wrap the counter back to 1: those
+      // stamps must not count as this walk's.
+      counter.frame = 0;
+      walker.walk(mesh, worldVis(fixture, -1), view.origin);
+      counter.frame = 0xffffffff;
+      expect([...walker.walk(mesh, vis, view.origin, sidePlanes(view))]).toEqual(culled);
+      expect(counter.frame).toBe(1);
+    }
   });
 
   it("passes only PVS faces facing the eye", () => {
@@ -401,6 +419,20 @@ describe("WorldDraws", () => {
     expect(draws.alpha).toEqual([1]);
     expect(Array.from(draws.indices.subarray(0, draws.indexCount))).toEqual(indices);
     expect(draws.update(rest.slice(1))).toBe(true);
+  });
+
+  it("reports a change confined to the last word of opaque faces", () => {
+    const draws = new WorldDraws(mesh);
+    const all = [...Array(WORLD_FACES).keys()];
+    expect(draws.update(all)).toBe(true);
+    const full = draws.indexCount;
+    // The opaque face drawn last sits in the bit set's last word.
+    const last = draws.draws[draws.draws.length - 1]!;
+    const lastFace = all.filter((f) => mesh.faceTexture[f] === last.texture && mesh.faceFlags[f] === last.flags).pop()!;
+    expect(draws.update(all.filter((f) => f !== lastFace))).toBe(true);
+    expect(draws.indexCount).toBeLessThan(full);
+    expect(draws.update(all)).toBe(true);
+    expect(draws.indexCount).toBe(full);
   });
 
   it("the first update reports a change even with no faces", () => {

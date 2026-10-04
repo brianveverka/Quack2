@@ -452,46 +452,88 @@ export function worldVis(bsp: Bsp, cluster: number, areaBits?: Uint8Array, clust
  * is walked. Faces not drawn (no texture) are left out.
  */
 export function walkWorld(bsp: Bsp, mesh: WorldMesh, vis: WorldVis, eye: readonly [number, number, number], planes?: readonly (readonly number[])[]): number[] {
-  const { nodes, leafs, leafFaces } = bsp;
-  const nfaces = bsp.faces.count;
-  const marked = new Uint8Array(nfaces);
-  // Each node is entered at most once, so a corrupt map whose children loop cannot hang.
-  const entered = new Uint8Array(nodes.count);
-  const out: number[] = [];
-  type Frame = { node: number; side: number };
-  const stack: (number | Frame)[] = [0];
-  while (stack.length > 0) {
-    const top = stack.pop()!;
-    if (typeof top !== "number") {
-      const { node, side } = top;
-      const first = nodes.firstFace[node]!;
-      for (let f = first; f < Math.min(first + nodes.numFaces[node]!, nfaces); f++) {
-        if (marked[f] && (bsp.faces.side[f] ? 1 : 0) === side && mesh.faceTexture[f]! >= 0) out.push(f);
-      }
-      stack.push(nodes.children[node * 2 + (side ^ 1)]!);
-      continue;
-    }
-    if (top < 0) {
-      const l = -1 - top;
-      if (l >= leafs.count || !vis.leafs[l]) continue;
-      if (planes && boxOutsidePlanes(planes, leafs.mins, leafs.maxs, l * 3)) continue;
-      const first = leafs.firstLeafFace[l]!;
-      for (let k = first; k < Math.min(first + leafs.numLeafFaces[l]!, leafFaces.length); k++) {
-        const f = leafFaces[k]!;
-        if (f < nfaces) marked[f] = 1;
-      }
-      continue;
-    }
-    const node = top;
-    if (node >= nodes.count || entered[node]) continue;
-    entered[node] = 1;
-    if (!vis.nodes[node]) continue;
-    if (planes && boxOutsidePlanes(planes, nodes.mins, nodes.maxs, node * 3)) continue;
-    const side = eyePlaneSide(bsp, nodes.planeNum[node]!, eye);
-    stack.push({ node, side });
-    stack.push(nodes.children[node * 2 + side]!);
+  return [...new WorldWalk(bsp).walk(mesh, vis, eye, planes)];
+}
+
+/**
+ * walkWorld for every frame of one map: its marks and stack are kept between walks,
+ * so a frame allocates nothing and clears nothing in proportion to the map.
+ */
+export class WorldWalk {
+  /** Per face and per node: the walk that last marked or entered it (r_visframecount). */
+  private readonly marked: Uint32Array;
+  private readonly entered: Uint32Array;
+  private frame = 0;
+  /** Pending work: a child to enter, or (tag 1 + side) a node whose eye-side child is done. */
+  private readonly stack: Int32Array;
+  private readonly tags: Uint8Array;
+  private readonly out: number[] = [];
+
+  constructor(private readonly bsp: Bsp) {
+    this.marked = new Uint32Array(bsp.faces.count);
+    this.entered = new Uint32Array(bsp.nodes.count);
+    // Entering a node swaps its entry for its frame and a child, and a frame is swapped
+    // for the other child, so the stack grows by one at most per node entered.
+    this.stack = new Int32Array(bsp.nodes.count + 2);
+    this.tags = new Uint8Array(bsp.nodes.count + 2);
   }
-  return out;
+
+  /** walkWorld's faces. The array is reused by the next walk. */
+  walk(mesh: WorldMesh, vis: WorldVis, eye: readonly [number, number, number], planes?: readonly (readonly number[])[]): readonly number[] {
+    const { bsp, marked, entered, stack, tags, out } = this;
+    const { nodes, leafs, leafFaces } = bsp;
+    const nfaces = bsp.faces.count;
+    const faceSide = bsp.faces.side;
+    const { faceTexture } = mesh;
+    if (++this.frame === 0x100000000) {
+      marked.fill(0);
+      entered.fill(0);
+      this.frame = 1;
+    }
+    const frame = this.frame;
+    out.length = 0;
+    let sp = 0;
+    stack[sp] = 0;
+    tags[sp++] = 0;
+    while (sp > 0) {
+      const top = stack[--sp]!;
+      const tag = tags[sp]!;
+      if (tag !== 0) {
+        const node = top;
+        const side = tag - 1;
+        const first = nodes.firstFace[node]!;
+        for (let f = first; f < Math.min(first + nodes.numFaces[node]!, nfaces); f++) {
+          if (marked[f] === frame && (faceSide[f] ? 1 : 0) === side && faceTexture[f]! >= 0) out.push(f);
+        }
+        stack[sp] = nodes.children[node * 2 + (side ^ 1)]!;
+        tags[sp++] = 0;
+        continue;
+      }
+      if (top < 0) {
+        const l = -1 - top;
+        if (l >= leafs.count || !vis.leafs[l]) continue;
+        if (planes && boxOutsidePlanes(planes, leafs.mins, leafs.maxs, l * 3)) continue;
+        const first = leafs.firstLeafFace[l]!;
+        for (let k = first; k < Math.min(first + leafs.numLeafFaces[l]!, leafFaces.length); k++) {
+          const f = leafFaces[k]!;
+          if (f < nfaces) marked[f] = frame;
+        }
+        continue;
+      }
+      const node = top;
+      // Each node is entered at most once, so a corrupt map whose children loop cannot hang.
+      if (node >= nodes.count || entered[node] === frame) continue;
+      entered[node] = frame;
+      if (!vis.nodes[node]) continue;
+      if (planes && boxOutsidePlanes(planes, nodes.mins, nodes.maxs, node * 3)) continue;
+      const side = eyePlaneSide(bsp, nodes.planeNum[node]!, eye);
+      stack[sp] = node;
+      tags[sp++] = 1 + side;
+      stack[sp] = nodes.children[node * 2 + side]!;
+      tags[sp++] = 0;
+    }
+    return out;
+  }
 }
 
 /**
@@ -500,7 +542,8 @@ export function walkWorld(bsp: Bsp, mesh: WorldMesh, vis: WorldVis, eye: readonl
  * ones are prepended to the alpha chain (`alpha`, in R_DrawAlphaSurfaces' order), and
  * the rest are drawn from `indices`, grouped by texture and flags as buildDrawList
  * groups them. The indices are rebuilt from per-face slices only when the set of opaque
- * faces changes, so a still eye costs no rebuild and no upload.
+ * faces changes, so a still eye costs no rebuild and no upload. The set is kept as a bit
+ * per opaque world face in draw order, so comparing it costs a word per 32 faces.
  */
 export class WorldDraws {
   /** Opaque faces' indices; the first `indexCount` are valid. */
@@ -511,14 +554,16 @@ export class WorldDraws {
   alpha: number[] = [];
   /** World opaque faces sorted by draw key, then face number. */
   private readonly order: Int32Array;
+  /** Per face: its position in `order`, or -1. */
+  private readonly rank: Int32Array;
   /** Per face: its triangles' first index in `all`, and their index count. */
   private readonly faceFirst: Uint32Array;
   private readonly faceCount: Uint32Array;
   private readonly all: Uint32Array;
-  private readonly marked: Uint8Array;
-  /** The opaque faces drawn, in `order`; -1 entries before the first update. */
-  private readonly drawn: Int32Array;
-  private drawnCount = -1;
+  /** This frame's opaque faces as bits by rank, and the last rebuild's. */
+  private bits: Int32Array;
+  private drawnBits: Int32Array;
+  private built = false;
 
   constructor(private readonly mesh: WorldMesh) {
     const n = mesh.faceTexture.length;
@@ -528,61 +573,70 @@ export class WorldDraws {
     }
     faces.sort((a, b) => drawKey(mesh, a) - drawKey(mesh, b) || a - b);
     this.order = Int32Array.from(faces);
+    this.rank = new Int32Array(n).fill(-1);
     this.faceFirst = new Uint32Array(n);
     this.faceCount = new Uint32Array(n);
     const list: number[] = [];
-    for (const f of faces) {
+    faces.forEach((f, k) => {
+      this.rank[f] = k;
       this.faceFirst[f] = list.length;
       pushFace(mesh, f, list);
       this.faceCount[f] = list.length - this.faceFirst[f]!;
-    }
+    });
     this.all = Uint32Array.from(list);
     this.indices = new Uint32Array(list.length);
-    this.marked = new Uint8Array(n);
-    this.drawn = new Int32Array(faces.length);
+    this.bits = new Int32Array((faces.length + 31) >> 5);
+    this.drawnBits = new Int32Array(this.bits.length);
   }
 
   /** Take one frame's walkWorld faces. Returns whether `indices` and `draws` changed. */
   update(faces: readonly number[]): boolean {
-    const { mesh, marked, drawn } = this;
-    marked.fill(0);
+    const { mesh, rank } = this;
+    let bits = this.bits;
+    bits.fill(0);
     const sky: number[] = [];
     const alpha: number[] = [];
     for (const f of faces) {
       const flags = mesh.faceFlags[f]!;
       if (flags & SURF_SKY) sky.push(f);
       else if (flags & SURF_TRANSLUCENT) alpha.push(f);
-      else marked[f] = 1;
+      else {
+        const k = rank[f]!;
+        if (k >= 0) bits[k >> 5]! |= 1 << (k & 31);
+      }
     }
     this.sky = sky;
     this.alpha = alpha.reverse();
-    let count = 0;
-    let same = true;
-    for (const f of this.order) {
-      if (!marked[f]) continue;
-      if (count >= this.drawnCount || drawn[count] !== f) same = false;
-      drawn[count++] = f;
-    }
-    if (same && count === this.drawnCount) return false;
-    this.drawnCount = count;
+    if (this.built && sameWords(bits, this.drawnBits)) return false;
+    const { indices, all, order } = this;
+    this.built = true;
+    this.bits = this.drawnBits;
+    this.drawnBits = bits;
     const draws: { -readonly [K in keyof DrawRange]: DrawRange[K] }[] = [];
     let o = 0;
     let key = -1;
-    for (let k = 0; k < count; k++) {
-      const f = drawn[k]!;
-      const first = this.faceFirst[f]!;
-      const len = this.faceCount[f]!;
-      this.indices.set(this.all.subarray(first, first + len), o);
-      const fk = drawKey(mesh, f);
-      if (fk === key) draws[draws.length - 1]!.count += len;
-      else {
-        draws.push({ texture: mesh.faceTexture[f]!, flags: mesh.faceFlags[f]!, first: o, count: len });
-        key = fk;
+    for (let w = 0; w < bits.length; w++) {
+      for (let word = bits[w]!; word !== 0; word &= word - 1) {
+        const f = order[w * 32 + 31 - Math.clz32(word & -word)]!;
+        const first = this.faceFirst[f]!;
+        const len = this.faceCount[f]!;
+        for (let i = 0; i < len; i++) indices[o + i] = all[first + i]!;
+        const fk = drawKey(mesh, f);
+        if (fk === key) draws[draws.length - 1]!.count += len;
+        else {
+          draws.push({ texture: mesh.faceTexture[f]!, flags: mesh.faceFlags[f]!, first: o, count: len });
+          key = fk;
+        }
+        o += len;
       }
-      o += len;
     }
     this.indexCount = o;
     this.draws = draws;
     return true;
   }
+}
+
+function sameWords(a: Int32Array, b: Int32Array): boolean {
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }

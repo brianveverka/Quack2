@@ -171,12 +171,15 @@ export function boxOutsideFrustum(planes: readonly (readonly number[])[], box: B
  * corner farthest along the normal is behind the plane.
  */
 export function boxOutsidePlanes(planes: readonly (readonly number[])[], mins: ArrayLike<number>, maxs: ArrayLike<number>, offset = 0): boolean {
-  for (const [a, b, c, d] of planes) {
+  // Indexed rather than destructured: the world walk calls this per node and leaf.
+  for (let i = 0; i < planes.length; i++) {
+    const p = planes[i]!;
+    const a = p[0]!, b = p[1]!, c = p[2]!;
     // The box corner farthest along the plane normal.
-    const x = a! >= 0 ? maxs[offset]! : mins[offset]!;
-    const y = b! >= 0 ? maxs[offset + 1]! : mins[offset + 1]!;
-    const z = c! >= 0 ? maxs[offset + 2]! : mins[offset + 2]!;
-    if (a! * x + b! * y + c! * z + d! < 0) return true;
+    const x = a >= 0 ? maxs[offset]! : mins[offset]!;
+    const y = b >= 0 ? maxs[offset + 1]! : mins[offset + 1]!;
+    const z = c >= 0 ? maxs[offset + 2]! : mins[offset + 2]!;
+    if (a * x + b * y + c * z + p[3]! < 0) return true;
   }
   return false;
 }
