@@ -6,10 +6,22 @@
 // entity string alone, and turret breaches (with their teams) turned to where they
 // come to rest in their pitch/yaw range. Those a killtarget frees in the settle frames
 // are left out, and func_wall and func_object entities a use there shows or hides are
-// drawn or left out to match. DOM-free.
+// drawn or left out to match. Also the linear doors' movers as the settle frames leave
+// them (`doorMovers`), for `BrushMotion` to step. DOM-free.
 
-import { asciiLower, entityVec3, type Bsp, type BspEntity } from "@quack2/sim";
-import { angleVectors } from "./math.js";
+import {
+  FRAMETIME,
+  asciiLower,
+  calcMoveSpeed,
+  doorGoDown,
+  doorGoUp,
+  entityVec3,
+  levelTimeAt,
+  linearMover,
+  type Bsp,
+  type BspEntity,
+  type LinearMover,
+} from "@quack2/sim";
 
 /** game/g_local.h: entities with this flag are freed at spawn in deathmatch. */
 const SPAWNFLAG_NOT_DEATHMATCH = 0x800;
@@ -97,12 +109,51 @@ function stricmpEqual(a: string, b: string): boolean {
   return asciiLower(a) === asciiLower(b);
 }
 
-/** G_SetMovedir: angles 0 -1 0 mean up, 0 -2 0 down, anything else the forward vector. */
-function moveDir(angles: readonly [number, number, number]): Vec3 {
+const f32 = Math.fround;
+
+/**
+ * G_SetMovedir on the float angles ED_ParseField stores: 0 -1 0 means up, 0 -2 0 down,
+ * anything else AngleVectors' forward vector, with its float angle, sines and products.
+ */
+function moveDir(ent: BspEntity): Vec3 {
+  const angles = entityAngles(ent).map(f32);
   if (angles[0] === 0 && angles[2] === 0 && angles[1] === -1) return [0, 0, 1];
   if (angles[0] === 0 && angles[2] === 0 && angles[1] === -2) return [0, 0, -1];
-  const f = angleVectors(angles[0], angles[1], angles[2]).forward;
-  return [f[0], f[1], f[2]];
+  // angle = angles[i] * (M_PI*2 / 360), a float; sin and cos of it stored as floats.
+  const rad = (a: number) => f32(a * ((Math.PI * 2) / 360));
+  const sy = f32(Math.sin(rad(angles[1]!)));
+  const cy = f32(Math.cos(rad(angles[1]!)));
+  const sp = f32(Math.sin(rad(angles[0]!)));
+  const cp = f32(Math.cos(rad(angles[0]!)));
+  return [f32(cp * cy), f32(cp * sy), -sp];
+}
+
+/** pos1 and pos2 (moveinfo.start_origin and end_origin) and moveinfo.distance of a linear door. */
+interface DoorPositions {
+  readonly pos1: Vec3;
+  readonly pos2: Vec3;
+  readonly distance: number;
+}
+
+/**
+ * SP_func_door and SP_func_water, in float as the game stores and computes them: pos2
+ * lies the entity's size along the move direction, less "lip" (8 by default for doors
+ * only), from pos1, the spawn origin; START_OPEN swaps the two, and the door starts at
+ * pos1. `mins`/`maxs` as for `spawnMove`.
+ */
+function doorPositions(ent: BspEntity, mins: readonly number[], maxs: readonly number[], origin: Vec3): DoorPositions {
+  const flags = atoi(ent.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK;
+  const dir = moveDir(ent);
+  const size = [0, 1, 2].map((k) => f32(f32(maxs[k]!) - f32(mins[k]!)));
+  const lip = atoi(ent.lip ?? "0") || (ent.classname === "func_door" ? 8 : 0);
+  let distance = f32(Math.abs(dir[0]) * size[0]!);
+  distance = f32(distance + f32(Math.abs(dir[1]) * size[1]!));
+  distance = f32(distance + f32(Math.abs(dir[2]) * size[2]!));
+  distance = f32(distance - lip);
+  const near = origin.map(f32) as Vec3;
+  // VectorMA, float throughout.
+  const far = near.map((o, k) => f32(o + f32(distance * dir[k]!))) as Vec3;
+  return flags & DOOR_START_OPEN ? { pos1: far, pos2: near, distance } : { pos1: near, pos2: far, distance };
 }
 
 /**
@@ -110,7 +161,8 @@ function moveDir(angles: readonly [number, number, number]): Vec3 {
  * settle, from its spawn "origin" (and angles, 0 0 0 for every class moved here), per g_func.c.
  * `mins`/`maxs` are the entity's bounds as gi.setmodel sets them: the model's bounds
  * spread by a unit (CMod_LoadSubmodels). "lip", "height" and "distance" are integer
- * spawn fields (atoi), 0 when absent. Positions are computed in double; the game uses float.
+ * spawn fields (atoi), 0 when absent. Positions are computed in double, where the game
+ * uses float, except a door's (`doorPositions`).
  */
 function spawnMove(
   ent: BspEntity,
@@ -131,15 +183,11 @@ function spawnMove(
       const lip = atoi(ent.lip ?? "0") || 8;
       return { origin: [origin[0], origin[1], origin[2] - (height || size[2]! - lip)], angles };
     }
-    // SP_func_door / SP_func_water: START_OPEN swaps pos1 and pos2, which lies the size
-    // of the entity along the move direction, less "lip" (8 by default for doors only).
+    // SP_func_door / SP_func_water: a START_OPEN door starts at the far end.
     case "func_door":
     case "func_water": {
       if (!(flags & DOOR_START_OPEN)) break;
-      const dir = moveDir(entityAngles(ent));
-      const lip = atoi(ent.lip ?? "0") || (ent.classname === "func_door" ? 8 : 0);
-      const distance = Math.abs(dir[0]) * size[0]! + Math.abs(dir[1]) * size[1]! + Math.abs(dir[2]) * size[2]! - lip;
-      return { origin: [0, 1, 2].map((k) => origin[k]! + distance * dir[k]!) as Vec3, angles };
+      return { origin: doorPositions(ent, mins, maxs, origin).pos1, angles };
     }
     // SP_func_door_rotating: START_OPEN starts at "distance" degrees (default 90) about
     // the door's axis: yaw, or roll for X_AXIS, pitch for Y_AXIS; REVERSE negates it.
@@ -160,8 +208,6 @@ function spawnMove(
   return { origin, angles };
 }
 
-/** g_local.h: seconds per server frame. */
-const FRAMETIME = 0.1;
 /** Classes whose spawn function always frees them in deathmatch, before G_FindTeams (lights, monsters, single-player props and goals). */
 const FREED_IN_DEATHMATCH = new Set([
   "light",
@@ -486,6 +532,8 @@ export function modelBounds(bsp: Bsp, model: number): { mins: Vec3; maxs: Vec3 }
 export interface BrushModelInstance {
   /** Index into bsp.models, 1 or more. */
   readonly model: number;
+  /** Index of the entity in the entity string. */
+  readonly entity: number;
   /** World translation of the model's faces: the entity's "origin", default 0 0 0, after any spawn move. */
   readonly origin: readonly [number, number, number];
   /** Rotation (pitch, yaw, roll) about the model-space origin, applied before `origin`: the spawn angles for classes that keep them, a START_OPEN func_door_rotating's open angles, else 0 0 0; a turret breach at rest, and the members of its team turned by its yaw. */
@@ -538,6 +586,12 @@ export function visibleAtSpawn(ent: BspEntity): boolean {
   return true;
 }
 
+/** The inline model a "model" value names ("*N", N from 1: *0 is the world itself, drawn separately), else undefined. */
+function inlineModel(bsp: Bsp, ref: string | undefined): number | undefined {
+  const model = ref !== undefined && /^\*\d+$/.test(ref) ? Number(ref.slice(1)) : Number.NaN;
+  return model >= 1 && model < bsp.models.count ? model : undefined;
+}
+
 export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): BrushModelInstances {
   const instances: BrushModelInstance[] = [];
   const errors: string[] = [];
@@ -548,9 +602,8 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
     // Point entities carry model paths ("models/..."); only "*N" is an inline model.
     if (ref === undefined || !ref.startsWith("*")) return;
     const classname = ent.classname ?? "";
-    const model = /^\*\d+$/.test(ref) ? Number(ref.slice(1)) : Number.NaN;
-    // *0 is the world itself, drawn separately.
-    if (!(model >= 1 && model < bsp.models.count)) {
+    const model = inlineModel(bsp, ref);
+    if (model === undefined) {
       errors.push(`entity ${i} (${classname}): model "${ref}" is not an inline model of this map`);
       return;
     }
@@ -561,7 +614,7 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
     const { origin, angles } = spawnMove(ent, mins, maxs, spawn, keep, trains.get(i)?.at);
     const turn = turrets.get(i);
     const turned: Vec3 = turn?.angles ?? (turn?.yaw ? [angles[0], angles[1] + turn.yaw, angles[2]] : angles);
-    instances.push({ model, origin, angles: turned, classname });
+    instances.push({ model, entity: i, origin, angles: turned, classname });
   });
   return { instances, errors };
 }
@@ -610,6 +663,8 @@ interface Settle {
   slaves: Set<number>;
   /** moveinfo.state of the entities used so far; the rest are at `spawnState`. */
   moveState: Map<number, MoveState>;
+  /** door_go_up (up) and door_go_down calls on doors, in the order the game makes them. */
+  doorMoves: { index: number; up: boolean }[];
   /** Plats Use_Plat sent down: Move_Calc gave them a think, so later uses return. */
   platsMoving: Set<number>;
   /** Use_Areaportal's per-entity toggle (ent->count). */
@@ -955,11 +1010,14 @@ function doorUse(s: Settle, index: number): void {
     if (down) {
       // door_go_down writes no portal until the door reaches the bottom, after the settle frames.
       s.moveState.set(m, "down");
+      s.doorMoves.push({ index: m, up: false });
       continue;
     }
     const ms = moveState(s, m);
     if (ms === "up" || ms === "top") continue;
     s.moveState.set(m, "up");
+    // Move_Calc runs before the door fires its targets.
+    s.doorMoves.push({ index: m, up: true });
     useTargets(s, userOf(s, m));
     // A door its own killtarget freed has no "target" left to find portals by.
     if (s.freed.has(m)) break;
@@ -998,6 +1056,7 @@ function settleSpawnFrames(entities: readonly BspEntity[]): {
   trains: Map<number, Train>;
   freed: Set<number>;
   shown: Map<number, boolean>;
+  doorMoves: readonly { index: number; up: boolean }[];
 } {
   const teams = new Map<number, number[]>();
   const slaves = new Set<number>();
@@ -1022,6 +1081,7 @@ function settleSpawnFrames(entities: readonly BspEntity[]): {
     teams,
     slaves,
     moveState: new Map(),
+    doorMoves: [],
     platsMoving: new Set(),
     portalCount: new Map(),
     portals: new Map(),
@@ -1057,10 +1117,95 @@ function settleSpawnFrames(entities: readonly BspEntity[]): {
     trains: s.trains,
     freed: s.freed,
     shown: s.shown,
+    doorMoves: s.doorMoves,
   };
 }
 
 /** The area portals open after the settle frames (`settleSpawnFrames`). */
 export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
   return settleSpawnFrames(entities).portals;
+}
+
+/** A linear door and the entity it is. */
+export interface MovingDoor {
+  readonly entity: number;
+  readonly mover: LinearMover;
+}
+
+/**
+ * The linear doors (func_door, and func_water, which SP_func_water renames func_door) as
+ * the two settle frames leave them, by team in master entity order, master first; a
+ * door with no team is a team of one. SP_func_door and SP_func_water set up each door
+ * (`doorPositions`; a door's "speed", default 100, is doubled in deathmatch, and its
+ * "accel" and "decel" default to that, "wait" 0 becomes 3; func_water takes "speed",
+ * default 25, for all three, and "wait" 0 becomes -1, which makes it DOOR_TOGGLE). In the
+ * first frame a func_door master's think (Think_CalcMoveSpeed, also at the end of
+ * Think_SpawnDoorTrigger) matches its team's speeds; a func_water has no think. In the
+ * second the settle frames' uses send doors up or down (`doorUse`), from a DelayedUse's
+ * slot, so each starts moving a frame later.
+ *
+ * A team with a member that is not a linear door (or has no inline model) is left out:
+ * it is drawn where `brushModelInstances` puts it. A team's chain ends at the first
+ * member a killtarget freed (G_FreeEdict zeroes its teamchain), and a team whose master
+ * was freed never moves again (SV_Physics_Pusher returns for the slaves).
+ */
+export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor[][] {
+  const { freed, doorMoves } = settleSpawnFrames(entities);
+  const doors = new Map<number, MovingDoor>();
+  entities.forEach((ent, i) => {
+    if (i === 0 || !inGame(ent) || (ent.classname !== "func_door" && ent.classname !== "func_water")) return;
+    const model = inlineModel(bsp, ent.model);
+    if (model === undefined) return;
+    const { mins, maxs } = modelBounds(bsp, model);
+    const { pos1, pos2, distance } = doorPositions(ent, mins, maxs, entityVec3(ent, "origin") ?? [0, 0, 0]);
+    const field = (key: string) => f32(atof(ent[key] ?? "0"));
+    let speed: number, accel: number, decel: number, wait: number;
+    if (ent.classname === "func_door") {
+      speed = f32((field("speed") || 100) * 2);
+      accel = field("accel") || speed;
+      decel = field("decel") || speed;
+      wait = field("wait") || 3;
+    } else {
+      speed = accel = decel = field("speed") || 25;
+      wait = field("wait") || -1;
+    }
+    const mover = linearMover({
+      origin: pos1,
+      startOrigin: pos1,
+      endOrigin: pos2,
+      distance,
+      speed,
+      accel,
+      decel,
+      wait,
+      toggle: doorToggles(ent),
+      state: "bottom",
+    });
+    doors.set(i, { entity: i, mover });
+  });
+
+  const groups = [...findTeams(entities).values()];
+  const teamed = new Set(groups.flat());
+  for (const i of doors.keys()) if (!teamed.has(i)) groups.push([i]);
+  groups.sort((a, b) => a[0]! - b[0]!);
+  const teams: MovingDoor[][] = [];
+  const moving = new Map<number, LinearMover>();
+  for (const members of groups) {
+    const team = members.map((i) => doors.get(i));
+    if (!team.every((d) => d !== undefined)) continue;
+    if (entities[members[0]!]!.classname === "func_door") calcMoveSpeed(team.map((d) => d.mover));
+    const cut = team.findIndex((d) => freed.has(d.entity));
+    const live = cut < 0 ? team : team.slice(0, cut);
+    if (live.length === 0) continue;
+    teams.push(live);
+    for (const d of live) moving.set(d.entity, d.mover);
+  }
+  const settled = levelTimeAt(2);
+  for (const { index, up } of doorMoves) {
+    const m = moving.get(index);
+    if (!m) continue;
+    if (up) doorGoUp(m, settled, false);
+    else doorGoDown(m, settled, false);
+  }
+  return teams;
 }

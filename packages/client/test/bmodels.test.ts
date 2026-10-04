@@ -10,7 +10,7 @@ const bsp = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../..
 describe("brush model instances", () => {
   it("places the fixture's func_wall (model 1) at the origin, nothing else", () => {
     expect(brushModelInstances(bsp, parseEntities(bsp.entityString))).toEqual({
-      instances: [{ model: 1, origin: [0, 0, 0], angles: [0, 0, 0], classname: "func_wall" }],
+      instances: [{ model: 1, entity: 1, origin: [0, 0, 0], angles: [0, 0, 0], classname: "func_wall" }],
       errors: [],
     });
   });
@@ -22,7 +22,7 @@ describe("brush model instances", () => {
       { "classname" "misc_explobox" "model" "models/objects/barrels/tris.md2" "origin" "1 2 3" }
     `);
     expect(brushModelInstances(bsp, ents)).toEqual({
-      instances: [{ model: 1, origin: [16, -32, 8], angles: [0, 0, 0], classname: "func_door" }],
+      instances: [{ model: 1, entity: 1, origin: [16, -32, 8], angles: [0, 0, 0], classname: "func_door" }],
       errors: [],
     });
   });
@@ -33,7 +33,7 @@ describe("brush model instances", () => {
       { "classname" "Func_Wall" "model" "*1" }
     `);
     expect(brushModelInstances(bsp, ents)).toEqual({
-      instances: [{ model: 1, origin: [16, -32, 8], angles: [0, 90, 0], classname: "func_wall" }],
+      instances: [{ model: 1, entity: 0, origin: [16, -32, 8], angles: [0, 90, 0], classname: "func_wall" }],
       errors: [],
     });
   });
@@ -230,10 +230,29 @@ describe("brush model instances", () => {
         [0, 0, 0],
       ];
       expect(got).toHaveLength(want.length);
+      // Float, as SP_func_door computes it: yaw 90's cosine is -4.37e-8, not 0 (exact values below).
       got.forEach((b, i) => {
-        close(b.origin, want[i]!);
+        want[i]!.forEach((w, k) => expect(b.origin[k], `door ${i} component ${k}`).toBeCloseTo(w, 4));
         expect(b.angles).toEqual([0, 0, 0]);
       });
+    });
+
+    it("computes a START_OPEN door's position in float, as SP_func_door does", () => {
+      // From a gcc (SSE) build of SP_func_door's G_SetMovedir, distance and VectorMA.
+      const got = place(`
+        { "classname" "func_door" "model" "*1" "spawnflags" "1" "angle" "90" }
+        { "classname" "func_door" "model" "*1" "spawnflags" "1" "angle" "45" }
+        { "classname" "func_door" "model" "*1" "spawnflags" "1" "angle" "180" }
+        { "classname" "func_door" "model" "*1" "spawnflags" "1" "angle" "270" }
+      `).map((b) => b.origin);
+      expect(got).toEqual(
+        [
+          [-2.53526059e-6, 58, 0],
+          [60.3431473, 60.3431473, 0],
+          [-58.0000076, -5.07052164e-6, 0],
+          [6.91643095e-7, -58, 0],
+        ].map((v) => v.map(Math.fround)),
+      );
     });
 
     it("turns a START_OPEN func_door_rotating to its open angles", () => {

@@ -23,6 +23,7 @@ import { fovY, modelMatrix, multiply, perspective, transformPoint, viewMatrix } 
 const bsp = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
 const wall = (origin: [number, number, number], angles: [number, number, number] = [0, 0, 0]): BrushModelInstance => ({
   model: 1,
+  entity: 1,
   origin,
   angles,
   classname: "func_wall",

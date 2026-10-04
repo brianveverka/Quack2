@@ -8,9 +8,10 @@
 
 import { DEATHMATCH_LIGHTSTYLES, GameFs, checkBspIntegrity, lightStyleValues, entityVec3, parseBsp, parseEntities, type BspEntity } from "@quack2/sim";
 import { MapLoadError, errorMessage, loadMap, loadSkyImages, loadWalTextures, openGameArchive } from "./assets.js";
-import { brushModelInstances, entityAngles, openAreaPortals, playerSpawnSpot } from "./bmodels.js";
+import { brushModelInstances, doorMovers, entityAngles, openAreaPortals, playerSpawnSpot } from "./bmodels.js";
 import { FlyCamera } from "./camera.js";
 import { transformPoint } from "./math.js";
+import { BrushMotion } from "./movers.js";
 import { WorldRenderer, type FrameStats, type View } from "./renderer.js";
 import { skySettings, type SkySettings } from "./sky.js";
 import { noTextures } from "./textures.js";
@@ -39,6 +40,12 @@ export interface QuackDebug {
   worldFaces?: number;
   /** Brush model instances placed from the entity string, e.g. ["func_wall *1 at 0 0 0"], with " angles p y r" when rotated. */
   brushModels?: readonly string[];
+  /**
+   * The origin each brush model instance (in `brushModels` order) has at level time `ms`
+   * (default now) as the client would draw it: moving doors per `BrushMotion`, the rest
+   * where `brushModels` says. The renderer does not draw them moving yet.
+   */
+  brushOrigins(ms?: number): [number, number, number][];
   integrityErrors?: readonly string[];
   view(): View;
   setView(view: View): void;
@@ -94,6 +101,7 @@ async function main(): Promise<void> {
     setCull: () => {},
     setNoAreas: () => {},
     setLevelTime: () => {},
+    brushOrigins: () => [],
     lightmapUploads: 0,
   });
   // An opaque drawing buffer: fragment alpha (texture alpha, the alpha pass's blend)
@@ -166,6 +174,11 @@ async function main(): Promise<void> {
   // Light styles and warps animate on level time, which starts with the map here.
   const levelStart = performance.now();
   let levelTime: number | undefined;
+  const motion = new BrushMotion(() => doorMovers(bsp, entities));
+  debug.brushOrigins = (ms) => {
+    const origins = motion.originsAt(ms ?? levelTime ?? performance.now() - levelStart);
+    return brush.instances.map((b) => origins.get(b.entity) ?? [b.origin[0], b.origin[1], b.origin[2]]);
+  };
   const styleValues = lightStyleValues(DEATHMATCH_LIGHTSTYLES, 0);
   const openPortals = openAreaPortals(entities);
   debug.openPortals = [...openPortals].sort((a, b) => a - b);
