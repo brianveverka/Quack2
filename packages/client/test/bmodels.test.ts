@@ -460,7 +460,8 @@ describe("brush model instances", () => {
 });
 
 describe("player spawn spot", () => {
-  const spot = (src: string) => playerSpawnSpot(parseEntities(src))?.origin;
+  const at = (src: string) => playerSpawnSpot(parseEntities(src))?.origin;
+  const spot = (src: string) => at(`{ "classname" "worldspawn" }` + src);
   const start = (origin: string, extra = "") => `{ "classname" "info_player_start" "origin" "${origin}" ${extra} }`;
   const dm = (origin: string, extra = "") => `{ "classname" "info_player_deathmatch" "origin" "${origin}" ${extra} }`;
 
@@ -472,6 +473,7 @@ describe("player spawn spot", () => {
   it("skips spots the game frees in deathmatch", () => {
     expect(spot(dm("1 0 0", `"spawnflags" "2048"`) + dm("2 0 0"))).toBe("2 0 0");
     expect(spot(dm("1 0 0", `"spawnflags" "2048"`) + start("0 0 0"))).toBe("0 0 0");
+    expect(at(dm("9 9 9") + dm("1 0 0"))).toBe("1 0 0"); // edict 0 is in use only as worldspawn
   });
 
   it("falls back to the first player start without a targetname, then the first", () => {
