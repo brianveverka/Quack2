@@ -31,7 +31,9 @@ turning as AngleMove_Calc does, their angles sent in 360/256 degree steps and bl
 LerpAngle), also in teams with other members, and the plats that are no team's slave a
 use there sends down (Use_Plat, accelerating as Think_AccelMove does when accel or decel
 differs from speed, else at a constant speed per second; the sim also has plat_go_up
-and plat_hit_top's 3 s return) (`brushMovers`, stepped at the 10 Hz game
+and plat_hit_top's 3 s return), and the buttons that are no team's slave a use there
+fires (button_fire up, button_wait, and button_return back down after "wait")
+(`brushMovers`, stepped at the 10 Hz game
 frame by `BrushMotion` and blended as CL_AddPacketEntities does, re-linked each frame
 they move or turn), culled by area, PVS and
 frustum, free-fly camera at the spawn spot and yaw SelectSpawnPoint gives the first
@@ -39,11 +41,6 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- The mover lacks the button functions (button_fire and button_return, which run
-  Move_Calc, and its endfuncs button_wait and button_done): a func_button a settle-frame
-  use fires is drawn where it spawned. Build button movers in `brushMovers` as the
-  plats are (`platMover`): SP_func_button's "speed" defaults to 40 and is not doubled,
-  "accel" and "decel" default to it.
 - The mover lacks the train functions (the think train_next and train_resume, which run
   Move_Calc, and its endfunc train_wait):
   trains are placed at the corner `settleSpawnFrames` leaves them and never move. Needs
@@ -106,7 +103,15 @@ Remaining:
 - A func_plat that is a team slave is left out of `brushMovers` and drawn where it
   spawned: a door master's door_use runs door_go_up on it (Move_Calc to its pos2, the
   bottom, with door_hit_top), Think_CalcMoveSpeed reads its moveinfo.distance 0, and
-  its think runs in its master's slot. Model these with the button and train movers.
+  its think runs in its master's slot. Model these with the train movers. A func_button
+  that is a team slave is left out the same way: door_use runs door_go_up on it too,
+  and button_use fires it (Move_Calc) with its think in its master's slot.
+- button_wait fires the button's targets (G_UseTargets) when it reaches the top, after
+  the settle frames: nothing models uses after them, so a door, plat or portal a fired
+  button targets stays as the settle frames left it.
+- Texture animation is not drawn: no texinfo `nexttexinfo` chain is followed
+  (R_TextureAnimation steps world faces at 2 Hz and a brush entity's faces by its
+  s.frame, which button_wait sets to 1 and button_return back to 0).
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

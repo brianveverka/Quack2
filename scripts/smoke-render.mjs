@@ -75,6 +75,14 @@ SYNTHETIC["/data/plat.bsp"] = withEntityString(fixtureBsp, `${platEntities}{\n"c
 for (const z of [-10, -31.5]) {
   SYNTHETIC[`/data/plat-at-${z}.bsp`] = withEntityString(fixtureBsp, fixtureEntities.replace('"model" "*1"', `"model" "*1"\n"origin" "0 0 ${z}"`));
 }
+// Button: the func_wall made a func_button moving up (50 - lip 4 = 46 at 40 a second)
+// that a trigger_always fires in the second settle frame, and the func_wall placed where
+// it is drawn at 250 ms and at 1300 ms.
+const buttonEntities = fixtureEntities.replace('"classname" "func_wall"', '"classname" "func_button"\n"targetname" "smokebutton"\n"angle" "-1"');
+SYNTHETIC["/data/button.bsp"] = withEntityString(fixtureBsp, `${buttonEntities}{\n"classname" "trigger_always"\n"target" "smokebutton"\n}\n`);
+for (const z of [6, 46]) {
+  SYNTHETIC[`/data/button-at-${z}.bsp`] = withEntityString(fixtureBsp, fixtureEntities.replace('"model" "*1"', `"model" "*1"\n"origin" "0 0 ${z}"`));
+}
 // Rotating door: the func_wall made a func_door_rotating (90 degrees of yaw at 100 a
 // second about the world origin) that a trigger_always sends round in the second settle
 // frame. The func_wall placed at the angles it is drawn with at 150 ms and at 250 ms.
@@ -505,6 +513,33 @@ try {
   check(platFrames.every((d) => !d.moving.error && !d.placed.error && d.moving.stats.brushModels === 1), "the moving plat is drawn at every time");
   check(platRestLow > 0.02, "the plat's frames at the top and lowered differ");
   check(platFrames.every((d) => d.diff === 0), "the moving plat draws as a func_wall placed where brushOrigins puts it: at the top, z -10 at 250 ms, z -31.5 at 450 ms");
+
+  // Button motion: Move_Begin from frame 3, 4 units a frame from frame 4, 2 more in frame
+  // 15 to the top (1300 ms); button_return in frame 45 brings it back from frame 46.
+  await page.goto(`${ORIGIN}/?map=data/button.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const buttonMotion = await page.evaluate(() => ({
+    brushModels: window.quack.brushModels,
+    origins: [0, 250, 1300, 4450, 6000].map((ms) => window.quack.brushOrigins(ms)),
+  }));
+  console.log(`  button: ${JSON.stringify(buttonMotion)}`);
+  check(
+    JSON.stringify(buttonMotion.brushModels) === JSON.stringify(["func_button *1 at 0 0 0"]) &&
+      JSON.stringify(buttonMotion.origins) === JSON.stringify([[[0, 0, 0]], [[0, 0, 6]], [[0, 0, 46]], [[0, 0, 40]], [[0, 0, 0]]]),
+    "a button the settle frames fire moves in brushOrigins: at rest, z 6 at 250 ms, at the top at 1300 ms, z 40 on the way back at 4450 ms, home by 6000 ms",
+  );
+  const buttonFrames = [];
+  for (const [ms, ref] of [[0, "maps/test_arena.bsp"], [250, "data/button-at-6.bsp"], [1300, "data/button-at-46.bsp"]]) {
+    const [moving, placed] = [await doorFrame("data/button.bsp", ms), await doorFrame(ref, ms)];
+    buttonFrames.push({ ms, moving, placed, diff: changed(moving.frame, placed.frame) });
+  }
+  const buttonRestTop = changed(buttonFrames[0].moving.frame, buttonFrames[2].moving.frame);
+  console.log(
+    `  button drawn: ${buttonFrames.map((d) => `${d.ms} ms ${d.diff.toFixed(4)} off its placed wall (brush models ${d.moving.stats.brushModels})`).join(", ")}; rest to top changes ${buttonRestTop.toFixed(3)}`,
+  );
+  check(buttonFrames.every((d) => !d.moving.error && !d.placed.error && d.moving.stats.brushModels === 1), "the moving button is drawn at every time");
+  check(buttonRestTop > 0.02, "the button's frames at rest and at the top differ");
+  check(buttonFrames.every((d) => d.diff === 0), "the moving button draws as a func_wall placed where brushOrigins puts it: at rest, z 6 at 250 ms, z 46 at 1300 ms");
 
   // Rotating door: brushAngles steps it as AngleMove_Calc does (frame 4 at 10 degrees,
   // frame 5 at 20, sent in 360/256 degree steps: 9.84375 and 19.6875) and blends them;

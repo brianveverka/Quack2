@@ -2,7 +2,7 @@
 // Brush movers stepped at the game's 10 Hz frame, ported from id's game source:
 // Move_Calc and its thinks, the accelerative move (Think_AccelMove and the plat_
 // functions it calls), AngleMove_Calc and its thinks for a func_door_rotating, the
-// func_door and func_plat state functions and Think_CalcMoveSpeed (game/g_func.c), and the move and
+// func_door, func_plat and func_button state functions and Think_CalcMoveSpeed (game/g_func.c), and the move and
 // think order of SV_Physics_Pusher and SV_RunThink (game/g_phys.c). Shared so the
 // server and the client step movers the same way.
 //
@@ -28,6 +28,7 @@ export type MoverThink =
   | "moveDone"
   | "doorGoDown"
   | "platGoDown"
+  | "buttonReturn"
   | "thinkAccelMove"
   | "angleMoveBegin"
   | "angleMoveFinal"
@@ -74,8 +75,8 @@ export interface BrushMover {
   moveSpeed: number;
   nextSpeed: number;
   decelDistance: number;
-  /** moveinfo.endfunc: the door or plat function Move_Done calls. */
-  endfunc: "doorHitTop" | "doorHitBottom" | "platHitTop" | "platHitBottom" | undefined;
+  /** moveinfo.endfunc: the door, plat or button function Move_Done calls. */
+  endfunc: "doorHitTop" | "doorHitBottom" | "platHitTop" | "platHitBottom" | "buttonWait" | "buttonDone" | undefined;
   think: MoverThink | undefined;
   /** 0 when no think is pending. */
   nextthink: number;
@@ -211,6 +212,17 @@ export function platGoUp(m: BrushMover, levelTime: number, current: boolean): vo
   moveCalc(m, m.startOrigin, "platHitTop", levelTime, current);
 }
 
+/**
+ * button_fire: returns while the button is going up or at the top, else moves it to
+ * end_origin (pos2); `current` as for `doorGoUp`. button_wait fires its targets at the
+ * top; that is the caller's.
+ */
+export function buttonFire(m: BrushMover, levelTime: number, current: boolean): void {
+  if (m.state === "up" || m.state === "top") return;
+  m.state = "up";
+  moveCalc(m, m.endOrigin, "buttonWait", levelTime, current);
+}
+
 function moveCalc(m: BrushMover, dest: Vec3f, endfunc: BrushMover["endfunc"], levelTime: number, current: boolean): void {
   m.velocity.fill(0);
   for (let i = 0; i < 3; i++) m.dir[i] = Math.fround(dest[i]! - m.origin[i]!);
@@ -276,6 +288,11 @@ function endfunc(m: BrushMover, levelTime: number): void {
       return;
     case "platHitTop":
       return platHitTop(m, levelTime);
+    case "buttonWait":
+      return buttonWait(m, levelTime);
+    case "buttonDone":
+      m.state = "bottom";
+      return;
   }
 }
 
@@ -349,6 +366,21 @@ function platHitTop(m: BrushMover, levelTime: number): void {
   m.state = "top";
   m.think = "platGoDown";
   m.nextthink = Math.fround(levelTime + 3);
+}
+
+/** button_wait: at the top, button_return is due after "wait" unless it is negative. */
+function buttonWait(m: BrushMover, levelTime: number): void {
+  m.state = "top";
+  if (m.wait >= 0) {
+    m.nextthink = Math.fround(levelTime + m.wait);
+    m.think = "buttonReturn";
+  }
+}
+
+/** button_return: back to start_origin (pos1), from the button's own think. */
+function buttonReturn(m: BrushMover, levelTime: number): void {
+  m.state = "down";
+  moveCalc(m, m.startOrigin, "buttonDone", levelTime, true);
 }
 
 /** AccelerationDistance: a float macro, rounded at each operation. */
@@ -503,5 +535,8 @@ function runThink(m: BrushMover, levelTime: number): void {
     case "platGoDown":
       // From the plat's own think, current as for doorGoDown.
       return platGoDown(m, levelTime, true);
+    case "buttonReturn":
+      // From the button's own think, current as for doorGoDown.
+      return buttonReturn(m, levelTime);
   }
 }
