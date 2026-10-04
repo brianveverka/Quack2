@@ -48,8 +48,11 @@ Remaining:
   member has no distance (a button, a wall, a door whose lip equals its size): the
   linear doors' speeds go -Infinity and `stepPusher` sends their moving axis to
   -Infinity and the others to NaN. `linkedOrigins` hands those to the renderer's
-  re-link; the drawn origins come out 0 0 0 through `networkCoord`. The C is undefined
-  there too ((int) of NaN or Inf in SV_Push); decide on a guard.
+  re-link; the drawn origins come out 0 0 0 through `networkCoord`. The same team with
+  a door whose "accel" is 0 or negative gives it accel -Infinity, so Think_AccelMove sets
+  a NaN velocity: `stepPusher` reads NaN as at rest and leaves the door where it is, while
+  SV_Push's velocity test reads NaN as moving and (int) of NaN gives INT_MIN on x86. The
+  C is undefined in both ((int) of NaN or Inf in SV_Push); decide on a guard.
 - Only func_areaportal, doors, func_door_secret, trigger_relay, func_train, func_wall and
   func_object uses are modeled in the settle frames (and a train's pathtarget at a
   corner it reaches at once), and a door's or relay's own "delay" always defers its

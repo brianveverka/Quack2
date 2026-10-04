@@ -295,7 +295,8 @@ function accelerate(m: LinearMover): void {
 /** Think_AccelMove: the team has moved a frame, so set the speed for the next. */
 function thinkAccelMove(m: LinearMover, levelTime: number): void {
   m.remainingDistance = Math.fround(m.remainingDistance - m.currentSpeed);
-  // Starting (or blocked, which is not modeled).
+  // Starting, or restarted after door_blocked sends it back through Move_Calc (blocking
+  // is not modeled).
   if (m.currentSpeed === 0) calcAcceleratedMove(m);
   accelerate(m);
   // Will the whole move complete in the next frame?
