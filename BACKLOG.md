@@ -60,6 +60,10 @@ Remaining:
   synthetic map where no face uses the changed style. A per-style face list would make it scale with the
   faces on changed styles. The renderer also composes a drawn brush model's faces that
   face away, which R_DrawInlineBModel skips; same light, extra cost.
+- `brushModelInstances` draws an inline model on entity 0 of a malformed map; the engine
+  puts that entity in edict 0, which SV_BuildClientFrame never sends (it starts at 1).
+- `pointLeaf` (sim vis.ts) has no loop guard: a corrupt tree whose children loop hangs
+  it, where `renderLeaf` and `boxLeafs` stop.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

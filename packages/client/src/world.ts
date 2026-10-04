@@ -316,6 +316,17 @@ export function brushModelAlphaOrder(faces: readonly number[]): number[] {
 }
 
 /**
+ * The order R_DrawAlphaSurfaces draws brush model instances' translucent faces in.
+ * V_RenderView sorts the entity list by model pointer, and inline models sit in one
+ * array, so R_DrawEntitiesOnList walks brush models by ascending model number, each
+ * prepended to the alpha chain: highest model number first. Instances of one model
+ * compare equal and keep whatever the unstable qsort leaves; here the later one first.
+ */
+export function brushInstanceAlphaOrder<T extends { readonly modelIndex: number }>(instances: readonly T[]): T[] {
+  return [...instances].reverse().sort((a, b) => b.modelIndex - a.modelIndex);
+}
+
+/**
  * What R_MarkLeaves and the area bits leave R_RecursiveWorldNode for one eye cluster and
  * area. `nodes`: a leaf under the node is in the PVS (its visframe; areas play no part).
  * `leafs`: the leaf adds its faces: in the PVS, not CONTENTS_SOLID, and with its area
