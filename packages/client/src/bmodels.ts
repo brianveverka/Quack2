@@ -160,16 +160,155 @@ function spawnMove(
 
 /** g_local.h: seconds per server frame. */
 const FRAMETIME = 0.1;
-/** Classes whose spawn function frees them in deathmatch before G_FindTeams (SP_light, SP_func_explosive). */
-const FREED_IN_DEATHMATCH = new Set(["light", "func_explosive"]);
+/** Classes whose spawn function always frees them in deathmatch, before G_FindTeams (lights, monsters, single-player props and goals). */
+const FREED_IN_DEATHMATCH = new Set([
+  "light",
+  "func_explosive",
+  "info_null",
+  "func_group",
+  "info_player_coop",
+  "point_combat",
+  "misc_explobox",
+  "misc_deadsoldier",
+  "misc_actor",
+  "misc_insane",
+  "target_secret",
+  "target_goal",
+  "target_help",
+  "target_lightramp",
+  "turret_driver",
+  "monster_berserk",
+  "monster_gladiator",
+  "monster_gunner",
+  "monster_infantry",
+  "monster_soldier_light",
+  "monster_soldier",
+  "monster_soldier_ss",
+  "monster_tank",
+  "monster_tank_commander",
+  "monster_medic",
+  "monster_flipper",
+  "monster_chick",
+  "monster_parasite",
+  "monster_flyer",
+  "monster_brain",
+  "monster_floater",
+  "monster_hover",
+  "monster_mutant",
+  "monster_supertank",
+  "monster_boss2",
+  "monster_boss3_stand",
+  "monster_jorg",
+]);
+/**
+ * Classes whose spawn function sets MOVETYPE_PUSH or MOVETYPE_STOP. G_RunEntity runs
+ * them through SV_Physics_Pusher, which as a team master pushes every member and runs
+ * every member's think each frame. Every other class that stays in a deathmatch game is
+ * MOVETYPE_NONE at spawn (the G_Spawn default), except misc_gib_* (MOVETYPE_TOSS); items
+ * become MOVETYPE_TOSS in droptofloor. Under any of those a master runs only its own
+ * think, so a pusher slave (a turret) never thinks: SV_Physics_Pusher returns for an
+ * FL_TEAMSLAVE. func_explosive and turret_driver are listed for the movetype alone; the
+ * game frees both in deathmatch.
+ */
+const PUSHER_CLASSES = new Set([
+  "func_plat",
+  "func_rotating",
+  "func_button",
+  "func_door",
+  "func_door_rotating",
+  "func_water",
+  "func_train",
+  "func_door_secret",
+  "func_wall",
+  "func_object",
+  "func_explosive",
+  "misc_viper",
+  "misc_strogg_ship",
+  "target_character",
+  "turret_breach",
+  "turret_base",
+  "turret_driver",
+]);
+/** Classnames ED_CallSpawn hands to SpawnItem (itemlist, and SP_item_health*), whose think is droptofloor in the second frame. */
+const ITEM_CLASSES = new Set([
+  "item_armor_body",
+  "item_armor_combat",
+  "item_armor_jacket",
+  "item_armor_shard",
+  "item_power_screen",
+  "item_power_shield",
+  "weapon_blaster",
+  "weapon_shotgun",
+  "weapon_supershotgun",
+  "weapon_machinegun",
+  "weapon_chaingun",
+  "ammo_grenades",
+  "weapon_grenadelauncher",
+  "weapon_rocketlauncher",
+  "weapon_hyperblaster",
+  "weapon_railgun",
+  "weapon_bfg",
+  "ammo_shells",
+  "ammo_bullets",
+  "ammo_cells",
+  "ammo_rockets",
+  "ammo_slugs",
+  "item_quad",
+  "item_invulnerability",
+  "item_silencer",
+  "item_breather",
+  "item_enviro",
+  "item_ancient_head",
+  "item_adrenaline",
+  "item_bandolier",
+  "item_pack",
+  "key_data_cd",
+  "key_power_cube",
+  "key_pyramid",
+  "key_data_spinner",
+  "key_pass",
+  "key_blue_key",
+  "key_red_key",
+  "key_commander_head",
+  "key_airstrike_target",
+  "item_health",
+  "item_health_small",
+  "item_health_large",
+  "item_health_mega",
+]);
 /** Frames a turret team is run for at most (1000 s); one that never settles is drawn as it is then. */
 const MAX_SETTLE_FRAMES = 10000;
 /** A turn per frame below this (degrees) counts as settled; a double never quite reaches zero. */
 const SETTLED = 1e-9;
 
+/**
+ * Whether an entity's spawn function frees it in deathmatch: always for the classes in
+ * FREED_IN_DEATHMATCH, and for some when a key it needs is missing (an empty value is
+ * still set). Items dmflags would remove stay: dmflags 0 is assumed.
+ */
+function freedAtSpawn(e: BspEntity): boolean {
+  const classname = e.classname ?? "";
+  if (FREED_IN_DEATHMATCH.has(classname)) return true;
+  switch (classname) {
+    case "path_corner":
+      return e.targetname === undefined;
+    case "misc_viper":
+    case "misc_strogg_ship":
+    case "misc_teleporter":
+      return e.target === undefined;
+    case "func_clock":
+      return e.target === undefined || ((atoi(e.spawnflags ?? "0") & 2) !== 0 && atoi(e.count ?? "0") === 0);
+    case "target_changelevel":
+      return e.map === undefined;
+    case "trigger_gravity":
+      return e.gravity === undefined;
+  }
+  return false;
+}
+
 /** Whether an entity is still in the game after spawning in deathmatch. */
 function inGame(e: BspEntity): boolean {
-  return !(atoi(e.spawnflags ?? "0") & SPAWNFLAG_NOT_DEATHMATCH) && !FREED_IN_DEATHMATCH.has(e.classname ?? "");
+  return !(atoi(e.spawnflags ?? "0") & SPAWNFLAG_NOT_DEATHMATCH) && !freedAtSpawn(e);
 }
 
 /**
@@ -256,16 +395,28 @@ function breachThink(b: Breach): [number, number] {
 /**
  * Turret breaches turned to rest, as the game does over the first seconds: each frame
  * SV_Physics_Pusher turns every member of a team by its avelocity, then runs the
- * breaches' thinks in team order. A breach's think sets its own pitch velocity and the
+ * members' thinks in team order. A breach's think sets its own pitch velocity and the
  * yaw velocity of every member of its team (G_FindTeams: the in-game entities with the
  * same "team", compared case sensitively, in entity order), so the last breach in a team
  * sets the yaw every member turns by. A breach with no team turns alone here; the stock
  * game crashes on it (turret_breach_finish_init writes through its NULL teammaster).
  *
+ * Only a master in PUSHER_CLASSES runs its slaves' thinks; under any other the team keeps
+ * its spawn angles. A spawnflags-0 func_object master turns MOVETYPE_TOSS in its think in
+ * the second frame (func_object_release), so its team runs for two frames only (turning in
+ * the second), and the master alone turns once more in the third: SV_Physics_Toss turns it by the avelocity the
+ * breaches last set until it lands (later frames need the trace). An item on the team
+ * cuts the master's chain after itself in its droptofloor, in the second frame: members
+ * after it are neither turned nor thought for from then on. Other frees that cut a chain
+ * the same way are not modeled (a killtarget, turret_breach_finish_init freeing its
+ * target, a target_crosslevel_target firing), nor a use that releases a triggered
+ * func_object. A turned member's own spin (a START_ON func_rotating) is not added. An
+ * inverted pitch range (minpitch > maxpitch) flips move_angles between the limits every
+ * frame, forever; it runs to MAX_SETTLE_FRAMES here, or stops on a frame that turns
+ * nothing.
+ *
  * Returns, per entity index, the breach's angles at rest, or for any other team member
- * the yaw it has turned by. Only teams whose master (first member) is a turret are run:
- * any other master runs the team under its own movetype, which is not modeled, and its
- * members keep their spawn angles. So does a team with a non-finite angle or field.
+ * the yaw it has turned by. A team with a non-finite angle or field is not run.
  */
 function settleTurrets(entities: readonly BspEntity[]): Map<number, { angles?: Vec3; yaw?: number }> {
   const groups: number[][] = [];
@@ -273,34 +424,48 @@ function settleTurrets(entities: readonly BspEntity[]): Map<number, { angles?: V
     if (i > 0 && inGame(e) && e.team === undefined && e.classname === "turret_breach") groups.push([i]);
   });
   for (const members of findTeams(entities).values()) {
-    const master = entities[members[0]!]!.classname;
-    if (master === "turret_breach" || master === "turret_base") groups.push(members);
+    if (PUSHER_CLASSES.has(entities[members[0]!]!.classname ?? "")) groups.push(members);
   }
 
   const result = new Map<number, { angles?: Vec3; yaw?: number }>();
   for (const members of groups) {
-    const breaches = members.filter((i) => entities[i]!.classname === "turret_breach").map((i) => breachState(entities[i]!, i));
+    const breachAt = members.map((i) => (entities[i]!.classname === "turret_breach" ? breachState(entities[i]!, i) : undefined));
+    const breaches = breachAt.filter((b) => b !== undefined);
     if (breaches.length === 0) continue;
     const values = breaches.flatMap((b) => [...b.angles, ...b.pos1, ...b.pos2, b.speed]);
     if (!values.every(Number.isFinite)) continue;
+    const master = entities[members[0]!]!;
+    const released = master.classname === "func_object" && (atoi(master.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK) === 0;
+    const frames = released ? 2 : MAX_SETTLE_FRAMES;
+    // Members [0, chain) are on the master's teamchain.
+    let chain = members.length;
+    const turned = members.map(() => 0);
     let yawVel = 0;
-    let turned = 0;
-    for (let frame = 0; frame < MAX_SETTLE_FRAMES; frame++) {
-      for (const b of breaches) {
-        b.angles[0] += b.pitchVel * FRAMETIME;
-        b.angles[1] += yawVel * FRAMETIME;
+    for (let frame = 0; frame < frames; frame++) {
+      for (let p = 0; p < chain; p++) {
+        const b = breachAt[p];
+        if (b) {
+          b.angles[0] += b.pitchVel * FRAMETIME;
+          b.angles[1] += yawVel * FRAMETIME;
+        }
+        turned[p]! += yawVel * FRAMETIME;
       }
-      turned += yawVel * FRAMETIME;
-      for (const b of breaches) {
-        const [pitch, yaw] = breachThink(b);
-        b.pitchVel = pitch / FRAMETIME;
-        yawVel = yaw / FRAMETIME;
+      for (let p = 0; p < chain; p++) {
+        const b = breachAt[p];
+        if (b) {
+          const [pitch, yaw] = breachThink(b);
+          b.pitchVel = pitch / FRAMETIME;
+          yawVel = yaw / FRAMETIME;
+        } else if (frame === 1 && ITEM_CLASSES.has(entities[members[p]!]!.classname ?? "")) {
+          chain = p + 1;
+        }
       }
       // Only the last breach's yaw is kept, so an earlier one may never reach its own.
-      const step = Math.max(Math.abs(yawVel), ...breaches.map((b) => Math.abs(b.pitchVel))) * FRAMETIME;
-      if (step <= SETTLED) break;
+      const pitches = breachAt.slice(0, chain).map((b) => Math.abs(b?.pitchVel ?? 0));
+      if (Math.max(Math.abs(yawVel), ...pitches) * FRAMETIME <= SETTLED) break;
     }
-    for (const i of members) result.set(i, { yaw: turned });
+    if (released) turned[0]! += yawVel * FRAMETIME;
+    members.forEach((i, p) => result.set(i, { yaw: turned[p]! }));
     for (const b of breaches) result.set(b.index, { angles: b.angles });
   }
   return result;
