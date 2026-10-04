@@ -131,6 +131,50 @@ describe("brush model instances", () => {
     }
   });
 
+  describe("after the settle frames' uses", () => {
+    const drawn = (src: string) =>
+      brushModelInstances(bsp, parseEntities(`{ "classname" "worldspawn" }` + src)).instances.map((b) => `${b.classname} ${b.origin[0]}`);
+
+    it("leaves out brush entities a killtarget freed", () => {
+      expect(
+        drawn(`{ "classname" "trigger_always" "killtarget" "K" }
+          { "classname" "func_wall" "model" "*1" "targetname" "k" "origin" "1 0 0" }
+          { "classname" "func_door" "model" "*1" "targetname" "k" "origin" "2 0 0" }
+          { "classname" "func_door" "model" "*1" "targetname" "other" "origin" "3 0 0" }`),
+      ).toEqual(["func_door 3"]);
+      // Only killtargets due in the second frame, and through a relay too.
+      expect(drawn(`{ "classname" "trigger_always" "killtarget" "k" "delay" "0.3" } { "classname" "func_wall" "model" "*1" "targetname" "k" }`)).toEqual(["func_wall 0"]);
+      expect(
+        drawn(`{ "classname" "trigger_always" "target" "r" } { "classname" "trigger_relay" "targetname" "r" "killtarget" "k" }
+          { "classname" "func_wall" "model" "*1" "targetname" "k" }`),
+      ).toEqual([]);
+    });
+
+    it("shows a hidden func_wall or func_object it uses, and hides a shown func_wall", () => {
+      const used = (classname: string, flags: number, times = 1) =>
+        drawn(`{ "classname" "trigger_always" "target" "w" } `.repeat(times) + `{ "classname" "${classname}" "model" "*1" "targetname" "w" "spawnflags" "${flags}" }`);
+      expect(used("func_wall", 1)).toEqual(["func_wall 0"]); // TRIGGER_SPAWN: shown
+      expect(used("func_wall", 2)).toEqual(["func_wall 0"]); // TOGGLE alone implies TRIGGER_SPAWN
+      expect(used("func_wall", 6)).toEqual([]); // START_ON: hidden
+      expect(used("func_wall", 4)).toEqual([]); // START_ON forces TOGGLE
+      expect(used("func_wall", 0)).toEqual(["func_wall 0"]); // a plain wall has no use
+      expect(used("func_wall", 1792)).toEqual(["func_wall 0"]); // skill bits cleared: plain
+      expect(used("func_object", 1)).toEqual(["func_object 0"]);
+      expect(used("func_object", 0)).toEqual(["func_object 0"]); // no use; shown already
+      // A second use: TOGGLE hides it again; without, the first cleared the use.
+      expect(used("func_wall", 3, 2)).toEqual([]);
+      expect(used("func_wall", 1, 2)).toEqual(["func_wall 0"]);
+      expect(used("func_wall", 4, 2)).toEqual(["func_wall 0"]);
+      expect(used("func_object", 1, 2)).toEqual(["func_object 0"]);
+      // Through a door sent up, and not a wall the killtarget freed first.
+      expect(
+        drawn(`{ "classname" "trigger_always" "target" "d" } { "classname" "func_door" "targetname" "d" "target" "w" }
+          { "classname" "func_wall" "model" "*1" "targetname" "w" "spawnflags" "1" }`),
+      ).toEqual(["func_wall 0"]);
+      expect(drawn(`{ "classname" "trigger_always" "target" "w" "killtarget" "w" } { "classname" "func_wall" "model" "*1" "targetname" "w" "spawnflags" "1" }`)).toEqual([]);
+    });
+  });
+
   describe("spawn moves", () => {
     // Fixture model 1 spans -384 128 0 to -320 192 48; setmodel spreads it a unit, so the
     // entity's mins are -385 127 -1 and its size 66 66 50.
@@ -287,7 +331,15 @@ describe("brush model instances", () => {
       });
 
       it("a train freed by a killtarget before its own think does not run train_next", () => {
-        expect(x(`{ "classname" "trigger_always" "killtarget" "t" } { "classname" "func_train" "model" "*1" "target" "a" "targetname" "t" "spawnflags" "1" }`)).toEqual([10]);
+        expect(x(`{ "classname" "trigger_always" "killtarget" "t" } { "classname" "func_train" "model" "*1" "target" "a" "targetname" "t" "spawnflags" "1" }`)).toEqual([]);
+        // Its think would reach the coincident corner b and fire b's pathtarget.
+        const ents = parseEntities(`{ "classname" "worldspawn" } { "classname" "trigger_always" "killtarget" "t" }
+          { "classname" "func_train" "model" "*1" "target" "a" "targetname" "t" "spawnflags" "1" }
+          { "classname" "path_corner" "targetname" "a" "target" "b" "origin" "10 0 0" }
+          { "classname" "path_corner" "targetname" "b" "origin" "10 0 0" "pathtarget" "p" }
+          { "classname" "func_areaportal" "targetname" "p" "style" "3" }`);
+        expect([...openAreaPortals(ents)]).toEqual([]);
+        expect([...openAreaPortals(ents.filter((e) => e.classname !== "trigger_always"))]).toEqual([3]);
       });
 
       it("a START_ON TOGGLE train it stops keeps its first corner only if stopped before its own think", () => {
@@ -320,7 +372,18 @@ describe("brush model instances", () => {
           { "classname" "path_corner" "targetname" "zc" "origin" "30 0 0" "spawnflags" "1" }`).map((b) => b.origin[0] - 385);
       expect(train(`"spawnflags" "2"`, `"wait" "-1"`)).toEqual([30]); // TOGGLE: train_next, then stops
       expect(train(`"speed" "-5"`, "")).toEqual([10]); // Move_Begin does not finish a negative-speed move
-      expect(train(`"targetname" "tr" "spawnflags" "1"`, `"killtarget" "tr" "pathtarget" "none"`)).toEqual([10]); // freed by its corner
+      expect(train(`"targetname" "tr" "spawnflags" "1"`, `"killtarget" "tr" "pathtarget" "none"`)).toEqual([]); // freed by its corner
+      // A train its corner freed stops there: it does not go on to fire a later corner's pathtarget.
+      const freedBy = (killtarget: string) =>
+        openAreaPortals(
+          parseEntities(`{ "classname" "worldspawn" } { "classname" "func_train" "model" "*1" "target" "za" "targetname" "tr" "spawnflags" "1" }
+            { "classname" "path_corner" "targetname" "za" "target" "zb" "origin" "10 0 0" }
+            { "classname" "path_corner" "targetname" "zb" "target" "zc" "origin" "10 0 0" "killtarget" "${killtarget}" "pathtarget" "none" }
+            { "classname" "path_corner" "targetname" "zc" "origin" "10 0 0" "pathtarget" "p" }
+            { "classname" "func_areaportal" "targetname" "p" "style" "3" }`),
+        );
+      expect([...freedBy("tr")]).toEqual([]);
+      expect([...freedBy("none")]).toEqual([3]);
       // Used from a trigger_always's slot, Move_Calc defers Move_Begin: no train_wait.
       expect(train(`"targetname" "tr"`, "", `{ "classname" "trigger_always" "target" "tr" }`)).toEqual([10]);
       // A loop of coincident corners is cut off, not run forever.
