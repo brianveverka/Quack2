@@ -24,7 +24,8 @@ so the sky box is bounded by the sky faces in view), inline brush models where t
 has them after spawn (untargeted plats lowered, START_OPEN doors open, trains at their
 first path_corner or a teleport one after it, also when a trigger_always uses them,
 turrets turned to rest in their pitch/yaw range with their teams under a MOVETYPE_PUSH
-or STOP master), the linear doors the settle frames send moving drawn moving, also in
+or STOP master), the linear doors the settle frames send moving drawn moving (accelerating as
+Think_AccelMove does when accel or decel differs from speed), also in
 teams with other members (`doorMovers`, stepped at the 10 Hz game frame by `BrushMotion` and blended as
 CL_AddPacketEntities does, re-linked each frame they move), culled by area, PVS and
 frustum, free-fly camera at the spawn spot and yaw SelectSpawnPoint gives the first
@@ -32,18 +33,26 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- The mover lacks Think_AccelMove (an accel or decel unlike speed leaves it in place),
-  AngleMove_Calc (func_door_rotating), the plat, train and button endfuncs, door_hit_bottom
-  closing portals, and blocked pushes (needs the box trace). A func_door_rotating in a
-  team the settle frames send moving stays at its rest angles while its linear
-  teammates move; drawing it turning needs angles in `moveInstance` (cull.ts), which
-  moves origins only.
+- The mover lacks AngleMove_Calc (func_door_rotating). A func_door_rotating in a team
+  the settle frames send moving stays at its rest angles while its linear teammates
+  move; drawing it turning needs angles in `moveInstance` (cull.ts) and
+  `PlacedInstances.move`, which move origins only (`instanceBox` and `linkBox` already
+  handle rotated boxes).
+- door_hit_bottom does not close the door's area portals when a door the settle frames
+  sent moving comes back down.
+- The mover lacks the plat, train and button endfuncs (plat_hit_top/bottom, train_wait,
+  button_wait/done); only door endfuncs run.
+- Nothing blocks a push (needs the box trace, milestone 2): no door_blocked, and
+  Think_AccelMove's restart of a blocked move (current_speed 0) never happens.
 - A door team master with a negative "speed" makes Think_CalcMoveSpeed's time -0 when a
   member has no distance (a button, a wall, a door whose lip equals its size): the
   linear doors' speeds go -Infinity and `stepPusher` sends their moving axis to
   -Infinity and the others to NaN. `linkedOrigins` hands those to the renderer's
-  re-link; the drawn origins come out 0 0 0 through `networkCoord`. The C is undefined
-  there too ((int) of NaN or Inf in SV_Push); decide on a guard.
+  re-link; the drawn origins come out 0 0 0 through `networkCoord`. The same team with
+  a door whose "accel" or "decel" is negative gives it -Infinity there, so Think_AccelMove sets
+  a NaN velocity: `stepPusher` reads NaN as at rest and leaves the door where it is, while
+  SV_Push's velocity test reads NaN as moving and (int) of NaN gives INT_MIN on x86. The
+  C is undefined in both ((int) of NaN or Inf in SV_Push); decide on a guard.
 - Only func_areaportal, doors, func_door_secret, trigger_relay, func_train, func_wall and
   func_object uses are modeled in the settle frames (and a train's pathtarget at a
   corner it reaches at once), and a door's or relay's own "delay" always defers its
