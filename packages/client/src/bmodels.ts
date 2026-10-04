@@ -6,8 +6,8 @@
 // entity string alone, and turret breaches (with their teams) turned to where they
 // come to rest in their pitch/yaw range. Those a killtarget frees in the settle frames
 // are left out, and func_wall and func_object entities a use there shows or hides are
-// drawn or left out to match. Also the doors' movers (linear and rotating) as the settle
-// frames leave them (`doorMovers`), for `BrushMotion` to step. DOM-free.
+// drawn or left out to match. Also the movers of doors (linear and rotating) and plats as
+// the settle frames leave them (`brushMovers`), for `BrushMotion` to step. DOM-free.
 
 import {
   FRAMETIME,
@@ -18,6 +18,7 @@ import {
   doorGoUp,
   entityVec3,
   levelTimeAt,
+  platGoDown,
   type Bsp,
   type BspEntity,
   type BrushMover,
@@ -665,8 +666,11 @@ interface Settle {
   slaves: Set<number>;
   /** moveinfo.state of the entities used so far; the rest are at `spawnState`. */
   moveState: Map<number, MoveState>;
-  /** door_go_up (up) and door_go_down calls on doors, in the order the game makes them. */
-  doorMoves: { index: number; up: boolean }[];
+  /**
+   * door_go_up (up) and door_go_down calls on doors, and plat_go_down calls from
+   * Use_Plat, in the order the game makes them.
+   */
+  moves: { index: number; up: boolean }[];
   /** Plats Use_Plat sent down: Move_Calc gave them a think, so later uses return. */
   platsMoving: Set<number>;
   /** Use_Areaportal's per-entity toggle (ent->count). */
@@ -845,6 +849,7 @@ function useOne(s: Settle, index: number): void {
       if (!s.platsMoving.has(index)) {
         s.platsMoving.add(index);
         s.moveState.set(index, "down");
+        s.moves.push({ index, up: false });
       }
       return;
   }
@@ -1019,14 +1024,14 @@ function doorUse(s: Settle, index: number): void {
     if (down) {
       // door_go_down writes no portal until the door reaches the bottom, after the settle frames.
       s.moveState.set(m, "down");
-      s.doorMoves.push({ index: m, up: false });
+      s.moves.push({ index: m, up: false });
       continue;
     }
     const ms = moveState(s, m);
     if (ms === "up" || ms === "top") continue;
     s.moveState.set(m, "up");
     // Move_Calc runs before the door fires its targets.
-    s.doorMoves.push({ index: m, up: true });
+    s.moves.push({ index: m, up: true });
     useTargets(s, userOf(s, m));
     // A door its own killtarget freed has no "target" left to find portals by.
     if (s.freed.has(m)) break;
@@ -1065,7 +1070,7 @@ function settleSpawnFrames(entities: readonly BspEntity[]): {
   trains: Map<number, Train>;
   freed: Set<number>;
   shown: Map<number, boolean>;
-  doorMoves: readonly { index: number; up: boolean }[];
+  moves: readonly { index: number; up: boolean }[];
   /** `areaportalsOf` as the settle frames leave the map: nothing is freed after them. */
   areaportalsOf: (index: number) => number[];
 } {
@@ -1092,7 +1097,7 @@ function settleSpawnFrames(entities: readonly BspEntity[]): {
     teams,
     slaves,
     moveState: new Map(),
-    doorMoves: [],
+    moves: [],
     platsMoving: new Set(),
     portalCount: new Map(),
     portals: new Map(),
@@ -1128,7 +1133,7 @@ function settleSpawnFrames(entities: readonly BspEntity[]): {
     trains: s.trains,
     freed: s.freed,
     shown: s.shown,
-    doorMoves: s.doorMoves,
+    moves: s.moves,
     areaportalsOf: (index) => areaportalsOf(s, index),
   };
 }
@@ -1138,11 +1143,14 @@ export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
   return settleSpawnFrames(entities).portals;
 }
 
-/** A door, the entity it is, and the area portals its door_hit_bottom closes. */
-export interface MovingDoor {
+/** A door or plat, the entity it is, and the area portals its door_hit_bottom closes. */
+export interface MovingBrush {
   readonly entity: number;
   readonly mover: BrushMover;
-  /** The portals door_use_areaportals finds for the door's "target" (`areaportalsOf`), in the order it sets them. */
+  /**
+   * The portals door_use_areaportals finds for a door's "target" (`areaportalsOf`), in
+   * the order it sets them; none for a plat.
+   */
   readonly portals: readonly number[];
 }
 
@@ -1192,10 +1200,46 @@ function rotatingDoor(ent: BspEntity, origin: Vec3): BrushMoverInit {
 }
 
 /**
+ * SP_func_plat's mover: pos1, the top, is its spawn origin, and pos2 lies "height" (an
+ * int) below it, or the plat's height less "lip" (an int, default 8), in float. "speed",
+ * "accel" and "decel" (default 20, 5 and 5, else a tenth of the value given) are per
+ * frame where Think_AccelMove takes them (Move_Begin, when all three are equal, takes
+ * "speed" per second), and "speed" is not doubled. A plat with a
+ * "targetname" starts at the top at STATE_UP, any other at the bottom.
+ * moveinfo.distance is left 0 and "wait" is unused: plat_hit_top always waits 3 s.
+ */
+function platMover(ent: BspEntity, mins: Vec3, maxs: Vec3, origin: Vec3): BrushMoverInit {
+  const pos1 = origin.map(f32) as Vec3;
+  const height = atoi(ent.height ?? "0");
+  const lip = atoi(ent.lip ?? "0") || 8;
+  const drop = height ? f32(height) : f32(f32(f32(maxs[2]) - f32(mins[2])) - lip);
+  const pos2: Vec3 = [pos1[0], pos1[1], f32(pos1[2] - drop)];
+  // ent->speed *= 0.1: the float times a double, stored as a float.
+  const field = (key: string, absent: number) => {
+    const v = f32(atof(ent[key] ?? "0"));
+    return v ? f32(v * 0.1) : absent;
+  };
+  const top = ent.targetname !== undefined;
+  return {
+    origin: top ? pos1 : pos2,
+    startOrigin: pos1,
+    endOrigin: pos2,
+    distance: 0,
+    speed: field("speed", 20),
+    accel: field("accel", 5),
+    decel: field("decel", 5),
+    wait: f32(atof(ent.wait ?? "0")),
+    toggle: false,
+    state: top ? "up" : "bottom",
+  };
+}
+
+/**
  * The doors (func_door, func_water, which SP_func_water renames func_door, and
- * func_door_rotating) as the two settle frames leave them: teams in master entity order,
- * each team's doors in team order (the master first when it is a door); a door with no
- * team is a team of one. SP_func_door and SP_func_water set up each linear door
+ * func_door_rotating) and the plats that are no team's slave as the two settle frames
+ * leave them:
+ * teams in master entity order, each team's doors in team order (the master first when
+ * it is a door); a door or plat with no team is a team of one. SP_func_door and SP_func_water set up each linear door
  * (`doorPositions`; a door's "speed", default 100, is doubled in deathmatch, and its
  * "accel" and "decel" default to that, "wait" 0 becomes 3; func_water takes "speed",
  * default 25, for all three, and "wait" 0 becomes -1, which makes it DOOR_TOGGLE), and
@@ -1203,28 +1247,40 @@ function rotatingDoor(ent: BspEntity, origin: Vec3): BrushMoverInit {
  * func_door or func_door_rotating master's think (Think_CalcMoveSpeed, also at the end
  * of Think_SpawnDoorTrigger) matches its team's speeds; a func_water has no think. In
  * the second the settle frames' uses send doors up or down (`doorUse`), from a
- * DelayedUse's slot, so each starts moving a frame later.
+ * DelayedUse's slot, so each starts moving a frame later; a use sends a plat down
+ * (Use_Plat, `platMover`) the same way.
  *
  * Think_CalcMoveSpeed reads every member of the chain: a func_door_rotating's distance
  * is in degrees, and every other class (a func_button, a func_wall) leaves
  * moveinfo.distance 0, which makes the doors' speeds infinite, so a linear door moves
  * all the way in one frame (Move_Final) and a rotating one turns all the way in one
- * (AngleMove_Final). A team keeps only its doors: the other members stay where
- * `brushModelInstances` puts them. A func_door_secret, which SP_func_door_secret also
+ * (AngleMove_Final). A team keeps only its doors and a plat master: the other members,
+ * slave plats included, stay where `brushModelInstances` puts them. A func_door_secret, which SP_func_door_secret also
  * renames, is not modeled moving. A team with a door that has no inline model is left
  * out. A team's chain ends at the first member a killtarget freed (G_FreeEdict zeroes
  * its teamchain), and a team whose master was freed never moves again
  * (SV_Physics_Pusher returns for the slaves).
  */
-export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor[][] {
-  const { freed, doorMoves, areaportalsOf } = settleSpawnFrames(entities);
+export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBrush[][] {
+  const { freed, moves, areaportalsOf } = settleSpawnFrames(entities);
   const turrets = settleTurrets(entities);
-  const doors = new Map<number, MovingDoor>();
+  const groups = [...findTeams(entities).values()];
+  const teamed = new Set(groups.flat());
+  // A team's master, a team of one included, is not a FL_TEAMSLAVE: Use_Plat moves it.
+  const slaves = new Set(groups.flatMap((g) => g.slice(1)));
+  const doors = new Map<number, MovingBrush>();
   entities.forEach((ent, i) => {
-    if (i === 0 || !inGame(ent) || !movingDoor(ent)) return;
+    if (i === 0 || !inGame(ent)) return;
+    const plat = ent.classname === "func_plat" && !slaves.has(i);
+    if (!plat && !movingDoor(ent)) return;
     const model = inlineModel(bsp, ent.model);
     if (model === undefined) return;
     const origin = entityVec3(ent, "origin") ?? [0, 0, 0];
+    if (plat) {
+      const { mins, maxs } = modelBounds(bsp, model);
+      doors.set(i, { entity: i, mover: brushMover(platMover(ent, mins, maxs, origin)), portals: [] });
+      return;
+    }
     // A door in a turret's team starts turned by the yaw its breach comes to rest at, as
     // `brushModelInstances` draws it (the game reaches it after the settle frames when the
     // breach is slow). Move_Calc leaves s.angles alone; AngleMove turns towards absolute
@@ -1265,11 +1321,9 @@ export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor
     doors.set(i, { entity: i, mover, portals: areaportalsOf(i) });
   });
 
-  const groups = [...findTeams(entities).values()];
-  const teamed = new Set(groups.flat());
   for (const i of doors.keys()) if (!teamed.has(i)) groups.push([i]);
   groups.sort((a, b) => a[0]! - b[0]!);
-  const teams: MovingDoor[][] = [];
+  const teams: MovingBrush[][] = [];
   const moving = new Map<number, BrushMover>();
   for (const members of groups) {
     if (members.some((i) => movingDoor(entities[i]!) && !doors.has(i))) continue;
@@ -1284,10 +1338,12 @@ export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor
     for (const d of live) moving.set(d.entity, d.mover);
   }
   const settled = levelTimeAt(2);
-  for (const { index, up } of doorMoves) {
+  for (const { index, up } of moves) {
     const m = moving.get(index);
     if (!m) continue;
-    if (up) doorGoUp(m, settled, false);
+    // Only a plat that is no team's slave moves here, and only Use_Plat moves it.
+    if (entities[index]!.classname === "func_plat") platGoDown(m, settled, false);
+    else if (up) doorGoUp(m, settled, false);
     else doorGoDown(m, settled, false);
   }
   return teams;

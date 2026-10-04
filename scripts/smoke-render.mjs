@@ -67,6 +67,14 @@ SYNTHETIC["/data/door.bsp"] = withEntityString(fixtureBsp, `${doorEntities}{\n"c
 for (const z of [10, 42]) {
   SYNTHETIC[`/data/door-at-${z}.bsp`] = withEntityString(fixtureBsp, fixtureEntities.replace('"model" "*1"', `"model" "*1"\n"origin" "0 0 ${z}"`));
 }
+// Plat: the func_wall made a func_plat (50 - lip 8 = 42 down, per-frame speed 20,
+// accel 5, decel 5) that a trigger_always sends down in the second settle frame, and
+// the func_wall placed where it is drawn at 250 ms and at 450 ms.
+const platEntities = fixtureEntities.replace('"classname" "func_wall"', '"classname" "func_plat"\n"targetname" "smokeplat"');
+SYNTHETIC["/data/plat.bsp"] = withEntityString(fixtureBsp, `${platEntities}{\n"classname" "trigger_always"\n"target" "smokeplat"\n}\n`);
+for (const z of [-10, -31.5]) {
+  SYNTHETIC[`/data/plat-at-${z}.bsp`] = withEntityString(fixtureBsp, fixtureEntities.replace('"model" "*1"', `"model" "*1"\n"origin" "0 0 ${z}"`));
+}
 // Rotating door: the func_wall made a func_door_rotating (90 degrees of yaw at 100 a
 // second about the world origin) that a trigger_always sends round in the second settle
 // frame. The func_wall placed at the angles it is drawn with at 150 ms and at 250 ms.
@@ -469,6 +477,34 @@ try {
   check(doorFrames.every((d) => !d.moving.error && !d.placed.error && d.moving.stats.brushModels === 1), "the moving door is drawn at every time");
   check(doorRestTop > 0.02, "the door's frames at rest and at the top differ");
   check(doorFrames.every((d) => d.diff === 0), "the moving door draws as a func_wall placed where brushOrigins puts it: at rest, z 10 at 150 ms, z 42 at 400 ms");
+
+  // Plat motion: the accelerative move down (Think_AccelMove from frame 3: -5 in frame
+  // 4, -15 in 5, -26.625 in 6, -36.375 in 7, stopping 1/8 short at -41.875), blended as
+  // the door's is; each frame draws as the func_wall placed there.
+  await page.goto(`${ORIGIN}/?map=data/plat.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const platMotion = await page.evaluate(() => ({
+    brushModels: window.quack.brushModels,
+    origins: [0, 250, 450, 1000].map((ms) => window.quack.brushOrigins(ms)),
+  }));
+  console.log(`  plat: ${JSON.stringify(platMotion)}`);
+  check(
+    JSON.stringify(platMotion.brushModels) === JSON.stringify(["func_plat *1 at 0 0 0"]) &&
+      JSON.stringify(platMotion.origins) === JSON.stringify([[[0, 0, 0]], [[0, 0, -10]], [[0, 0, -31.5]], [[0, 0, -41.875]]]),
+    "a plat the settle frames send down moves in brushOrigins: at the top, z -10 at 250 ms, -31.5 at 450 ms, -41.875 by 1000 ms",
+  );
+  const platFrames = [];
+  for (const [ms, ref] of [[0, "maps/test_arena.bsp"], [250, "data/plat-at--10.bsp"], [450, "data/plat-at--31.5.bsp"]]) {
+    const [moving, placed] = [await doorFrame("data/plat.bsp", ms), await doorFrame(ref, ms)];
+    platFrames.push({ ms, moving, placed, diff: changed(moving.frame, placed.frame) });
+  }
+  const platRestLow = changed(platFrames[0].moving.frame, platFrames[2].moving.frame);
+  console.log(
+    `  plat drawn: ${platFrames.map((d) => `${d.ms} ms ${d.diff.toFixed(4)} off its placed wall (brush models ${d.moving.stats.brushModels})`).join(", ")}; top to 450 ms changes ${platRestLow.toFixed(3)}`,
+  );
+  check(platFrames.every((d) => !d.moving.error && !d.placed.error && d.moving.stats.brushModels === 1), "the moving plat is drawn at every time");
+  check(platRestLow > 0.02, "the plat's frames at the top and lowered differ");
+  check(platFrames.every((d) => d.diff === 0), "the moving plat draws as a func_wall placed where brushOrigins puts it: at the top, z -10 at 250 ms, z -31.5 at 450 ms");
 
   // Rotating door: brushAngles steps it as AngleMove_Calc does (frame 4 at 10 degrees,
   // frame 5 at 20, sent in 360/256 degree steps: 9.84375 and 19.6875) and blends them;

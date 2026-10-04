@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { levelTimeAt, parseBsp, parseEntities, stepPusher } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
-import { brushModelInstances, doorMovers, openAreaPortals } from "../src/bmodels.js";
+import { brushModelInstances, brushMovers, openAreaPortals } from "../src/bmodels.js";
 import { BrushMotion, lerpAngle, networkAngle, networkCoord, type MoverPose } from "../src/movers.js";
 
 const bsp = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
@@ -12,7 +12,7 @@ const bsp = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../..
 // one along +X 66 - 8 = 58.
 const motion = (src: string) => {
   const ents = parseEntities(src);
-  return new BrushMotion(() => doorMovers(bsp, ents));
+  return new BrushMotion(() => brushMovers(bsp, ents));
 };
 const origins = (poses: Map<number, MoverPose>) => Object.fromEntries([...poses].map(([e, p]) => [e, p.origin]));
 const angles = (poses: Map<number, MoverPose>) => Object.fromEntries([...poses].map(([e, p]) => [e, p.angles]));
@@ -30,7 +30,7 @@ describe("door movers", () => {
   `;
 
   it("sets up a team as SP_func_door and Think_CalcMoveSpeed do, and sends it up", () => {
-    const teams = doorMovers(bsp, parseEntities(TEAM));
+    const teams = brushMovers(bsp, parseEntities(TEAM));
     expect(teams.map((t) => t.map((d) => d.entity))).toEqual([[2, 3]]);
     const [master, slave] = teams[0]!.map((d) => d.mover);
     expect([master!.distance, master!.speed, master!.wait, master!.toggle]).toEqual([42, 200, 3, false]);
@@ -75,7 +75,7 @@ describe("door movers", () => {
     const linked = (ms: number) => origins(m.linkedPoses(ms));
     // Stepped by hand to the frame each time draws towards: frame 2 + ceil(ms / 100).
     const frames = (n: number) => {
-      const team = doorMovers(bsp, parseEntities(TEAM))[0]!;
+      const team = brushMovers(bsp, parseEntities(TEAM))[0]!;
       for (let k = 3; k <= n; k++) stepPusher(team.map((d) => d.mover), levelTimeAt(k));
       return Object.fromEntries(team.map((d) => [d.entity, [...d.mover.origin]]));
     };
@@ -133,7 +133,7 @@ describe("door movers", () => {
     const m = motion(src);
     expect(at(m, 0)).toEqual({ 2: [0, 0, 0] });
     expect(at(m, 5000)).toEqual({ 2: [0, 0, 0] });
-    const [door] = doorMovers(bsp, parseEntities(src))[0]!;
+    const [door] = brushMovers(bsp, parseEntities(src))[0]!;
     expect(door!.mover.state).toBe("down");
     // Frame 3: Move_Begin finds no distance left and door_hit_bottom runs.
     stepPusher([door!.mover], levelTimeAt(3));
@@ -152,7 +152,7 @@ describe("door movers", () => {
   });
 
   it("takes func_water's speed (default 25, not doubled) and no team speed matching", () => {
-    const teams = doorMovers(
+    const teams = brushMovers(
       bsp,
       parseEntities(`
         { "classname" "worldspawn" }
@@ -166,7 +166,7 @@ describe("door movers", () => {
   });
 
   it("matches speeds for a func_door master, keeping accel's ratio when it differs from speed", () => {
-    const teams = doorMovers(
+    const teams = brushMovers(
       bsp,
       parseEntities(`
         { "classname" "worldspawn" }
@@ -180,7 +180,7 @@ describe("door movers", () => {
   });
 
   it("keeps a team's doors, matching speeds over every member as Think_CalcMoveSpeed does", () => {
-    const teams = doorMovers(
+    const teams = brushMovers(
       bsp,
       parseEntities(`
         { "classname" "worldspawn" }
@@ -209,7 +209,7 @@ describe("door movers", () => {
   });
 
   it("takes a func_door_rotating master's default distance (90) and speed (100)", () => {
-    const teams = doorMovers(
+    const teams = brushMovers(
       bsp,
       parseEntities(`
         { "classname" "worldspawn" }
@@ -232,7 +232,7 @@ describe("door movers", () => {
       { "classname" "func_button" "model" "*1" "team" "t" }
       { "classname" "func_door" "model" "*1" "angle" "0" "accel" "50" "team" "t" }
     `;
-    const teams = doorMovers(bsp, parseEntities(src));
+    const teams = brushMovers(bsp, parseEntities(src));
     expect(teams.map((t) => t.map((d) => d.entity))).toEqual([[2, 4]]);
     const movers = teams[0]!.map((d) => d.mover);
     // The button's moveinfo.distance 0 makes the team's time 0: 42 / 0 is infinite, and
@@ -256,7 +256,7 @@ describe("door movers", () => {
   });
 
   it("leaves out a team with a linear door that has no model, or a freed master", () => {
-    const teams = doorMovers(
+    const teams = brushMovers(
       bsp,
       parseEntities(`
         { "classname" "worldspawn" }
@@ -274,7 +274,7 @@ describe("door movers", () => {
   });
 
   it("ends a team's chain at a member a killtarget freed", () => {
-    const teams = doorMovers(
+    const teams = brushMovers(
       bsp,
       parseEntities(`
         { "classname" "worldspawn" }
@@ -296,7 +296,7 @@ describe("door movers", () => {
 
 describe("rotating door movers", () => {
   const rotating = (keys: string) =>
-    doorMovers(bsp, parseEntities(`{ "classname" "worldspawn" } { "classname" "func_door_rotating" "model" "*1" ${keys} }`))[0]![0]!.mover;
+    brushMovers(bsp, parseEntities(`{ "classname" "worldspawn" } { "classname" "func_door_rotating" "model" "*1" ${keys} }`))[0]![0]!.mover;
 
   it("sets up angles as SP_func_door_rotating does: axis by spawnflags, REVERSE negating, START_OPEN swapping", () => {
     const pose = (m: ReturnType<typeof rotating>) => [[...m.angles], [...m.startAngles], [...m.endAngles]];
@@ -323,7 +323,7 @@ describe("rotating door movers", () => {
       `);
       const placed = brushModelInstances(bsp, ents).instances.find((b) => b.entity === 1)!;
       expect(placed.angles).toEqual([0, 20, 0]);
-      const m = new BrushMotion(() => doorMovers(bsp, ents));
+      const m = new BrushMotion(() => brushMovers(bsp, ents));
       expect(m.linkedPoses(0).get(1)!.angles).toEqual([0, 20, 0]);
       expect(m.posesAt(0).get(1)!.angles).toEqual([0, 19.6875, 0]);
     }
@@ -336,7 +336,7 @@ describe("rotating door movers", () => {
   `;
 
   it("turns 90 degrees at 100 a second as AngleMove_Calc does, waits 3 seconds and turns back", () => {
-    const team = doorMovers(bsp, parseEntities(DOOR))[0]!.map((d) => d.mover);
+    const team = brushMovers(bsp, parseEntities(DOOR))[0]!.map((d) => d.mover);
     const door = team[0]!;
     // Sent up from the DelayedUse's slot in the second frame: AngleMove_Begin is due in the third.
     expect([door.state, door.think, door.nextthink]).toEqual(["up", "angleMoveBegin", Math.fround(Math.fround(0.2) + 0.1)]);
@@ -392,7 +392,7 @@ describe("rotating door movers", () => {
 describe("area portals of doors coming back down", () => {
   const portalsMotion = (src: string) => {
     const ents = parseEntities(src);
-    return new BrushMotion(() => doorMovers(bsp, ents), openAreaPortals(ents));
+    return new BrushMotion(() => brushMovers(bsp, ents), openAreaPortals(ents));
   };
   const open = (m: BrushMotion, ms: number) => [...m.openPortalsAt(ms)].sort((a, b) => a - b);
   // The team of "door movers" above, home in game frame 39, which client times 3601 to
@@ -416,7 +416,7 @@ describe("area portals of doors coming back down", () => {
   const FREED = `${PORTALS}{ "classname" "trigger_always" "killtarget" "p" }`;
 
   it("gives each door the portals door_use_areaportals finds, in G_Find order", () => {
-    const portals = (src: string) => doorMovers(bsp, parseEntities(src)).map((t) => t.map((d) => [d.entity, d.portals]));
+    const portals = (src: string) => brushMovers(bsp, parseEntities(src)).map((t) => t.map((d) => [d.entity, d.portals]));
     expect(portals(PORTALS)).toEqual([
       [
         [2, [1, 3]],
@@ -481,5 +481,80 @@ describe("network coordinates", () => {
   it("truncates to 1/8 unit and wraps at 16 bits, as MSG_WriteCoord and MSG_ReadCoord do", () => {
     // gcc mirror: (short)(int)(f*8) * (1.0/8).
     expect([2.762, -2.3, 4096, -4096.1, 0.12, -0.12].map(networkCoord)).toEqual([2.75, -2.25, -4096, -4096, 0, 0]);
+  });
+});
+
+describe("plat movers", () => {
+  // Fixture model 1 spreads to 50 units high: a plat drops 50 - lip 8 = 42.
+  const PLAT = `
+    { "classname" "worldspawn" }
+    { "classname" "trigger_always" "target" "p" }
+    { "classname" "func_plat" "model" "*1" "targetname" "p" }
+  `;
+
+  it("sets up a plat as SP_func_plat does: a targeted one at the top, any other at the bottom", () => {
+    const [top, low, keyed] = brushMovers(
+      bsp,
+      parseEntities(`
+        { "classname" "worldspawn" }
+        { "classname" "func_plat" "model" "*1" "targetname" "never" "origin" "0 0 8" }
+        { "classname" "func_plat" "model" "*1" }
+        { "classname" "func_plat" "model" "*1" "speed" "33" "accel" "10" "decel" "30" "height" "20" "lip" "4" }
+      `),
+    ).map((t) => t[0]!.mover);
+    expect([[...top!.origin], [...top!.startOrigin], [...top!.endOrigin], top!.state]).toEqual([[0, 0, 8], [0, 0, 8], [0, 0, -34], "up"]);
+    expect([top!.speed, top!.accel, top!.decel, top!.distance]).toEqual([20, 5, 5, 0]);
+    expect([[...low!.origin], low!.state]).toEqual([[0, 0, -42], "bottom"]);
+    // "height" wins over "lip"; the speeds are a tenth of the keys, rounded to float.
+    expect([keyed!.endOrigin[2], keyed!.speed, keyed!.accel, keyed!.decel]).toEqual([-20, Math.fround(3.3), 1, 3]);
+  });
+
+  it("drops a plat a use sends down as Think_AccelMove does, stopping 1/8 short, also when used twice", () => {
+    // Expected values: g_func.c's plat_CalcAcceleratedMove and plat_Accelerate compiled
+    // with gcc (SSE float), stepped through SV_Push's 1/8 unit snap, measured 2026-10-04.
+    for (const src of [PLAT, `${PLAT}{ "classname" "trigger_always" "target" "p" }`]) {
+      const teams = brushMovers(bsp, parseEntities(src));
+      expect(teams.map((t) => t.map((d) => [d.entity, d.portals]))).toEqual([[[2, []]]]);
+      const p = teams[0]![0]!.mover;
+      expect([p.state, p.endfunc, p.think, p.nextthink]).toEqual(["down", "platHitBottom", "thinkAccelMove", Math.fround(Math.fround(0.2) + 0.1)]);
+      const m = motion(src);
+      const z = (ms: number) => m.linkedPoses(ms).get(2)!.origin[2];
+      expect([0, 100, 200, 300, 400, 500, 600, 700, 60000].map(z)).toEqual([0, 0, -5, -15, -26.625, -36.375, -41.125, -41.875, -41.875]);
+    }
+    // A second Use_Plat in the frame returns (its think is set); a second plat_go_down
+    // there would give the same frames, so this checks only that nothing changes.
+    // Drawn at the top where the map loads, as brushModelInstances places it.
+    expect(brushModelInstances(bsp, parseEntities(PLAT)).instances.map((b) => b.origin)).toEqual([[0, 0, 0]]);
+  });
+
+  it("moves at a tenth of the speed key per second when speed, accel and decel are equal (Move_Begin)", () => {
+    // 50 / 10 = 5, which Move_Begin takes per second: 0.5 a frame from frame 4.
+    const src = PLAT.replace('"targetname" "p"', '"targetname" "p" "speed" "50" "accel" "50" "decel" "50"');
+    const m = motion(src);
+    expect([200, 300, 1000].map((ms) => m.linkedPoses(ms).get(2)!.origin[2])).toEqual([-0.5, -1, -4.5]);
+    expect(m.posesAt(1050).get(2)!.origin[2]).toBe(-4.75);
+  });
+
+  it("moves a plat in a team of its own, as its own master", () => {
+    const m = motion(PLAT.replace('"targetname" "p"', '"targetname" "p" "team" "solo"'));
+    expect(m.linkedPoses(700).get(2)!.origin[2]).toBe(-41.875);
+  });
+
+  it("moves a plat that masters a team, alone: its slave wall stays", () => {
+    const m = motion(PLAT.replace('"targetname" "p"', '"targetname" "p" "team" "t"') + `{ "classname" "func_wall" "model" "*1" "team" "t" }`);
+    expect([...m.linkedPoses(700)].map(([e, p]) => [e, p.origin[2]])).toEqual([[2, -41.875]]);
+  });
+
+  it("leaves out a plat that is a team slave, and one a killtarget freed", () => {
+    const teamed = brushMovers(
+      bsp,
+      parseEntities(`
+        { "classname" "worldspawn" }
+        { "classname" "func_door" "model" "*1" "team" "t" }
+        { "classname" "func_plat" "model" "*1" "team" "t" }
+      `),
+    );
+    expect(teamed.map((t) => t.map((d) => d.entity))).toEqual([[1]]);
+    expect(brushMovers(bsp, parseEntities(`${PLAT}{ "classname" "trigger_always" "killtarget" "p" }`))).toEqual([]);
   });
 });

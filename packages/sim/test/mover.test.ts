@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { describe, expect, it } from "vitest";
-import { calcMoveSpeed, doorGoDown, doorGoUp, levelTimeAt, brushMover, stepPusher, type BrushMover, type BrushMoverInit } from "../src/mover.js";
+import {
+  calcMoveSpeed,
+  doorGoDown,
+  doorGoUp,
+  levelTimeAt,
+  brushMover,
+  platGoDown,
+  platGoUp,
+  stepPusher,
+  type BrushMover,
+  type BrushMoverInit,
+} from "../src/mover.js";
 
 // A deathmatch func_door: speed 100 doubled, accel and decel default to it, wait 3.
 const door = (over: Partial<BrushMoverInit> = {}): BrushMover =>
@@ -268,6 +279,51 @@ describe("rotating door mover", () => {
   });
 });
 
+// A targeted func_plat at the top: pos1 z 100, pos2 z 0, per-frame speed 20, accel 5,
+// decel 5 (its defaults), at STATE_UP as SP_func_plat leaves it.
+const plat = (over: Partial<BrushMoverInit> = {}): BrushMover =>
+  brushMover({
+    origin: [0, 0, 100],
+    startOrigin: [0, 0, 100],
+    endOrigin: [0, 0, 0],
+    distance: 0,
+    speed: 20,
+    accel: 5,
+    decel: 5,
+    wait: 0,
+    toggle: false,
+    state: "up",
+    ...over,
+  });
+
+describe("plat mover", () => {
+  it("goes down to pos2 and stays there (plat_go_down, plat_hit_bottom)", () => {
+    // Sent down by a use from another entity's slot in frame 2; the accelerative move
+    // starts in frame 3 either way, mirroring the plat-like move up above.
+    const p = plat();
+    platGoDown(p, levelTimeAt(2), false);
+    expect([p.state, p.endfunc, p.think, p.nextthink]).toEqual(["down", "platHitBottom", "thinkAccelMove", Math.fround(Math.fround(0.2) + 0.1)]);
+    const r = run([p], 2, 30);
+    expect([3, 4, 5, 6, 7, 8, 9, 10, 11].map((f) => r[f]!.z[0])).toEqual([100, 95, 85, 70, 50, 30, 15, 5, 0]);
+    expect([10, 11, 30].map((f) => r[f]!.state[0])).toEqual(["down", "bottom", "bottom"]);
+    expect([p.nextthink, [...p.velocity]]).toEqual([0, [0, 0, 0]]);
+  });
+
+  it("goes up to pos1 and back down 3 seconds later whatever its wait (plat_go_up, plat_hit_top)", () => {
+    const p = plat({ origin: [0, 0, 0], state: "bottom", wait: 10 });
+    platGoUp(p, levelTimeAt(1), true);
+    expect([p.state, p.endfunc]).toEqual(["up", "platHitTop"]);
+    const r = run([p], 1, 60);
+    expect([2, 3, 4, 5, 6, 7, 8, 9, 10].map((f) => r[f]!.z[0])).toEqual([0, 5, 15, 30, 50, 70, 85, 95, 100]);
+    expect([9, 10].map((f) => r[f]!.state[0])).toEqual(["up", "top"]);
+    // At the top in frame 10 (level time 1): plat_go_down is due at 4, in frame 40, from
+    // the plat's own think, and the move down starts the frame after.
+    expect(r[39]!.state[0]).toBe("top");
+    expect([40, 41, 42, 43, 44, 45, 46, 47, 48, 49].map((f) => r[f]!.z[0])).toEqual([100, 100, 95, 85, 70, 50, 30, 15, 5, 0]);
+    expect([40, 48, 49, 60].map((f) => r[f]!.state[0])).toEqual(["down", "down", "bottom", "bottom"]);
+  });
+});
+
 describe("stepPusher's door_hit_bottom report", () => {
   /** The frames, from+1 .. to, in which stepPusher reported each mover, by its index in `team`. */
   const hits = (team: BrushMover[], from: number, to: number) => {
@@ -308,6 +364,13 @@ describe("stepPusher's door_hit_bottom report", () => {
     const toggled = door({ toggle: true });
     doorGoUp(toggled, levelTimeAt(2), false);
     expect(hits([door(), toggled], 2, 80)).toEqual([]);
+  });
+
+  it("reports nothing for a plat reaching the bottom (plat_hit_bottom closes no portal)", () => {
+    const p = plat();
+    platGoDown(p, levelTimeAt(2), false);
+    expect(hits([p], 2, 30)).toEqual([]);
+    expect(p.state).toBe("bottom");
   });
 });
 

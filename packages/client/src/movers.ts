@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Brush entity motion as a client sees it: the movers (`doorMovers`) stepped a game frame
+// Brush entity motion as a client sees it: the movers (`brushMovers`) stepped a game frame
 // at a time by the sim, each frame's origins sent at the network's 1/8 unit
 // (MSG_WriteCoord, MSG_ReadCoord) and angles at its 360/256 degrees (MSG_WriteAngle,
 // MSG_ReadAngle), and drawn blended between the last two frames as CL_AddEntities and
@@ -7,7 +7,7 @@
 // which door_hit_bottom closes. DOM-free.
 
 import { levelTimeAt, stepPusher } from "@quack2/sim";
-import type { MovingDoor } from "./bmodels.js";
+import type { MovingBrush } from "./bmodels.js";
 
 type Vec3 = [number, number, number];
 
@@ -53,7 +53,7 @@ export function lerpAngle(a2: number, a1: number, frac: number): number {
  * from the frame before towards the one at servertime ceil(t / 100) * 100, by
  * lerpfrac = 1 - (servertime - t) * 0.01; cl.time and servertime are integer ms, so t is
  * floored. At t = 0 that is the second settle frame, where the map loads.
- * Assumes every frame arrives on time, as on a local server, and that every door is
+ * Assumes every frame arrives on time, as on a local server, and that every mover is
  * sent every frame. The server sends only what the client's PVS holds, and a door coming
  * back into it arrives as a new entity whose prev origin is its old_origin: for a team
  * slave that is where the master's push already left it, so that frame the game snaps
@@ -67,7 +67,7 @@ export function lerpAngle(a2: number, a1: number, frac: number): number {
  * not blended.
  */
 export class BrushMotion {
-  private teams: readonly (readonly MovingDoor[])[] = [];
+  private teams: readonly (readonly MovingBrush[])[] = [];
   /** The last game frame stepped. */
   private framenum = SETTLE_FRAMES;
   /** Networked poses at framenum - 1 and framenum, by entity index. */
@@ -81,7 +81,7 @@ export class BrushMotion {
    * in time. `openAtSpawn` is the area portals the settle frames left open (`openAreaPortals`).
    */
   constructor(
-    private readonly spawn: () => readonly (readonly MovingDoor[])[],
+    private readonly spawn: () => readonly (readonly MovingBrush[])[],
     private readonly openAtSpawn: ReadonlySet<number> = new Set(),
   ) {
     this.reset();

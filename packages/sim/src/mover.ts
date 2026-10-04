@@ -2,7 +2,7 @@
 // Brush movers stepped at the game's 10 Hz frame, ported from id's game source:
 // Move_Calc and its thinks, the accelerative move (Think_AccelMove and the plat_
 // functions it calls), AngleMove_Calc and its thinks for a func_door_rotating, the
-// func_door state functions and Think_CalcMoveSpeed (game/g_func.c), and the move and
+// func_door and func_plat state functions and Think_CalcMoveSpeed (game/g_func.c), and the move and
 // think order of SV_Physics_Pusher and SV_RunThink (game/g_phys.c). Shared so the
 // server and the client step movers the same way.
 //
@@ -27,6 +27,7 @@ export type MoverThink =
   | "moveFinal"
   | "moveDone"
   | "doorGoDown"
+  | "platGoDown"
   | "thinkAccelMove"
   | "angleMoveBegin"
   | "angleMoveFinal"
@@ -73,8 +74,8 @@ export interface BrushMover {
   moveSpeed: number;
   nextSpeed: number;
   decelDistance: number;
-  /** moveinfo.endfunc: the door function Move_Done calls. */
-  endfunc: "doorHitTop" | "doorHitBottom" | undefined;
+  /** moveinfo.endfunc: the door or plat function Move_Done calls. */
+  endfunc: "doorHitTop" | "doorHitBottom" | "platHitTop" | "platHitBottom" | undefined;
   think: MoverThink | undefined;
   /** 0 when no think is pending. */
   nextthink: number;
@@ -194,6 +195,22 @@ export function doorGoDown(m: BrushMover, levelTime: number, current: boolean): 
   else moveCalc(m, m.startOrigin, "doorHitBottom", levelTime, current);
 }
 
+/**
+ * plat_go_down: to end_origin (pos2, the bottom); `current` as for `doorGoUp`. Use_Plat
+ * calls it only while the plat's think is null, which it is until the first Move_Calc
+ * sets one and stays set after (SV_RunThink clears only nextthink); the caller's to check.
+ */
+export function platGoDown(m: BrushMover, levelTime: number, current: boolean): void {
+  m.state = "down";
+  moveCalc(m, m.endOrigin, "platHitBottom", levelTime, current);
+}
+
+/** plat_go_up: back to start_origin (pos1, the top); `current` as for `doorGoUp`. */
+export function platGoUp(m: BrushMover, levelTime: number, current: boolean): void {
+  m.state = "up";
+  moveCalc(m, m.startOrigin, "platHitTop", levelTime, current);
+}
+
 function moveCalc(m: BrushMover, dest: Vec3f, endfunc: BrushMover["endfunc"], levelTime: number, current: boolean): void {
   m.velocity.fill(0);
   for (let i = 0; i < 3; i++) m.dir[i] = Math.fround(dest[i]! - m.origin[i]!);
@@ -250,8 +267,16 @@ function moveDone(m: BrushMover, levelTime: number): void {
 }
 
 function endfunc(m: BrushMover, levelTime: number): void {
-  if (m.endfunc === "doorHitTop") doorHitTop(m, levelTime);
-  else if (m.endfunc === "doorHitBottom") m.state = "bottom";
+  switch (m.endfunc) {
+    case "doorHitTop":
+      return doorHitTop(m, levelTime);
+    case "doorHitBottom":
+    case "platHitBottom":
+      m.state = "bottom";
+      return;
+    case "platHitTop":
+      return platHitTop(m, levelTime);
+  }
 }
 
 /** AngleMove_Calc: unlike Move_Calc it has no accelerative move. */
@@ -317,6 +342,13 @@ function doorHitTop(m: BrushMover, levelTime: number): void {
     m.think = "doorGoDown";
     m.nextthink = Math.fround(levelTime + m.wait);
   }
+}
+
+/** plat_hit_top: whatever its "wait", a plat goes back down 3 seconds after reaching the top. */
+function platHitTop(m: BrushMover, levelTime: number): void {
+  m.state = "top";
+  m.think = "platGoDown";
+  m.nextthink = Math.fround(levelTime + 3);
 }
 
 /** AccelerationDistance: a float macro, rounded at each operation. */
@@ -468,5 +500,8 @@ function runThink(m: BrushMover, levelTime: number): void {
       // it is a team slave, whose think runs inside its master's SV_Physics_Pusher with
       // the master current too. Either way Move_Begin (AngleMove_Begin) runs now.
       return doorGoDown(m, levelTime, true);
+    case "platGoDown":
+      // From the plat's own think, current as for doorGoDown.
+      return platGoDown(m, levelTime, true);
   }
 }
