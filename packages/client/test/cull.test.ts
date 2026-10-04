@@ -19,6 +19,7 @@ import {
   PlacedInstances,
   pvsUnion,
   type Box,
+  type Pose,
 } from "../src/cull.js";
 import { closedFlood, openFlood, withEastArea } from "./areas-fixture.js";
 import { fovY, modelMatrix, multiply, perspective, transformPoint, viewMatrix } from "../src/math.js";
@@ -117,6 +118,11 @@ describe("moving brush models", () => {
     const { model, box, clusters, areas } = placeInstance(bsp, inst);
     return { model, box, clusters, areas };
   };
+  const pose = (origin: readonly number[], angles: readonly number[] = [0, 0, 0]): Pose => ({
+    origin: origin as Pose["origin"],
+    angles: angles as Pose["angles"],
+  });
+  const poses = (entries: [number, readonly number[]][]) => new Map(entries.map(([e, o]) => [e, pose(o)]));
 
   it("places an instance at its own origin, in every PVS until tested", () => {
     const placed = placeInstance(bsp, wall([0, 0, 0]));
@@ -129,23 +135,23 @@ describe("moving brush models", () => {
 
   it("re-links a moved instance as if it had spawned there, and re-tests its PVS", () => {
     const placed = placeInstance(bsp, wall([0, 0, 0]));
-    moveInstance(bsp, placed, corridor, corridor, start);
+    moveInstance(bsp, placed, pose(corridor), pose(corridor), start);
     const { model, box, clusters, areas } = placed;
     expect({ model, box, clusters, areas }).toEqual(linked(wall(corridor)));
     expect(clusters).toContain(clusterAt(0, 0, 50));
-    moveInstance(bsp, placed, outside, outside, start);
+    moveInstance(bsp, placed, pose(outside), pose(outside), start);
     expect([placed.clusters, placed.inPvs]).toEqual([[], false]);
-    moveInstance(bsp, placed, [0, 0, 0], [0, 0, 0], start);
+    moveInstance(bsp, placed, pose([0, 0, 0]), pose([0, 0, 0]), start);
     expect([placed.clusters, placed.inPvs]).toEqual([[home], true]);
-    moveInstance(bsp, placed, outside, outside, start);
+    moveInstance(bsp, placed, pose(outside), pose(outside), start);
     // No fat PVS (the eye in no cluster) passes it.
-    moveInstance(bsp, placed, corridor, corridor, undefined);
+    moveInstance(bsp, placed, pose(corridor), pose(corridor), undefined);
     expect(placed.inPvs).toBe(true);
   });
 
   it("draws and frustum culls at the drawn origin, sends by clusters and areas at the linked one", () => {
     const placed = placeInstance(bsp, wall([0, 0, 0]));
-    moveInstance(bsp, placed, corridor, [0, 0, 0], start);
+    moveInstance(bsp, placed, pose(corridor), pose([0, 0, 0]), start);
     const at = linked(wall(corridor));
     const there = linked(wall([0, 0, 0]));
     expect([placed.model, placed.box]).toEqual([at.model, at.box]);
@@ -153,7 +159,7 @@ describe("moving brush models", () => {
     expect(placed.origin).toEqual(corridor);
     expect(placed.linkOrigin).toEqual([0, 0, 0]);
     // And the other way round, both moving in one call.
-    moveInstance(bsp, placed, [0, 0, 0], corridor, start);
+    moveInstance(bsp, placed, pose([0, 0, 0]), pose(corridor), start);
     expect([placed.model, placed.box]).toEqual([there.model, there.box]);
     expect([placed.clusters, placed.areas]).toEqual([at.clusters, at.areas]);
     expect(at.clusters).not.toEqual(there.clusters);
@@ -163,12 +169,12 @@ describe("moving brush models", () => {
     const placed = placeInstance(bsp, wall([0, 0, 0]));
     const { model, clusters } = placed;
     placed.inPvs = false;
-    moveInstance(bsp, placed, [0, 0, 0], [0, 0, 0], undefined);
+    moveInstance(bsp, placed, pose([0, 0, 0]), pose([0, 0, 0]), undefined);
     expect(placed.model).toBe(model);
     expect(placed.clusters).toBe(clusters);
     expect(placed.inPvs).toBe(false);
     // Moving only the drawn origin keeps the link and its test.
-    moveInstance(bsp, placed, corridor, [0, 0, 0], undefined);
+    moveInstance(bsp, placed, pose(corridor), pose([0, 0, 0]), undefined);
     expect(placed.model).not.toBe(model);
     expect(placed.clusters).toBe(clusters);
     expect(placed.inPvs).toBe(false);
@@ -181,14 +187,14 @@ describe("moving brush models", () => {
     set.testPvs(eye);
     expect(set.list.map((i) => i.inPvs)).toEqual([true, false]);
     // Leaving the PVS while the eye stands still re-tests against the cached PVS.
-    set.move(new Map([[1, outside]]));
+    set.move(poses([[1, outside]]));
     expect(set.list.map((i) => i.inPvs)).toEqual([false, false]);
     // Linked at home, drawn elsewhere: in the PVS again; entity 2 is not in the maps and stays.
-    set.move(new Map([[1, corridor]]), new Map([[1, [0, 0, 0]]]));
+    set.move(poses([[1, corridor]]), poses([[1, [0, 0, 0]]]));
     expect([set.list[0]!.origin, set.list[0]!.linkOrigin, set.list[0]!.inPvs]).toEqual([corridor, [0, 0, 0], true]);
     expect(set.list[1]!.origin).toEqual(outside);
     // Only a link origin: drawn there too.
-    set.move(new Map(), new Map([[2, [0, 0, 0]]]));
+    set.move(poses([]), poses([[2, [0, 0, 0]]]));
     expect([set.list[1]!.origin, set.list[1]!.inPvs]).toEqual([[0, 0, 0], true]);
     // The same fat clusters test nothing again; other ones (or none) do.
     set.list[0]!.inPvs = false;
@@ -197,17 +203,48 @@ describe("moving brush models", () => {
     set.testPvs(undefined);
     expect(set.list.map((i) => i.inPvs)).toEqual([true, true]);
     // No fat PVS passes a moved instance too.
-    set.move(new Map([[1, outside]]));
+    set.move(poses([[1, outside]]));
     expect(set.list[0]!.inPvs).toBe(true);
+  });
+
+  it("draws and links a turned instance at its own angles: the drawn ones for the matrix and frustum box, the linked ones for clusters and areas", () => {
+    const placed = placeInstance(bsp, wall([0, 0, 0]));
+    const turned: [number, number, number] = [0, 45, 0];
+    moveInstance(bsp, placed, pose(corridor, turned), pose([0, 0, 0]), start);
+    const at = linked(wall(corridor, turned));
+    const there = linked(wall([0, 0, 0]));
+    expect([placed.model, placed.box]).toEqual([at.model, at.box]);
+    expect([placed.clusters, placed.areas]).toEqual([there.clusters, there.areas]);
+    expect([placed.angles, placed.linkAngles]).toEqual([turned, [0, 0, 0]]);
+    // Turned in place, drawn and linked: any angle makes both boxes cubes about the origin.
+    const unturned = placed.box;
+    moveInstance(bsp, placed, pose([0, 0, 0], turned), pose([0, 0, 0], turned), start);
+    const spun = linked(wall([0, 0, 0], turned));
+    expect({ model: placed.model, box: placed.box, clusters: placed.clusters, areas: placed.areas }).toEqual(spun);
+    expect(spun.box).not.toEqual(there.box);
+    expect(spun.clusters).not.toEqual(there.clusters);
+    expect(unturned).not.toEqual(spun.box);
+    // Turning only the link re-tests the PVS; turning only the drawn angles keeps it.
+    placed.inPvs = false;
+    moveInstance(bsp, placed, pose([0, 0, 0], turned), pose([0, 0, 0], [0, 90, 0]), start);
+    expect(placed.inPvs).toBe(true);
+    const { clusters } = placed;
+    placed.inPvs = false;
+    moveInstance(bsp, placed, pose([0, 0, 0], [0, 10, 0]), pose([0, 0, 0], [0, 90, 0]), start);
+    expect([placed.clusters, placed.inPvs]).toEqual([clusters, false]);
+    expect(placed.model).toEqual(modelMatrix([0, 0, 0], [0, 10, 0]));
   });
 
   it("keeps its own copies of the origins", () => {
     const placed = placeInstance(bsp, wall([0, 0, 0]));
     const origin: [number, number, number] = [...corridor];
-    moveInstance(bsp, placed, origin, origin, start);
+    const angles: [number, number, number] = [0, 30, 0];
+    moveInstance(bsp, placed, pose(origin, angles), pose(origin, angles), start);
     origin[2] = 0;
+    angles[1] = 0;
     expect(placed.origin).toEqual(corridor);
     expect(placed.linkOrigin).toEqual(corridor);
+    expect([placed.angles, placed.linkAngles]).toEqual([[0, 30, 0], [0, 30, 0]]);
   });
 });
 

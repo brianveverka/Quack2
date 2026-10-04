@@ -42,11 +42,13 @@ export interface QuackDebug {
   brushModels?: readonly string[];
   /**
    * The origin each brush model instance (in `brushModels` order) has at level time `ms`
-   * (default now) as the client would draw it: the linear doors `BrushMotion` steps (at
-   * rest or not, at the network's 1/8 unit), the rest where `brushModels` says. Each
-   * frame is drawn with these at its level time.
+   * (default now) as the client would draw it: the doors `BrushMotion` steps (at rest
+   * or not, at the network's 1/8 unit), the rest where `brushModels` says. Each frame is
+   * drawn with these at its level time.
    */
   brushOrigins(ms?: number): [number, number, number][];
+  /** The angles each brush model instance is drawn with at `ms`, as `brushOrigins` (a door's at the network's 360/256 degrees). */
+  brushAngles(ms?: number): [number, number, number][];
   integrityErrors?: readonly string[];
   view(): View;
   setView(view: View): void;
@@ -103,6 +105,7 @@ async function main(): Promise<void> {
     setNoAreas: () => {},
     setLevelTime: () => {},
     brushOrigins: () => [],
+    brushAngles: () => [],
     lightmapUploads: 0,
   });
   // An opaque drawing buffer: fragment alpha (texture alpha, the alpha pass's blend)
@@ -176,9 +179,14 @@ async function main(): Promise<void> {
   const levelStart = performance.now();
   let levelTime: number | undefined;
   const motion = new BrushMotion(() => doorMovers(bsp, entities));
+  const posesAt = (ms: number | undefined) => motion.posesAt(ms ?? levelTime ?? performance.now() - levelStart);
   debug.brushOrigins = (ms) => {
-    const origins = motion.originsAt(ms ?? levelTime ?? performance.now() - levelStart);
-    return brush.instances.map((b) => origins.get(b.entity) ?? [b.origin[0], b.origin[1], b.origin[2]]);
+    const poses = posesAt(ms);
+    return brush.instances.map((b) => poses.get(b.entity)?.origin ?? [b.origin[0], b.origin[1], b.origin[2]]);
+  };
+  debug.brushAngles = (ms) => {
+    const poses = posesAt(ms);
+    return brush.instances.map((b) => poses.get(b.entity)?.angles ?? [b.angles[0], b.angles[1], b.angles[2]]);
   };
   const styleValues = lightStyleValues(DEATHMATCH_LIGHTSTYLES, 0);
   const openPortals = openAreaPortals(entities);
@@ -263,7 +271,7 @@ async function main(): Promise<void> {
     lightStyleValues(DEATHMATCH_LIGHTSTYLES, time, styleValues);
     renderer.setLightStyles(styleValues);
     renderer.setTime(time);
-    renderer.moveBrushModels(motion.originsAt(time), motion.linkedOrigins(time));
+    renderer.moveBrushModels(motion.posesAt(time), motion.linkedPoses(time));
     debug.stats = renderer.render(camera, canvas.width, canvas.height);
     debug.lightmapUploads = debug.stats.lightmapUploads;
     debug.frames++;

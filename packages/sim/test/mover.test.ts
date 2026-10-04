@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { describe, expect, it } from "vitest";
-import { calcMoveSpeed, doorGoUp, levelTimeAt, linearMover, stepPusher, type LinearMover, type LinearMoverInit } from "../src/mover.js";
+import { calcMoveSpeed, doorGoDown, doorGoUp, levelTimeAt, brushMover, stepPusher, type BrushMover, type BrushMoverInit } from "../src/mover.js";
 
 // A deathmatch func_door: speed 100 doubled, accel and decel default to it, wait 3.
-const door = (over: Partial<LinearMoverInit> = {}): LinearMover =>
-  linearMover({
+const door = (over: Partial<BrushMoverInit> = {}): BrushMover =>
+  brushMover({
     origin: [0, 0, 0],
     startOrigin: [0, 0, 0],
     endOrigin: [0, 0, 120],
@@ -19,7 +19,7 @@ const door = (over: Partial<LinearMoverInit> = {}): LinearMover =>
   });
 
 /** Steps frames from+1 .. to, recording each frame's z and state after it ran. */
-function run(team: LinearMover[], from: number, to: number): { z: number[]; state: string[] }[] {
+function run(team: BrushMover[], from: number, to: number): { z: number[]; state: string[] }[] {
   const out: { z: number[]; state: string[] }[] = [];
   for (let f = from + 1; f <= to; f++) {
     stepPusher(team, levelTimeAt(f));
@@ -204,6 +204,67 @@ describe("linear door mover", () => {
     const z = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29].map((f) => r[f]!.z[0]);
     expect(z).toEqual([100, 100, 95, 85, 70, 50, 30, 15, 5, 0]);
     expect([28, 29].map((f) => r[f]!.state[0])).toEqual(["down", "bottom"]);
+  });
+});
+
+// A func_door_rotating at its defaults: 90 degrees of yaw at 100 a second, wait 3.
+const rotating = (over: Partial<BrushMoverInit> = {}): BrushMover =>
+  door({ rotating: true, endOrigin: [0, 0, 0], endAngles: [0, 90, 0], distance: 90, speed: 100, accel: 100, decel: 100, ...over });
+
+describe("rotating door mover", () => {
+  it("turns from its own think at once (AngleMove_Begin) and never moves its origin", () => {
+    const d = rotating({ origin: [1, 2, 3], startOrigin: [1, 2, 3], endOrigin: [1, 2, 3], endAngles: [0, 0, -30], distance: 30 });
+    doorGoUp(d, levelTimeAt(1), true);
+    expect([d.think, d.nextthink, [...d.avelocity]]).toEqual(["angleMoveFinal", Math.fround(Math.fround(0.1) + 0.3), [0, 0, -100]]);
+    const r = run([d], 1, 6);
+    expect([2, 3, 4, 5].map((f) => r[f]!.state[0])).toEqual(["up", "up", "top", "top"]);
+    // 0.3 s whole: AngleMove_Final finds nothing left and runs AngleMove_Done in frame 4.
+    expect([...d.angles]).toEqual([0, 0, -30]);
+    expect([...d.origin]).toEqual([1, 2, 3]);
+    expect([...d.velocity, ...d.avelocity]).toEqual([0, 0, 0, 0, 0, 0]);
+  });
+
+  it("ignores accel and decel (AngleMove_Calc has no accelerative move)", () => {
+    const d = rotating({ accel: 10, decel: 20 });
+    doorGoUp(d, levelTimeAt(2), false);
+    expect(d.think).toBe("angleMoveBegin");
+    stepPusher([d], levelTimeAt(3));
+    expect(d.think).toBe("angleMoveFinal");
+    expect(d.avelocity[1]).toBeCloseTo(100, 4);
+  });
+
+  it("turns all the way in one frame at infinite speed (AngleMove_Final)", () => {
+    const d = rotating({ speed: Infinity });
+    doorGoUp(d, levelTimeAt(2), false);
+    stepPusher([d], levelTimeAt(3));
+    expect([d.think, [...d.avelocity]]).toEqual(["angleMoveDone", [0, 900, 0]]);
+    stepPusher([d], levelTimeAt(4));
+    expect([d.angles[1], d.state]).toEqual([90, "top"]);
+  });
+
+  it("turns back from where it is when sent down mid-turn", () => {
+    const d = rotating({ toggle: true });
+    doorGoUp(d, levelTimeAt(2), false);
+    run([d], 2, 6);
+    const mid = d.angles[1];
+    expect(mid).toBeGreaterThan(29);
+    doorGoDown(d, levelTimeAt(6), false);
+    expect([...d.avelocity]).toEqual([0, 0, 0]);
+    const r = run([d], 6, 12);
+    expect(r[7]!.state[0]).toBe("down");
+    expect(d.angles[1]).toBe(0);
+    expect(d.state).toBe("bottom");
+  });
+
+  it("turns alongside a linear teammate, each by its own velocity", () => {
+    const rot = rotating();
+    const lin = door({ distance: 120 });
+    doorGoUp(rot, levelTimeAt(2), false);
+    doorGoUp(lin, levelTimeAt(2), false);
+    const r = run([rot, lin], 2, 12);
+    expect(r[9]!.z).toEqual([0, 120]);
+    expect([...rot.origin, rot.angles[1]]).toEqual([0, 0, 0, 90]);
+    expect([...lin.angles]).toEqual([0, 0, 0]);
   });
 });
 

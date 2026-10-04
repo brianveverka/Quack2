@@ -19,6 +19,7 @@ import {
   placeInstance,
   PlacedInstances,
   type PlacedInstance,
+  type Pose,
   type Vec3,
 } from "./cull.js";
 import { buildLightmapAtlas, refreshLightmaps, setLightmapStyles, type LightmapAtlas } from "./lightmap.js";
@@ -406,8 +407,8 @@ export class WorldRenderer {
   }
 
   /** Move brush entities, by entity index, as PlacedInstances.move does. */
-  moveBrushModels(origins: ReadonlyMap<number, Vec3>, linked: ReadonlyMap<number, Vec3> = origins): void {
-    this.instances.move(origins, linked);
+  moveBrushModels(drawn: ReadonlyMap<number, Pose>, linked: ReadonlyMap<number, Pose> = drawn): void {
+    this.instances.move(drawn, linked);
   }
 
   /** Set the level time in milliseconds that warps move with. */

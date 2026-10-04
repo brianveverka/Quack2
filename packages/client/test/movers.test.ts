@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { levelTimeAt, parseBsp, parseEntities, stepPusher } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
 import { doorMovers } from "../src/bmodels.js";
-import { BrushMotion, networkCoord } from "../src/movers.js";
+import { BrushMotion, lerpAngle, networkAngle, networkCoord, type MoverPose } from "../src/movers.js";
 
 const bsp = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
 
@@ -14,7 +14,9 @@ const motion = (src: string) => {
   const ents = parseEntities(src);
   return new BrushMotion(() => doorMovers(bsp, ents));
 };
-const at = (m: BrushMotion, ms: number) => Object.fromEntries(m.originsAt(ms));
+const origins = (poses: Map<number, MoverPose>) => Object.fromEntries([...poses].map(([e, p]) => [e, p.origin]));
+const angles = (poses: Map<number, MoverPose>) => Object.fromEntries([...poses].map(([e, p]) => [e, p.angles]));
+const at = (m: BrushMotion, ms: number) => origins(m.posesAt(ms));
 
 describe("door movers", () => {
   // A team the second settle frame's trigger_always sends up: the master up 42 at speed
@@ -70,7 +72,7 @@ describe("door movers", () => {
 
   it("links each door where the frame it draws towards left it", () => {
     const m = motion(TEAM);
-    const linked = (ms: number) => Object.fromEntries(m.linkedOrigins(ms));
+    const linked = (ms: number) => origins(m.linkedPoses(ms));
     // Stepped by hand to the frame each time draws towards: frame 2 + ceil(ms / 100).
     const frames = (n: number) => {
       const team = doorMovers(bsp, parseEntities(TEAM))[0]!;
@@ -79,9 +81,9 @@ describe("door movers", () => {
     };
     expect(linked(0)).toEqual(frames(2));
     const frame4 = frames(4);
-    // Asked first or after originsAt, it is the same frame.
+    // Asked first or after posesAt, it is the same frame.
     expect(linked(150)).toEqual(frame4);
-    m.originsAt(400);
+    m.posesAt(400);
     expect(linked(150)).toEqual(frame4);
     // Between frames the drawn origin is blended; at frame 4's own time it is the linked
     // one as sent (SV_Push moves by whole 1/8 units, so the network leaves it as it is).
@@ -90,9 +92,9 @@ describe("door movers", () => {
     expect(linked(200)).toEqual(frame4);
     // Going back in time links where the earlier frame left it; the arrays are the caller's.
     expect(linked(50)).toEqual(frames(3));
-    m.linkedOrigins(50).get(2)![2] = 99;
+    m.linkedPoses(50).get(2)!.origin[2] = 99;
     expect(linked(50)).toEqual(frames(3));
-    expect(() => m.linkedOrigins(Number.NaN)).toThrow(RangeError);
+    expect(() => m.linkedPoses(Number.NaN)).toThrow(RangeError);
   });
 
   it("leaves a door nothing uses at rest", () => {
@@ -140,10 +142,13 @@ describe("door movers", () => {
 
   it("refuses a level time that is not finite, and hands out its own arrays", () => {
     const m = motion(TEAM);
-    expect(() => m.originsAt(Infinity)).toThrow(RangeError);
-    expect(() => m.originsAt(Number.NaN)).toThrow(RangeError);
-    m.originsAt(0).get(2)![2] = 99;
-    expect(at(m, 0)).toEqual({ 2: [0, 0, 0], 3: [0, 0, 0] });
+    expect(() => m.posesAt(Infinity)).toThrow(RangeError);
+    expect(() => m.posesAt(Number.NaN)).toThrow(RangeError);
+    m.posesAt(0).get(2)!.origin[2] = 99;
+    m.posesAt(0).get(2)!.angles[1] = 99;
+    expect(m.posesAt(0).get(2)).toEqual({ origin: [0, 0, 0], angles: [0, 0, 0] });
+    m.posesAt(150).get(2)!.angles[1] = 99;
+    expect(m.posesAt(150).get(2)!.angles).toEqual([0, 0, 0]);
   });
 
   it("takes func_water's speed (default 25, not doubled) and no team speed matching", () => {
@@ -174,7 +179,7 @@ describe("door movers", () => {
     expect([slave.speed, slave.accel, slave.decel]).toEqual([speed, Math.fround(100 * Math.fround(speed / 200)), speed]);
   });
 
-  it("keeps a team's linear doors, matching speeds over every member as Think_CalcMoveSpeed does", () => {
+  it("keeps a team's doors, matching speeds over every member as Think_CalcMoveSpeed does", () => {
     const teams = doorMovers(
       bsp,
       parseEntities(`
@@ -189,14 +194,18 @@ describe("door movers", () => {
         { "classname" "func_button" "model" "*1" "team" "none" }
       `),
     );
-    expect(teams.map((t) => t.map((d) => d.entity))).toEqual([[2], [4], [5]]);
-    const [rotSlave, btnSlave, water] = teams.map((t) => t[0]!.mover);
+    expect(teams.map((t) => t.map((d) => d.entity))).toEqual([[1, 2], [4], [5], [7]]);
+    const [rot, rotSlave] = teams[0]!.map((d) => d.mover);
+    const [btnSlave, water, unmoving] = teams.slice(1).map((t) => t[0]!.mover);
     // A rotating master's "distance" is an int (30) in degrees and its speed is not doubled.
+    expect([rot!.distance, rot!.speed]).toEqual([30, Math.fround(30 / Math.fround(30 / 50))]);
     const speed = Math.fround(42 / Math.fround(30 / 50));
     expect([rotSlave!.speed, rotSlave!.accel, rotSlave!.decel]).toEqual([speed, speed, speed]);
     // A func_button master has no Think_CalcMoveSpeed; a func_water master neither.
     expect(btnSlave!.speed).toBe(200);
     expect(water!.speed).toBe(25);
+    // A rotating master teamed with a button: the button's distance 0 makes it infinite.
+    expect(unmoving!.speed).toBe(Infinity);
   });
 
   it("takes a func_door_rotating master's default distance (90) and speed (100)", () => {
@@ -208,10 +217,11 @@ describe("door movers", () => {
         { "classname" "func_door" "model" "*1" "angle" "-1" "lip" "-50" "team" "rot" }
       `),
     );
-    const slave = teams[0]![0]!.mover;
+    const [master, slave] = teams[0]!.map((d) => d.mover);
+    expect([master!.distance, master!.speed, master!.accel, master!.decel, master!.wait]).toEqual([90, 100, 100, 100, 3]);
     // 50 + 50 up, longer than the 90 degrees that set the team's time at 100 a second.
-    expect(slave.distance).toBe(100);
-    expect(slave.speed).toBe(Math.fround(100 / Math.fround(90 / 100)));
+    expect(slave!.distance).toBe(100);
+    expect(slave!.speed).toBe(Math.fround(100 / Math.fround(90 / 100)));
   });
 
   it("moves a door teamed with a member at no distance all the way in one frame", () => {
@@ -281,6 +291,100 @@ describe("door movers", () => {
     // Think_CalcMoveSpeed ran in the first frame, before the second frame's killtarget
     // freed the button, so its distance 0 still set the team's speeds.
     expect(teams[1]![0]!.mover.speed).toBe(Infinity);
+  });
+});
+
+describe("rotating door movers", () => {
+  const rotating = (keys: string) =>
+    doorMovers(bsp, parseEntities(`{ "classname" "worldspawn" } { "classname" "func_door_rotating" "model" "*1" ${keys} }`))[0]![0]!.mover;
+
+  it("sets up angles as SP_func_door_rotating does: axis by spawnflags, REVERSE negating, START_OPEN swapping", () => {
+    const pose = (m: ReturnType<typeof rotating>) => [[...m.angles], [...m.startAngles], [...m.endAngles]];
+    const d = rotating(`"origin" "8 16 24" "angles" "10 20 30"`);
+    expect([d.rotating, [...d.origin], [...d.startOrigin], [...d.endOrigin], d.state, d.toggle]).toEqual([true, [8, 16, 24], [8, 16, 24], [8, 16, 24], "bottom", false]);
+    // s.angles is cleared whatever the map set; yaw by default.
+    expect(pose(d)).toEqual([[0, 0, 0], [0, 0, 0], [0, 90, 0]]);
+    // X_AXIS (64) turns roll, Y_AXIS (128) pitch; REVERSE (2) negates.
+    expect(pose(rotating(`"spawnflags" "64" "distance" "45"`))).toEqual([[0, 0, 0], [0, 0, 0], [0, 0, 45]]);
+    expect(pose(rotating(`"spawnflags" "130" "distance" "45"`))).toEqual([[0, 0, 0], [0, 0, 0], [-45, 0, 0]]);
+    // START_OPEN starts at the open angles and goes "up" to 0 0 0.
+    expect(pose(rotating(`"spawnflags" "3"`))).toEqual([[0, -90, 0], [0, -90, 0], [0, 0, 0]]);
+    const fast = rotating(`"speed" "30" "accel" "5" "wait" "-1" "spawnflags" "32"`);
+    expect([fast.speed, fast.accel, fast.decel, fast.wait, fast.toggle]).toEqual([30, 5, 30, -1, true]);
+  });
+
+  const DOOR = `
+    { "classname" "worldspawn" }
+    { "classname" "trigger_always" "target" "d" }
+    { "classname" "func_door_rotating" "model" "*1" "targetname" "d" "origin" "8 0 0" }
+  `;
+
+  it("turns 90 degrees at 100 a second as AngleMove_Calc does, waits 3 seconds and turns back", () => {
+    const team = doorMovers(bsp, parseEntities(DOOR))[0]!.map((d) => d.mover);
+    const door = team[0]!;
+    // Sent up from the DelayedUse's slot in the second frame: AngleMove_Begin is due in the third.
+    expect([door.state, door.think, door.nextthink]).toEqual(["up", "angleMoveBegin", Math.fround(Math.fround(0.2) + 0.1)]);
+    const yaw: number[] = [];
+    const state: string[] = [];
+    for (let f = 3; f <= 52; f++) {
+      stepPusher(team, levelTimeAt(f));
+      yaw[f] = door.angles[1];
+      state[f] = door.state;
+      expect([...door.origin]).toEqual([8, 0, 0]);
+    }
+    // traveltime 0.9f / FRAMETIME floors to 8 frames, so AngleMove_Final turns the last
+    // 10 degrees in frame 12 and AngleMove_Done runs door_hit_top after it. avelocity is
+    // 90 * (float)(1 / 0.9f), a little over 100, so the float angles drift above whole tens.
+    expect(yaw.slice(3, 13)).toEqual(
+      [0, 10.000000953674316, 20.000001907348633, 30.000003814697266, 40.000003814697266, 50.000003814697266, 60.000003814697266, 70.00000762939453, 80.00000762939453, 90],
+    );
+    expect([state[11], state[12]]).toEqual(["up", "top"]);
+    // door_hit_top at 1.2 sets door_go_down for 4.2 (frame 42), which turns at once.
+    expect([yaw[42], yaw[43], yaw[50], yaw[51], yaw[52]]).toEqual([90, 80, 9.999999046325684, 0, 0]);
+    expect([state[41], state[42], state[50], state[51]]).toEqual(["top", "down", "down", "bottom"]);
+  });
+
+  it("draws the door's angles as sent (360/256 degree steps) and blended by LerpAngle, and links it at its exact angles", () => {
+    const m = motion(DOOR);
+    const drawn = (ms: number) => angles(m.posesAt(ms))[2];
+    // Frame 4's 10 degrees go out as byte 7: 9.84375.
+    expect([0, 100, 150, 200, 950, 1000, 5000].map(drawn)).toEqual([
+      [0, 0, 0],
+      [0, 0, 0],
+      [0, 4.921875, 0],
+      [0, 9.84375, 0],
+      [0, 84.375, 0],
+      [0, 90, 0],
+      [0, 0, 0],
+    ]);
+    expect(origins(m.posesAt(150))).toEqual({ 2: [8, 0, 0] });
+    expect(m.linkedPoses(150).get(2)).toEqual({ origin: [8, 0, 0], angles: [0, 10.000000953674316, 0] });
+    expect(m.linkedPoses(950).get(2)!.angles).toEqual([0, 90, 0]);
+  });
+
+  it("blends the short way round where the network wraps 180 to -180", () => {
+    // 200 degrees at 100 a second: 170 in frame 20, 180 in frame 21 (sent as -180), 190
+    // in frame 22 (sent as -170.15625).
+    const m = motion(DOOR.replace('"origin" "8 0 0"', '"distance" "200"'));
+    expect([1800, 1900, 2000].map((ms) => m.linkedPoses(ms).get(2)!.angles[1])).toEqual([170, 180, 190]);
+    // LerpAngle takes -180 back up to 180 coming from 168.75, and from -180 on it blends
+    // between the sent angles.
+    expect([1800, 1850, 1900, 1950, 2000].map((ms) => angles(m.posesAt(ms))[2]![1])).toEqual([168.75, 174.375, 180, -175.078125, -170.15625]);
+  });
+});
+
+describe("network angles", () => {
+  it("send a byte of 360/256 degrees, truncated, read back signed, as MSG_WriteAngle and MSG_ReadAngle do", () => {
+    expect([0, 1.4, 1.41, 10, -10, 90, 180, 270, 359, 360, 450, -180.5].map(networkAngle)).toEqual([
+      0, 0, 1.40625, 9.84375, -9.84375, 90, -180, -90, -1.40625, 0, 90, -180,
+    ]);
+  });
+
+  it("lerp the short way round, in float, as LerpAngle does", () => {
+    expect(lerpAngle(170, -170, 0.5)).toBe(180);
+    expect(lerpAngle(-170, 170, 0.5)).toBe(-180);
+    expect(lerpAngle(0, 90, 0.25)).toBe(22.5);
+    expect(lerpAngle(0, 0.1, 1)).toBe(Math.fround(0.1));
   });
 });
 

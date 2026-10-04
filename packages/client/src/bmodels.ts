@@ -6,21 +6,22 @@
 // entity string alone, and turret breaches (with their teams) turned to where they
 // come to rest in their pitch/yaw range. Those a killtarget frees in the settle frames
 // are left out, and func_wall and func_object entities a use there shows or hides are
-// drawn or left out to match. Also the linear doors' movers as the settle frames leave
-// them (`doorMovers`), for `BrushMotion` to step. DOM-free.
+// drawn or left out to match. Also the doors' movers (linear and rotating) as the settle
+// frames leave them (`doorMovers`), for `BrushMotion` to step. DOM-free.
 
 import {
   FRAMETIME,
   asciiLower,
+  brushMover,
   calcMoveSpeed,
   doorGoDown,
   doorGoUp,
   entityVec3,
   levelTimeAt,
-  linearMover,
   type Bsp,
   type BspEntity,
-  type LinearMover,
+  type BrushMover,
+  type BrushMoverInit,
   type MoveSpeeds,
 } from "@quack2/sim";
 
@@ -1127,63 +1128,96 @@ export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
   return settleSpawnFrames(entities).portals;
 }
 
-/** A linear door and the entity it is. */
+/** A door and the entity it is. */
 export interface MovingDoor {
   readonly entity: number;
-  readonly mover: LinearMover;
+  readonly mover: BrushMover;
 }
 
-function linearDoor(ent: BspEntity): boolean {
-  return ent.classname === "func_door" || ent.classname === "func_water";
+/** The classes door_go_up moves: func_door (func_water is one after spawn) and func_door_rotating. */
+function movingDoor(ent: BspEntity): boolean {
+  return ent.classname === "func_door" || ent.classname === "func_water" || ent.classname === "func_door_rotating";
 }
+
+/** The moveinfo Think_CalcMoveSpeed reads from a team member that is not a door: every other spawn function leaves moveinfo.distance 0. */
+const NO_MOVE: MoveSpeeds = { distance: 0, speed: 0, accel: 0, decel: 0 };
 
 /**
- * The moveinfo Think_CalcMoveSpeed reads from a team member that is not a linear door:
- * SP_func_door_rotating's ("distance", an int, default 90, and "speed", default 100 and
- * not doubled, with accel and decel defaulting to it); every other spawn function leaves
- * moveinfo.distance 0, and only a master's speed is read, which only a door's think runs.
+ * SP_func_door_rotating's mover: it turns about the axis its spawnflags pick (yaw, or
+ * roll for X_AXIS, pitch for Y_AXIS; REVERSE negates it) by "distance" degrees (an int,
+ * default 90), at "speed" (default 100, not doubled; "accel" and "decel" default to it
+ * and are unused, as AngleMove_Calc has no accelerative move), "wait" 0 becoming 3. A
+ * START_OPEN door starts at the open angles and turns back to 0 0 0 going up. Its
+ * origin never moves.
  */
-function teamSpeeds(ent: BspEntity): MoveSpeeds {
-  if (ent.classname !== "func_door_rotating") return { distance: 0, speed: 0, accel: 0, decel: 0 };
+function rotatingDoor(ent: BspEntity, origin: Vec3): BrushMoverInit {
+  const flags = atoi(ent.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK;
+  const axis = flags & DOOR_X_AXIS ? 2 : flags & DOOR_Y_AXIS ? 0 : 1;
+  const distance = atoi(ent.distance ?? "0") || 90;
+  // pos2 = VectorMA(0 0 0, distance, movedir), a float.
+  const open: Vec3 = [0, 0, 0];
+  open[axis] = f32(flags & DOOR_REVERSE ? -distance : distance);
+  const closed: Vec3 = [0, 0, 0];
+  const [start, end] = flags & DOOR_START_OPEN ? [open, closed] : [closed, open];
   const field = (key: string) => f32(atof(ent[key] ?? "0"));
   const speed = field("speed") || 100;
-  return { distance: f32(atoi(ent.distance ?? "0") || 90), speed, accel: field("accel") || speed, decel: field("decel") || speed };
+  return {
+    rotating: true,
+    origin,
+    startOrigin: origin,
+    endOrigin: origin,
+    angles: start,
+    startAngles: start,
+    endAngles: end,
+    distance,
+    speed,
+    accel: field("accel") || speed,
+    decel: field("decel") || speed,
+    wait: field("wait") || 3,
+    toggle: doorToggles(ent),
+    state: "bottom",
+  };
 }
 
 /**
- * The linear doors (func_door, and func_water, which SP_func_water renames func_door) as
- * the two settle frames leave them: teams in master entity order, each team's doors in
- * team order (the master first when it is a linear door); a door with no team is a team
- * of one. SP_func_door and SP_func_water set up each door (`doorPositions`; a door's "speed", default 100, is doubled in deathmatch, and its
+ * The doors (func_door, func_water, which SP_func_water renames func_door, and
+ * func_door_rotating) as the two settle frames leave them: teams in master entity order,
+ * each team's doors in team order (the master first when it is a door); a door with no
+ * team is a team of one. SP_func_door and SP_func_water set up each linear door
+ * (`doorPositions`; a door's "speed", default 100, is doubled in deathmatch, and its
  * "accel" and "decel" default to that, "wait" 0 becomes 3; func_water takes "speed",
- * default 25, for all three, and "wait" 0 becomes -1, which makes it DOOR_TOGGLE). In the
- * first frame a func_door master's think (Think_CalcMoveSpeed, also at the end of
- * Think_SpawnDoorTrigger) matches its team's speeds; a func_water has no think. In the
- * second the settle frames' uses send doors up or down (`doorUse`), from a DelayedUse's
- * slot, so each starts moving a frame later.
+ * default 25, for all three, and "wait" 0 becomes -1, which makes it DOOR_TOGGLE), and
+ * SP_func_door_rotating each rotating one (`rotatingDoor`). In the first frame a
+ * func_door or func_door_rotating master's think (Think_CalcMoveSpeed, also at the end
+ * of Think_SpawnDoorTrigger) matches its team's speeds; a func_water has no think. In
+ * the second the settle frames' uses send doors up or down (`doorUse`), from a
+ * DelayedUse's slot, so each starts moving a frame later.
  *
- * Think_CalcMoveSpeed also runs for a func_door_rotating master, and reads every member
- * of the chain (`teamSpeeds`): a func_door_rotating's distance is its "distance" in
- * degrees, and every other class (a func_button, a func_wall) leaves moveinfo.distance
- * 0, which makes the linear doors' speeds infinite, so they move all the way in one
- * frame (Move_Final). A team keeps only its linear doors: the other members stay where
- * `brushModelInstances` puts them. door_go_up moves no class but a func_door (by
- * classname after spawn) and a func_door_rotating, whose AngleMove_Calc is not ported;
- * a func_door_secret, which SP_func_door_secret also renames, is not modeled moving. A
- * team with a linear door that has no inline model is left out. A team's
- * chain ends at the first member a killtarget freed (G_FreeEdict zeroes its teamchain),
- * and a team whose master was freed never moves again (SV_Physics_Pusher returns for the
- * slaves).
+ * Think_CalcMoveSpeed reads every member of the chain: a func_door_rotating's distance
+ * is in degrees, and every other class (a func_button, a func_wall) leaves
+ * moveinfo.distance 0, which makes the doors' speeds infinite, so a linear door moves
+ * all the way in one frame (Move_Final) and a rotating one turns all the way in one
+ * (AngleMove_Final). A team keeps only its doors: the other members stay where
+ * `brushModelInstances` puts them. A func_door_secret, which SP_func_door_secret also
+ * renames, is not modeled moving. A team with a door that has no inline model is left
+ * out. A team's chain ends at the first member a killtarget freed (G_FreeEdict zeroes
+ * its teamchain), and a team whose master was freed never moves again
+ * (SV_Physics_Pusher returns for the slaves).
  */
 export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor[][] {
   const { freed, doorMoves } = settleSpawnFrames(entities);
   const doors = new Map<number, MovingDoor>();
   entities.forEach((ent, i) => {
-    if (i === 0 || !inGame(ent) || !linearDoor(ent)) return;
+    if (i === 0 || !inGame(ent) || !movingDoor(ent)) return;
     const model = inlineModel(bsp, ent.model);
     if (model === undefined) return;
+    const origin = entityVec3(ent, "origin") ?? [0, 0, 0];
+    if (ent.classname === "func_door_rotating") {
+      doors.set(i, { entity: i, mover: brushMover(rotatingDoor(ent, origin)) });
+      return;
+    }
     const { mins, maxs } = modelBounds(bsp, model);
-    const { pos1, pos2, distance } = doorPositions(ent, mins, maxs, entityVec3(ent, "origin") ?? [0, 0, 0]);
+    const { pos1, pos2, distance } = doorPositions(ent, mins, maxs, origin);
     const field = (key: string) => f32(atof(ent[key] ?? "0"));
     let speed: number, accel: number, decel: number, wait: number;
     if (ent.classname === "func_door") {
@@ -1195,7 +1229,7 @@ export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor
       speed = accel = decel = field("speed") || 25;
       wait = field("wait") || -1;
     }
-    const mover = linearMover({
+    const mover = brushMover({
       origin: pos1,
       startOrigin: pos1,
       endOrigin: pos2,
@@ -1215,12 +1249,12 @@ export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor
   for (const i of doors.keys()) if (!teamed.has(i)) groups.push([i]);
   groups.sort((a, b) => a[0]! - b[0]!);
   const teams: MovingDoor[][] = [];
-  const moving = new Map<number, LinearMover>();
+  const moving = new Map<number, BrushMover>();
   for (const members of groups) {
-    if (members.some((i) => linearDoor(entities[i]!) && !doors.has(i))) continue;
+    if (members.some((i) => movingDoor(entities[i]!) && !doors.has(i))) continue;
     const master = entities[members[0]!]!.classname;
     if (master === "func_door" || master === "func_door_rotating") {
-      calcMoveSpeed(members.map((i) => doors.get(i)?.mover ?? teamSpeeds(entities[i]!)));
+      calcMoveSpeed(members.map((i) => doors.get(i)?.mover ?? NO_MOVE));
     }
     const cut = members.findIndex((i) => freed.has(i));
     const live = (cut < 0 ? members : members.slice(0, cut)).flatMap((i) => doors.get(i) ?? []);

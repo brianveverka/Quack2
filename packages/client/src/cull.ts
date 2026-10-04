@@ -16,6 +16,12 @@ export interface Box {
   readonly maxs: Vec3;
 }
 
+/** An entity's origin and angles (pitch, yaw, roll). */
+export interface Pose {
+  readonly origin: Vec3;
+  readonly angles: Vec3;
+}
+
 /**
  * World box enclosing a brush model instance, as R_DrawBrushModel builds it: the model's
  * bounds spread by a unit (Mod_LoadSubmodels) at the entity origin, or, when any angle is
@@ -53,35 +59,40 @@ export function linkBox(bsp: Bsp, inst: BrushModelInstance): Box {
 
 /**
  * A brush model instance where the client draws it and where the server links it. The
- * client draws it at its blended origin and culls it by frustum there (R_DrawBrushModel);
+ * client draws it at its blended pose and culls it by frustum there (R_DrawBrushModel);
  * the server links it where the last game frame left it (SV_LinkEdict) and sends it by
  * the clusters and areas found there. The two differ only while it moves.
  */
 export interface PlacedInstance {
   readonly source: BrushModelInstance;
-  /** Where it is drawn. */
+  /** Where it is drawn, and turned to. */
   origin: Vec3;
-  /** Where it is linked. */
+  angles: Vec3;
+  /** Where it is linked, and turned to. */
   linkOrigin: Vec3;
-  /** Model to world: entity angles, then `origin`. */
+  linkAngles: Vec3;
+  /** Model to world: `angles`, then `origin`. */
   model: Mat4;
-  /** World box enclosing it at `origin`, for the frustum test. */
+  /** World box enclosing it at `origin` and `angles`, for the frustum test. */
   box: Box;
-  /** Distinct non-solid clusters its box at `linkOrigin` touches. */
+  /** Distinct non-solid clusters its box at the link pose touches. */
   clusters: readonly number[];
-  /** areanum and areanum2 of the server's link box at `linkOrigin` (boxAreas). */
+  /** areanum and areanum2 of the server's link box at the link pose (boxAreas). */
   areas: readonly [number, number];
   /** In the fat PVS last tested against. */
   inPvs: boolean;
 }
 
-/** A brush model instance drawn and linked at its own origin, in every PVS until tested. */
+/** A brush model instance drawn and linked at its own origin and angles, in every PVS until tested. */
 export function placeInstance(bsp: Bsp, source: BrushModelInstance): PlacedInstance {
   const o: Vec3 = [source.origin[0], source.origin[1], source.origin[2]];
+  const a: Vec3 = [source.angles[0], source.angles[1], source.angles[2]];
   return {
     source,
     origin: o,
+    angles: a,
     linkOrigin: o,
+    linkAngles: a,
     model: modelMatrix(o, source.angles),
     box: instanceBox(bsp, source),
     clusters: boxClusters(bsp, instanceBox(bsp, source)),
@@ -92,21 +103,25 @@ export function placeInstance(bsp: Bsp, source: BrushModelInstance): PlacedInsta
 
 const sameVec = (a: Vec3, b: Vec3) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 
+const copyVec = (v: Vec3): Vec3 => [v[0], v[1], v[2]];
+
 /**
- * Draw `inst` at `origin` and link it at `linkOrigin`, re-testing it against `pvs` (the
- * fat PVS last tested; undefined passes every model) when its link moved. What did not
- * move is left as it is, so a mover at rest costs a comparison.
+ * Draw `inst` at `drawn` and link it at `linked`, re-testing it against `pvs` (the fat
+ * PVS last tested; undefined passes every model) when its link moved or turned. What
+ * did not move is left as it is, so a mover at rest costs a comparison.
  */
-export function moveInstance(bsp: Bsp, inst: PlacedInstance, origin: Vec3, linkOrigin: Vec3, pvs: Uint8Array | undefined): void {
-  if (!sameVec(origin, inst.origin)) {
-    const at = { ...inst.source, origin };
-    inst.origin = [origin[0], origin[1], origin[2]];
-    inst.model = modelMatrix(origin, inst.source.angles);
+export function moveInstance(bsp: Bsp, inst: PlacedInstance, drawn: Pose, linked: Pose, pvs: Uint8Array | undefined): void {
+  if (!sameVec(drawn.origin, inst.origin) || !sameVec(drawn.angles, inst.angles)) {
+    const at = { ...inst.source, origin: drawn.origin, angles: drawn.angles };
+    inst.origin = copyVec(drawn.origin);
+    inst.angles = copyVec(drawn.angles);
+    inst.model = modelMatrix(drawn.origin, drawn.angles);
     inst.box = instanceBox(bsp, at);
   }
-  if (!sameVec(linkOrigin, inst.linkOrigin)) {
-    const at = { ...inst.source, origin: linkOrigin };
-    inst.linkOrigin = [linkOrigin[0], linkOrigin[1], linkOrigin[2]];
+  if (!sameVec(linked.origin, inst.linkOrigin) || !sameVec(linked.angles, inst.linkAngles)) {
+    const at = { ...inst.source, origin: linked.origin, angles: linked.angles };
+    inst.linkOrigin = copyVec(linked.origin);
+    inst.linkAngles = copyVec(linked.angles);
     inst.clusters = boxClusters(bsp, instanceBox(bsp, at));
     inst.areas = boxAreas(bsp, linkBox(bsp, at));
     inst.inPvs = !pvs || clustersVisible(inst.clusters, pvs);
@@ -138,17 +153,17 @@ export class PlacedInstances<T extends PlacedInstance> {
   }
 
   /**
-   * Move brush entities, by entity index: each is drawn at its `origins` entry (the
-   * client's blended origin) and linked, for the PVS and area tests, at its `linked` one
-   * (where the last game frame left it), or at `origins` without one. An entity in
+   * Move brush entities, by entity index: each is drawn at its `drawn` pose (the
+   * client's blended one) and linked, for the PVS and area tests, at its `linked` one
+   * (where the last game frame left it), or at `drawn` without one. An entity in
    * neither keeps its place.
    */
-  move(origins: ReadonlyMap<number, Vec3>, linked: ReadonlyMap<number, Vec3> = origins): void {
+  move(drawn: ReadonlyMap<number, Pose>, linked: ReadonlyMap<number, Pose> = drawn): void {
     for (const inst of this.list) {
       const entity = inst.source.entity;
-      const origin = origins.get(entity) ?? linked.get(entity);
-      if (!origin) continue;
-      moveInstance(this.bsp, inst, origin, linked.get(entity) ?? origin, this.pvs);
+      const pose = drawn.get(entity) ?? linked.get(entity);
+      if (!pose) continue;
+      moveInstance(this.bsp, inst, pose, linked.get(entity) ?? pose, this.pvs);
     }
   }
 }
