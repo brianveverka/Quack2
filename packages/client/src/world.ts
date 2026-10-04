@@ -4,12 +4,12 @@
 // the world's faces per frame as R_RecursiveWorldNode walks them (PVS, areas, view
 // frustum), and per-model index lists. Translucent faces are drawn after everything
 // else, in the order ref_gl's R_DrawAlphaSurfaces gets them. The world's sky faces are
-// not drawn: they only bound the sky box (sky.ts). DOM-free so it is testable under Node.
+// not drawn: they only bound the sky box (sky.ts). SURF_NODRAW faces are drawn like any
+// other, as ref_gl has no NODRAW test. DOM-free so it is testable under Node.
 
 import {
   CONTENTS_SOLID,
   SURF_FLOWING,
-  SURF_NODRAW,
   SURF_SKY,
   SURF_TRANS33,
   SURF_TRANS66,
@@ -112,7 +112,6 @@ export function buildWorldMesh(bsp: Bsp, atlas: LightmapAtlas): WorldMesh {
 
   function addFace(f: number): void {
     const ti = bsp.faces.texinfo[f]!;
-    if (bsp.texinfo.flags[ti]! & SURF_NODRAW) return;
     const name = bsp.texinfo.texture[ti]!;
     let tex = textureIndex.get(name);
     if (tex === undefined) {

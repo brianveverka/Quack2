@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { areaBits, parseBsp } from "@quack2/sim";
+import { SURF_NODRAW, SURF_SKY, areaBits, parseBsp } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
 import { FlyCamera } from "../src/camera.js";
 import { closedFlood, openFlood, withEastArea } from "./areas-fixture.js";
@@ -55,6 +55,20 @@ describe("world mesh", () => {
     // The shared face belongs to the world, so the brush model does not draw it again.
     expect(modelFaceMask(bad, 1).reduce((a, v) => a + v, 0)).toBe(ALL_FACES - WORLD_FACES);
     expect(modelFaceMask(bad, 1)[WORLD_FACES - 1]).toBe(0);
+  });
+
+  it("draws SURF_NODRAW faces as ref_gl does, a SKY|NODRAW one as sky", () => {
+    // qbsp3 emits faces whatever their flags; ref_gl never tests SURF_NODRAW.
+    const flags = Int32Array.from(bsp.texinfo.flags);
+    const ti = bsp.faces.texinfo[0]!;
+    const other = bsp.faces.texinfo.findIndex((t) => t !== ti);
+    flags[ti] = flags[ti]! | SURF_NODRAW;
+    flags[bsp.faces.texinfo[other]!] = flags[bsp.faces.texinfo[other]!]! | SURF_NODRAW | SURF_SKY;
+    const m = buildWorldMesh({ ...bsp, texinfo: { ...bsp.texinfo, flags } }, atlas);
+    expect(m.vertices).toEqual(mesh.vertices);
+    expect(m.faceTexture).toEqual(mesh.faceTexture);
+    expect(m.faceFlags[0]).toBe(mesh.faceFlags[0]);
+    expect(m.faceFlags[other]).toBe(SURF_SKY);
   });
 
   it("trims a model face range that starts before the face lump", () => {
