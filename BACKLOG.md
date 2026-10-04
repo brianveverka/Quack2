@@ -30,8 +30,18 @@ from mounted pak/zip data (zip64 and self-extractor stubs included), picked arch
 read by range, checker fallback, `pnpm smoke`).
 Remaining:
 - A door the second settle frame's use chains send up is drawn at rest although it
-  starts moving the next frame (Move_Calc defers Move_Begin a frame); drawing it where
-  it is needs brush entity motion over time.
+  starts moving the next frame (Move_Calc defers Move_Begin a frame). Brush entity
+  motion lives in sim, stepped at FRAMETIME (`packages/sim/src/mover.ts`, linear doors
+  only). Next: build a `LinearMover` per func_door as SP_func_door sets it up (pos1 and
+  pos2 as `spawnMove` works them out, which it does not return yet; the door's "speed"
+  doubled in deathmatch, "accel" and "decel", none read yet; "wait", 0 taken as 3;
+  DOOR_TOGGLE as `doorToggles` reads it; teams through `calcMoveSpeed`), send the settle frames' doors up with `doorGoUp`,
+  step them from level time in main.ts, blend the origin between the last two frames as
+  CL_AddPacketEntities does, and give the renderer per-frame instance origins (it bakes
+  them, and their area and PVS links, at construction).
+- The mover lacks Think_AccelMove (an accel or decel unlike speed leaves it in place),
+  AngleMove_Calc (func_door_rotating), the plat, train and button endfuncs, door_hit_bottom
+  closing portals, and blocked pushes (needs the box trace).
 - Only func_areaportal, doors, func_door_secret, trigger_relay, func_train, func_wall and
   func_object uses are modeled in the settle frames (and a train's pathtarget at a
   corner it reaches at once), and a door's or relay's own "delay" always defers its
