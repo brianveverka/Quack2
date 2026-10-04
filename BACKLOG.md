@@ -57,9 +57,10 @@ Remaining:
   (unless a GL driver resets it mid-frame; see `lightmapExtents`).
   Ports that follow the C's double (warp.ts, renderer.ts, skyimage.ts, bmodels.ts) match
   SSE builds instead; decide which build is the reference, then audit them. Its game
-  DLL also converts (int) with MSVC's _ftol (game.dsp has no /QIfist): a 64-bit fistp
-  whose low 32 bits are kept, so 0 for NaN and the infinities and a wrapped value past
-  int's range, where SSE builds give INT_MIN (`cInt`). A door team whose speeds
+  DLL and exe also convert (int) with MSVC's _ftol (game.dsp and quake2.dsp have no
+  /QIfist): a 64-bit fistp whose low 32 bits are kept, so 0 for NaN and the infinities
+  (and past 2^63) and the value wrapped to 32 bits past int's range, where SSE builds
+  give INT_MIN (`cInt`, in `stepPusher` and `networkCoord`). A door team whose speeds
   Think_CalcMoveSpeed makes infinite or NaN then stays put in SV_Push on win32 and moves
   INT_MIN / 8 units an axis a frame on SSE. Not measured on an MSVC build.
 - A func_train that is a team slave runs its thinks (func_train_find, train_next) at its
@@ -134,15 +135,17 @@ Remaining:
 - Nothing blocks a push: no door_blocked, plat_blocked or train_blocked, and
   Think_AccelMove's restart of a blocked move (current_speed 0) never happens. SV_Push
   finds a block with SV_TestEntityPosition, a box trace against the world and solid
-  entities, the pusher among them; on one SV_Physics_Pusher bumps the team's nextthinks and runs none of its
-  thinks that frame. Without clients or monsters the obstacles are items, func_objects,
-  misc_explobox, target_blaster bolts and what a target_spawner spawns; door_blocked,
-  plat_blocked, train_blocked and door_secret_blocked free them (T_Damage,
-  BecomeExplosion1) without turning the move back, while rotating_blocked and
-  turret_blocked only damage, so an item stays and blocks a func_rotating or turret
-  every frame. Where items rest needs droptofloor's trace as well. Only a client or
-  monster obstacle sends a door (unless DOOR_CRUSHER or a negative "wait") or a plat back
-  (door_go_up/down, so Move_Calc's or AngleMove_Calc's restart), which needs pmove.
+  entities, the pusher among them; on one SV_Physics_Pusher bumps the team's nextthinks
+  and runs none of its thinks that frame. Without clients or monsters the obstacles are
+  items, func_objects, target_blaster bolts and what a target_spawner spawns
+  (misc_explobox frees itself in deathmatch; gibs and debris are SOLID_NOT, never linked,
+  so SV_Push skips them). door_blocked, plat_blocked, train_blocked and
+  door_secret_blocked free them (T_Damage, BecomeExplosion1) without turning the move
+  back, while rotating_blocked and turret_blocked only damage, so an item stays and
+  blocks a func_rotating or turret every frame. Only a client or monster obstacle sends
+  a door back (door_go_up/down, unless DOOR_CRUSHER or a negative "wait") or a plat
+  (plat_go_up/down), restarting Move_Calc or AngleMove_Calc, which needs pmove. Where
+  items rest needs droptofloor's trace too.
 - With the trace: a team under a MOVETYPE_TOSS master (misc_gib_*, or a spawnflags-0
   func_object from its third frame) takes the master's origin each frame the master starts
   off the ground (SV_Physics_Toss), so its brush models leave their spawn origin; `settleTurrets`

@@ -8,7 +8,7 @@ describe("cInt", () => {
     expect(Object.is(cInt(-0.5), 0)).toBe(true);
   });
 
-  it("gives INT_MIN for NaN, the infinities and anything past int's range, as x86 does", () => {
+  it("gives INT_MIN for NaN, the infinities and anything past int's range, as SSE builds do", () => {
     // From a gcc (SSE) build: (int) of each, as a double.
     expect([Number.NaN, Infinity, -Infinity, 2147483648, -2147483649, 4294967296 + 5, 1e300].map(cInt)).toEqual([
       -2147483648, -2147483648, -2147483648, -2147483648, -2147483648, -2147483648, -2147483648,

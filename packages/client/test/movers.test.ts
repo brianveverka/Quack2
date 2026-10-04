@@ -501,7 +501,7 @@ describe("network coordinates", () => {
     expect([2.762, -2.3, 4096, -4096.1, 0.12, -0.12].map(networkCoord)).toEqual([2.75, -2.25, -4096, -4096, 0, 0]);
   });
 
-  it("sends 0 past int's range, where x86's (int) gives INT_MIN", () => {
+  it("sends 0 past int's range, where an SSE build's (int) gives INT_MIN", () => {
     // gcc (SSE) mirror as above. -536870848 * 8 wraps to 512 in ToInt32.
     expect([-536870848, Math.fround(-268435456 + 8.5), Number.NaN, -Infinity, Infinity].map(networkCoord)).toEqual([0, 16, 0, 0, 0]);
   });

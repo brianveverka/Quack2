@@ -683,7 +683,7 @@ describe("teams Think_CalcMoveSpeed gives non-finite speeds", () => {
   };
   const step = Math.fround(-2147483648 / 8);
 
-  it("pushes an infinite velocity INT_MIN / 8 on every axis, as x86's (int) gives", () => {
+  it("pushes an infinite velocity INT_MIN / 8 on every axis, as an SSE build's (int) gives", () => {
     const t = team({});
     expect(t[0]!.speed).toBe(-Infinity);
     const r: { o: number[][]; s: string[] }[] = [];
