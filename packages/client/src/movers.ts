@@ -129,6 +129,11 @@ export class BrushMotion {
       if (closed) this.portals = closed;
       this.prev = this.cur;
       this.cur = this.snapshot();
+      // A mover train_next put on a TELEPORT corner this frame (EV_OTHER_TELEPORT) is
+      // not blended: CL_DeltaEntity starts its prev state at the new one.
+      for (const team of this.teams) {
+        for (const { entity, mover } of team) if (mover.teleported) this.prev.set(entity, this.cur.get(entity)!);
+      }
     }
     return time;
   }

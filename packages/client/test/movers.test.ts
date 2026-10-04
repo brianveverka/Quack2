@@ -622,3 +622,77 @@ describe("button movers", () => {
     expect(teamed.map((t) => t.map((d) => d.entity))).toEqual([[1]]);
   });
 });
+
+describe("train movers", () => {
+  // Fixture model 1's mins are -385 127 -1, so a train's origin is its corner plus 385 -127 1.
+  const TRAIN = `
+    { "classname" "worldspawn" }
+    { "classname" "func_train" "model" "*1" "target" "c1" }
+    { "classname" "path_corner" "targetname" "c1" "target" "c2" }
+    { "classname" "path_corner" "targetname" "c2" "origin" "0 0 100" "target" "t3" }
+    { "classname" "path_corner" "targetname" "t3" "origin" "500 0 0" "target" "c4" "spawnflags" "1" }
+    { "classname" "path_corner" "targetname" "c4" "origin" "500 0 50" "wait" "-1" }
+  `;
+
+  it("moves a train from corner to corner at its speed, as the settle frames left it", () => {
+    const teams = brushMovers(bsp, parseEntities(TRAIN));
+    expect(teams.map((t) => t.map((d) => [d.entity, d.portals]))).toEqual([[[1, []]]]);
+    const train = teams[0]![0]!.mover;
+    // train_next ran in the second frame: Move_Begin set 100 a second up towards c2.
+    expect([[...train.origin], [...train.velocity], train.think, train.nextthink]).toEqual([[385, -127, 1], [0, 0, 100], "moveFinal", Math.fround(Math.fround(0.2) + 1)]);
+    expect(train.train!.usePathtarget).toBeUndefined();
+    const m = motion(TRAIN);
+    const z = (ms: number) => m.linkedPoses(ms).get(1)!.origin;
+    expect([0, 100, 900].map((ms) => z(ms)[2])).toEqual([1, 11, 91]);
+    // Frame 12 arrives at c2, and train_wait's train_next puts it on t3 and heads for c4,
+    // which it reaches in frame 17 and stays at.
+    expect([z(1000), z(1100), z(1500), z(9000)]).toEqual([
+      [885, -127, 1],
+      [885, -127, 11],
+      [885, -127, 51],
+      [885, -127, 51],
+    ]);
+    expect(brushModelInstances(bsp, parseEntities(TRAIN)).instances.map((b) => b.origin)).toEqual([[385, -127, 1]]);
+  });
+
+  it("does not blend a train across the frame it teleports in (EV_OTHER_TELEPORT)", () => {
+    // Client times 901 to 1000 draw towards game frame 12, where it teleports: not
+    // blended from frame 11's z 91, it is drawn where it lands all through them.
+    const m = motion(TRAIN);
+    expect([850, 901, 950, 1000, 1050].map((ms) => at(m, ms)[1])).toEqual([
+      [385, -127, 86],
+      [885, -127, 1],
+      [885, -127, 1],
+      [885, -127, 1],
+      [885, -127, 6],
+    ]);
+    // Going back in time and forward again draws the same.
+    expect(at(m, 880)[1]).toEqual([385, -127, 89]);
+    expect(at(m, 980)[1]).toEqual([885, -127, 1]);
+  });
+
+  it("leaves out a train that is a team slave, one a killtarget freed, and one with no inline model", () => {
+    const ids = (src: string) => brushMovers(bsp, parseEntities(src)).map((t) => t.map((d) => d.entity));
+    expect(ids(TRAIN.replace('"target" "c1"', '"target" "c1" "team" "t"') + `{ "classname" "func_wall" "model" "*1" "team" "t" }`)).toEqual([[1]]);
+    expect(ids(`{ "classname" "worldspawn" }{ "classname" "func_wall" "model" "*1" "team" "t" }` + TRAIN.replace('{ "classname" "worldspawn" }', "").replace('"target" "c1"', '"target" "c1" "team" "t"'))).toEqual([]);
+    expect(ids(`${TRAIN}{ "classname" "trigger_always" "killtarget" "tr" }`.replace('"target" "c1"', '"target" "c1" "targetname" "tr"'))).toEqual([]);
+    expect(ids(TRAIN.replace('"model" "*1" ', ""))).toEqual([]);
+  });
+
+  it("puts the train's mins on the corners in float, so corners its mins round together lie at no distance", () => {
+    // 385.00001 rounds to 385 in float: with the fixture's mins the second corner is
+    // where the train already is, so train_wait fires its pathtarget in the second frame.
+    const src = `
+      { "classname" "worldspawn" }
+      { "classname" "func_train" "model" "*1" "target" "a" }
+      { "classname" "path_corner" "targetname" "a" "target" "b" }
+      { "classname" "path_corner" "targetname" "b" "origin" "0.00001 0 0" "pathtarget" "p" }
+      { "classname" "func_areaportal" "targetname" "p" "style" "1" }
+    `;
+    const ents = parseEntities(src);
+    expect([...openAreaPortals(ents, bsp)]).toEqual([1]);
+    expect([...openAreaPortals(ents)]).toEqual([]);
+    const train = brushMovers(bsp, ents)[0]![0]!.mover;
+    expect([[...train.origin], [...train.velocity], train.nextthink]).toEqual([[385, -127, 1], [0, 0, 0], 0]);
+  });
+});

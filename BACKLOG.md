@@ -32,7 +32,10 @@ LerpAngle), also in teams with other members, and the plats that are no team's s
 use there sends down (Use_Plat, accelerating as Think_AccelMove does when accel or decel
 differs from speed, else at a constant speed per second; the sim also has plat_go_up
 and plat_hit_top's 3 s return), and the buttons that are no team's slave a use there
-fires (button_fire up, button_wait, and button_return back down after "wait")
+fires (button_fire up, button_wait, and button_return back down after "wait"), and
+the trains that are no team's slave, from where the settle frames leave them (train_next
+moving the train's mins corner to corner, train_wait's "wait", a TELEPORT corner drawn
+unblended as CL_DeltaEntity does for EV_OTHER_TELEPORT)
 (`brushMovers`, stepped at the 10 Hz game
 frame by `BrushMotion` and blended as CL_AddPacketEntities does, re-linked each frame
 they move or turn), culled by area, PVS and
@@ -41,12 +44,8 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- The mover lacks the train functions (the think train_next and train_resume, which run
-  Move_Calc, and its endfunc train_wait):
-  trains are placed at the corner `settleSpawnFrames` leaves them and never move. Needs
-  a path_corner lookup the sim can step (Move_Calc to the corner less the train's mins),
-  shared with `trainNext`/`trainWait` in bmodels.ts.
-- Nothing blocks a push (needs the box trace, milestone 2): no door_blocked, and
+- Nothing blocks a push (needs the box trace, milestone 2): no door_blocked or
+  train_blocked, and
   Think_AccelMove's restart of a blocked move (current_speed 0) never happens.
 - A door team master with a negative "speed" makes Think_CalcMoveSpeed's time -0 when a
   member has no distance (a button, a wall, a door whose lip equals its size): the
@@ -75,7 +74,8 @@ Remaining:
   only under a MOVETYPE_PUSH or STOP master (SV_Physics_Pusher). Under a NONE master the
   slave never thinks and stays at its spawn origin; under a TOSS master it takes the
   master's origin (SV_Physics_Toss). `PUSHER_CLASSES` in bmodels.ts has the master
-  rule `settleTurrets` uses.
+  rule `settleTurrets` uses. `brushMovers` leaves a slave train out, drawn where the
+  settle frames leave it.
 - Malformed entity lumps: when the first entity is not worldspawn, InitBodyQue never runs,
   so entities 1-8 land in the body-queue slots G_FreeEdict refuses to free, and stay in
   the game whatever `inGame` says (spawn spots, teams, targets). ED_ParseEdict also ends
@@ -111,14 +111,18 @@ Remaining:
   makes the team's time 0), so a move its own Use_Plat or button_fire starts goes
   through Think_AccelMove with NaN. Any such move runs its thinks in its master's slot
   (SV_Physics_Pusher). Model these with the train movers.
-- button_wait fires the button's targets (G_UseTargets) when it reaches the top, after
-  the settle frames: nothing models uses after them, so a door, plat or portal a fired
-  button targets stays as the settle frames left it.
+- button_wait fires the button's targets (G_UseTargets) when it reaches the top, and
+  train_wait a corner's "pathtarget" when a train reaches it, after the settle frames:
+  nothing models uses after them (a train mover's `usePathtarget` is dropped), so a
+  door, plat, train or portal they target stays as the settle frames left it.
 - Texture animation is not drawn: no texinfo `nexttexinfo` chain is followed.
   R_TextureAnimation steps world faces at 2 Hz, and a brush entity's faces by the frame
   CL_AddPacketEntities picks: from EF_ANIM01 (0/1), EF_ANIM23 (2/3) or EF_ANIM_ALL at
   2 Hz, EF_ANIM_ALLFAST at 10 Hz, else s.frame. A button cycles 0/1 at rest and 2/3
   from button_wait until button_done.
+- CL_DeltaEntity also skips the blend when an entity's origin moves more than 512 units
+  on an axis between two frames (abs of the float difference, as an int); `BrushMotion`
+  blends it (a fast train, or a door team's infinite speeds).
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
