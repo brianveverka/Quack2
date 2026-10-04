@@ -7,7 +7,8 @@ order (see CLAUDE.md, Orchestration).
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps sized in float as
 the win32 CalcSurfaceExtents does, with the deathmatch light styles animated at 10 Hz
 and a face's lightmap composed again only as it is drawn, as ref_gl rebuilds it,
-warped surfaces moved per vertex as EmitWaterPolys does, translucent surfaces blended in
+warped surfaces moved per vertex as EmitWaterPolys does, SURF_FLOWING scrolled on warps
+and on unwarped opaque faces (DrawGLFlowingPoly) but not unwarped translucent ones, translucent surfaces blended in
 R_DrawAlphaSurfaces' order, no lightmap on sky, warp or translucent faces, the
 worldspawn sky box drawn where the world's sky faces bound it (R_DrawSkyBox, with
 skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS (with R_SetupFrame's
@@ -24,9 +25,6 @@ SelectSpawnPoint gives the first deathmatch player, `.wal` textures and `?map=`
 BSPs from mounted pak/zip data (zip64 and self-extractor stubs included), picked
 archives read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- SURF_FLOWING scrolls only warped faces; ref_gl also scrolls unwarped opaque ones
-  (DrawGLFlowingPoly, GL_RenderLightmappedPoly), though not unwarped translucent ones
-  (R_DrawAlphaSurfaces uses DrawGLPoly).
 - Translucent faces of brush models move with their entity here; ref_gl draws the alpha
   chain with the world matrix, so they stay at their compiled spot. Kept as intended
   (the engine's is a draw bug); revisit if matching it matters. The alpha chain's brush
