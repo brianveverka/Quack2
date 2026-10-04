@@ -4,7 +4,8 @@
 // (WebGL2 through ANGLE/SwiftShader worked without flags, measured 2026-10-03 with
 // Chromium 141; the run prints the renderer it got), checks three views by reading back
 // pixels, and saves a screenshot of each. It checks the fixture's func_wall is drawn,
-// and drawn at a moved entity origin, and rotated, in copies of the map. Another load mounts synthetic
+// and drawn at a moved entity origin, and rotated, in copies of the map, and that culled
+// brush models leave the frame unchanged. Another load mounts synthetic
 // game data (a pak and a deflated zip built here, never id data) and checks the textures
 // arrive, and that ?map= finds a BSP packed into a mounted pak.
 // Usage: node scripts/smoke-render.mjs [outdir]   (default packages/client/dist/smoke)
@@ -47,6 +48,12 @@ SYNTHETIC["/data/moved.bsp"] = withEntityString(fixtureBsp, movedEntities);
 SYNTHETIC["/data/rotated.bsp"] = withEntityString(
   fixtureBsp,
   fixtureEntities.replace('"model" "*1"', '"model" "*1"\n"origin" "0 192 0"\n"angle" "90"'),
+);
+// Culling: the func_wall at its compiled spot, again at the south spot, and again outside
+// the map, where its box touches only solid leafs (no PVS cluster).
+SYNTHETIC["/data/culled.bsp"] = withEntityString(
+  fixtureBsp,
+  `${fixtureEntities}{\n"classname" "func_wall"\n"model" "*1"\n"origin" "0 -320 0"\n}\n{\n"classname" "func_wall"\n"model" "*1"\n"origin" "2000 0 0"\n}\n`,
 );
 // The moved map packed at a path the server does not have, so only the pak can supply it.
 SYNTHETIC["/data/maps.pak"] = writePak({
@@ -247,8 +254,11 @@ try {
   const compiledRotated = await wallBoxes("compiled", ROTATED_VIEWS.slice(1));
   console.log(`  brush models: ${JSON.stringify(compiled[0].brushModels)}, stats ${JSON.stringify(compiled[0].stats)}`);
   check(
-    JSON.stringify(compiled[0].brushModels) === JSON.stringify(["func_wall *1 at 0 0 0"]) && compiled.every((r) => r.stats.brushModels === 1),
-    "the fixture's func_wall is placed from the entity string and drawn",
+    JSON.stringify(compiled[0].brushModels) === JSON.stringify(["func_wall *1 at 0 0 0"]) &&
+      compiled[0].stats.brushModels === 1 &&
+      compiled[1].stats.brushModels === 0 &&
+      compiled[1].stats.frustumCulled === 1,
+    "the fixture's func_wall is placed from the entity string, drawn, and culled when beside the view",
   );
   await page.goto(`${ORIGIN}/?map=data/moved.bsp`);
   await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
@@ -277,6 +287,41 @@ try {
   check(rotatedFrames.every((f) => f < 0.06), "rotating the func_wall changes only the wall's own pixels");
   check(left > 0.9, "the rotated func_wall leaves its compiled spot");
   check(arrived > 0.9, "the rotated func_wall shows where yaw 90 then its origin put it");
+
+  // Culling never changes a pixel: each view renders the same with culling off. From the
+  // north spot the south wall is beside the view and the one outside the map is in no
+  // cluster; outside the map the PVS is not used, and that wall is behind the eye.
+  await page.goto(`${ORIGIN}/?map=data/culled.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const CULL_VIEWS = [
+    { ...WALL_VIEWS[0], expect: { brushModels: 1, pvsCulled: 1, frustumCulled: 1 } },
+    { ...WALL_VIEWS[1], expect: { brushModels: 1, pvsCulled: 1, frustumCulled: 1 } },
+    { name: "spawn", view: { origin: [-448, 0, 46], pitch: 0, yaw: 0 }, expect: { brushModels: 2, pvsCulled: 1, frustumCulled: 0 } },
+    { name: "outside", view: { origin: [1200, 0, 400], pitch: 20, yaw: 180 }, expect: { brushModels: 2, pvsCulled: 0, frustumCulled: 1 } },
+  ];
+  for (const { name, view, expect } of CULL_VIEWS) {
+    const r = await page.evaluate((view) => {
+      const frame = (cull) => {
+        window.quack.setCull(cull);
+        window.quack.setView(view);
+        const { data } = window.quack.readPixels();
+        const { brushModels, pvsCulled, frustumCulled } = window.quack.stats;
+        return { stats: { brushModels, pvsCulled, frustumCulled }, data };
+      };
+      const on = frame(true);
+      const off = frame(false);
+      window.quack.setCull(true);
+      let differ = 0;
+      for (let i = 0; i < on.data.length; i++) if (on.data[i] !== off.data[i]) differ++;
+      return { on: on.stats, off: off.stats, differ };
+    }, view);
+    console.log(`  culled ${name}: ${JSON.stringify(r)}`);
+    check(
+      JSON.stringify(r.on) === JSON.stringify(expect) && JSON.stringify(r.off) === JSON.stringify({ brushModels: 3, pvsCulled: 0, frustumCulled: 0 }),
+      `${name} view culls ${expect.pvsCulled} brush model(s) by PVS and ${expect.frustumCulled} by frustum, draws ${expect.brushModels}`,
+    );
+    check(r.differ === 0, `${name} view: culling changes no pixel (${r.differ} bytes differ)`);
+  }
 
   // Game data: ?pak= mounts in order; 404s are reported, in URL order, and skipped.
   await page.goto(`${ORIGIN}/?pak=data/absent-1.pak&pak=data/synthetic.pak&pak=data/absent-2.pak&pak=data/synthetic.zip`);

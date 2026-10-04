@@ -17,6 +17,53 @@ export function pointLeaf(bsp: Bsp, x: number, y: number, z: number, headNode = 
   return -(num + 1);
 }
 
+/**
+ * Every leaf an axis-aligned box touches, solid ones included, after CM_BoxLeafnums but
+ * with no cap on the count. A box on a node's plane goes to both children, where the
+ * engine's axial fast path (BOX_ON_PLANE_SIDE) sends a box whose max is on the plane
+ * only to the back: this is a superset, never missing a leaf. Each node is visited
+ * once, so a corrupt map whose children loop or share subtrees still terminates.
+ */
+export function boxLeafs(
+  bsp: Bsp,
+  mins: readonly [number, number, number],
+  maxs: readonly [number, number, number],
+  headNode = bsp.models.headNode[0] ?? 0,
+): number[] {
+  const { nodes, planes } = bsp;
+  const out: number[] = [];
+  const seenNodes = new Uint8Array(nodes.count);
+  const seenLeafs = new Uint8Array(bsp.leafs.count);
+  const stack = [headNode];
+  while (stack.length > 0) {
+    const num = stack.pop()!;
+    if (num < 0) {
+      const leaf = -(num + 1);
+      if (leaf < bsp.leafs.count && !seenLeafs[leaf]) {
+        seenLeafs[leaf] = 1;
+        out.push(leaf);
+      }
+      continue;
+    }
+    if (num >= nodes.count || seenNodes[num]) continue;
+    seenNodes[num] = 1;
+    const p = nodes.planeNum[num]!;
+    // Distances of the box corners nearest and farthest along the plane normal.
+    let lo = -planes.dist[p]!;
+    let hi = lo;
+    for (let k = 0; k < 3; k++) {
+      const n = planes.normal[p * 3 + k]!;
+      lo += n * (n < 0 ? maxs[k]! : mins[k]!);
+      hi += n * (n < 0 ? mins[k]! : maxs[k]!);
+    }
+    // Same side test as pointLeaf: on the plane is front. Written so that NaN (a plane
+    // index past the lump) goes both ways rather than dropping leafs.
+    if (!(lo >= 0)) stack.push(nodes.children[num * 2 + 1]!);
+    if (!(hi < 0)) stack.push(nodes.children[num * 2]!);
+  }
+  return out;
+}
+
 /** Bytes in one decompressed vis row: one bit per cluster. */
 export function visRowBytes(bsp: Bsp): number {
   return (bsp.visibility.numClusters + 7) >> 3;

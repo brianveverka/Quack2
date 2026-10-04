@@ -45,6 +45,8 @@ export interface QuackDebug {
   project(x: number, y: number, z: number): [number, number] | undefined;
   /** Render one frame now and return its RGBA pixels, bottom row first. */
   readPixels(): { width: number; height: number; data: Uint8Array };
+  /** Turn brush model culling on (the default) or off. */
+  setCull(on: boolean): void;
 }
 
 declare global {
@@ -79,6 +81,7 @@ async function main(): Promise<void> {
     setView: () => {},
     project: () => undefined,
     readPixels: () => ({ width: 0, height: 0, data: new Uint8Array(0) }),
+    setCull: () => {},
   });
   const gl = canvas.getContext("webgl2", { antialias: false });
   if (!gl) return showError("WebGL2 is not available in this browser.");
@@ -221,6 +224,9 @@ async function main(): Promise<void> {
     const [cx, cy, , w] = transformPoint(renderer.viewProj, x, y, z);
     if (w <= 0) return undefined;
     return [((cx / w + 1) / 2) * canvas.width, ((cy / w + 1) / 2) * canvas.height];
+  };
+  debug.setCull = (on) => {
+    renderer.cull = on;
   };
   debug.readPixels = () => {
     draw();

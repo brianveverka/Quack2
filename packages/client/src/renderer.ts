@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // WebGL2 world renderer: one static vertex buffer for every model, a world index buffer
 // rebuilt when the eye changes cluster, a static index buffer for the brush models drawn
-// at their entity origins and angles, one draw per texture per model.
+// at their entity origins and angles, one draw per texture per model. Brush models
+// outside the eye's PVS or the view frustum are skipped.
 
 import { pointLeaf, type Bsp } from "@quack2/sim";
 import type { BrushModelInstance } from "./bmodels.js";
+import { boxClusters, boxOutsideFrustum, clustersVisible, fatClusters, frustumPlanes, instanceBox, pvsUnion, type Box } from "./cull.js";
 import { buildLightmapAtlas } from "./lightmap.js";
 import { fovY, modelMatrix, multiply, perspective, viewMatrix, type Mat4 } from "./math.js";
 import { resolveTextures, type TextureImage, type TextureSource } from "./textures.js";
@@ -65,6 +67,10 @@ export interface FrameStats {
   readonly visibleFaces: number;
   /** Brush model instances drawn. */
   readonly brushModels: number;
+  /** Brush model instances skipped: touching no cluster in the eye's PVS. */
+  readonly pvsCulled: number;
+  /** Brush model instances in the PVS but skipped: wholly outside the view frustum. */
+  readonly frustumCulled: number;
   readonly draws: number;
 }
 
@@ -73,12 +79,20 @@ interface InstanceDraws {
   readonly model: Mat4;
   /** Ranges in the brush model index buffer. */
   readonly draws: readonly DrawRange[];
+  /** World box enclosing the instance. */
+  readonly box: Box;
+  /** Distinct non-solid clusters the box touches. Computed once: models do not move yet; a mover must recompute this and `box`. */
+  readonly clusters: readonly number[];
+  /** In the fat PVS of the current eye position. */
+  inPvs: boolean;
 }
 
 export class WorldRenderer {
   readonly mesh: WorldMesh;
   /** Texture names drawn as a checker placeholder. */
   missingTextures: readonly string[] = [];
+  /** Brush model culling, on by default; off draws every instance (the engine's r_nocull, for the server's PVS test too). */
+  cull = true;
   private readonly program: WebGLProgram;
   private readonly vao: WebGLVertexArrayObject;
   private readonly indexBuffer: WebGLBuffer;
@@ -92,6 +106,8 @@ export class WorldRenderer {
   /** View-projection of the last rendered frame. */
   viewProj: Float32Array = new Float32Array(16);
   private cluster = Number.NaN;
+  /** Clusters of the fat PVS the brush models were last tested against. */
+  private fatKey: string | undefined = "";
   private drawList: DrawList = { indices: new Uint32Array(0), draws: [], visibleFaces: 0 };
 
   constructor(
@@ -140,7 +156,14 @@ export class WorldRenderer {
     for (const inst of brushModels) {
       const { base, list } = lists.get(inst.model)!;
       if (list.draws.length === 0) continue;
-      this.instances.push({ model: modelMatrix(inst.origin, inst.angles), draws: list.draws.map((d) => ({ ...d, first: d.first + base })) });
+      const box = instanceBox(bsp, inst);
+      this.instances.push({
+        model: modelMatrix(inst.origin, inst.angles),
+        draws: list.draws.map((d) => ({ ...d, first: d.first + base })),
+        box,
+        clusters: boxClusters(bsp, box),
+        inPvs: true,
+      });
     }
     this.brushIndexBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.brushIndexBuffer);
@@ -168,6 +191,17 @@ export class WorldRenderer {
       this.cluster = cluster;
       this.drawList = buildDrawList(this.mesh, visibleFaceMask(bsp, this.mesh, cluster));
     }
+    const aspect = width / height;
+    const fy = fovY(FOV_X, aspect);
+    // Farthest a near-plane point lies from the eye on any axis is at most its corner distance.
+    const nearCorner = NEAR * Math.hypot(1, Math.tan((FOV_X * Math.PI) / 360), Math.tan((fy * Math.PI) / 360));
+    const fat = fatClusters(bsp, view.origin, cluster, Math.max(8, nearCorner));
+    const fatKey = fat?.join(",");
+    if (fatKey !== this.fatKey) {
+      this.fatKey = fatKey;
+      const pvs = fat && pvsUnion(bsp, fat);
+      for (const inst of this.instances) inst.inPvs = !pvs || clustersVisible(inst.clusters, pvs);
+    }
 
     gl.viewport(0, 0, width, height);
     gl.clearColor(CLEAR_COLOR[0] / 255, CLEAR_COLOR[1] / 255, CLEAR_COLOR[2] / 255, 1);
@@ -178,8 +212,7 @@ export class WorldRenderer {
     gl.frontFace(gl.CW);
     gl.cullFace(gl.BACK);
 
-    const aspect = width / height;
-    const proj = perspective(fovY(FOV_X, aspect), aspect, NEAR, FAR);
+    const proj = perspective(fy, aspect, NEAR, FAR);
     gl.useProgram(this.program);
     this.viewProj = multiply(proj, viewMatrix(view.origin, view.pitch, view.yaw));
     gl.uniformMatrix4fv(this.uViewProj, false, this.viewProj);
@@ -193,17 +226,29 @@ export class WorldRenderer {
     gl.uniformMatrix4fv(this.uModel, false, IDENTITY);
     this.drawRanges(this.drawList.draws);
     let draws = this.drawList.draws.length;
-    // Brush models are not PVS culled (the engine's server drops entities outside the
-    // client's PVS). One outside it costs draw time but cannot show: every world face
-    // in front of it is visible from the eye, so it is in the PVS and drawn.
+    // Any model point on screen is seen along a ray from a point of the near plane, which
+    // is inside the fat PVS box, and the model's box touches the leaf the point is in.
+    // Where the near plane is inside solid, models and world alike can show a cluster
+    // past this, as in the engine.
+    const planes = frustumPlanes(this.viewProj);
+    let brushModels = 0, pvsCulled = 0, frustumCulled = 0;
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.brushIndexBuffer);
     for (const inst of this.instances) {
+      if (this.cull && !inst.inPvs) {
+        pvsCulled++;
+        continue;
+      }
+      if (this.cull && boxOutsideFrustum(planes, inst.box)) {
+        frustumCulled++;
+        continue;
+      }
       gl.uniformMatrix4fv(this.uModel, false, inst.model);
       this.drawRanges(inst.draws);
       draws += inst.draws.length;
+      brushModels++;
     }
     gl.bindVertexArray(null);
-    return { leaf, cluster, visibleFaces: this.drawList.visibleFaces, brushModels: this.instances.length, draws };
+    return { leaf, cluster, visibleFaces: this.drawList.visibleFaces, brushModels, pvsCulled, frustumCulled, draws };
   }
 
   private drawRanges(ranges: readonly DrawRange[]): void {
