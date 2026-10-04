@@ -140,7 +140,10 @@ if (!SYNTHETIC["/data/sky-rotate.bsp"]) throw new Error("no sky-rotate map");
 // area 1, joined by area portal 1 (lumps 17 areas and 18 areaportals; leafs are lump 8,
 // 28 bytes each, area at byte 6, mins x at 8). A func_wall stands in the east. The
 // portal is closed in "areas.bsp"; in "areas-open.bsp" a START_OPEN door (outside the
-// map, where nothing sees it) targets the func_areaportal and so opens it at spawn.
+// map, where nothing sees it) targets the func_areaportal and so opens it at spawn. In
+// "areas-closing.bsp" a door there that a trigger_always sends up opens it, and closes
+// it again when it is back down (42 up at 200, wait 3: home in game frame 39, which
+// client times 3601 to 3700 draw towards).
 {
   const split = Uint8Array.from(fixtureBsp);
   const view = Buffer.from(split.buffer);
@@ -160,6 +163,8 @@ if (!SYNTHETIC["/data/sky-rotate.bsp"]) throw new Error("no sky-rotate map");
   const door = `{\n"classname" "func_door"\n"model" "*1"\n"origin" "2000 0 0"\n"target" "p"\n"spawnflags" "1"\n}\n`;
   SYNTHETIC["/data/areas.bsp"] = withEntityString(lumps, fixtureEntities + eastWall + portal);
   SYNTHETIC["/data/areas-open.bsp"] = withEntityString(lumps, fixtureEntities + eastWall + portal + door);
+  const closing = `{\n"classname" "func_door"\n"model" "*1"\n"origin" "2000 0 0"\n"angle" "-1"\n"targetname" "dc"\n"target" "p"\n}\n{\n"classname" "trigger_always"\n"target" "dc"\n}\n`;
+  SYNTHETIC["/data/areas-closing.bsp"] = withEntityString(lumps, fixtureEntities + eastWall + portal + closing);
 }
 // The moved map packed at a path the server does not have, so only the pak can supply it.
 SYNTHETIC["/data/maps.pak"] = writePak({
@@ -842,6 +847,38 @@ try {
   );
   // The door outside the map is in area 0; the east func_wall is drawn.
   check(openWest.stats.brushModels === 1 && openWest.stats.areaCulled === 1, "an open portal lets the brush model beyond it draw");
+
+  // A door coming back down closes its portal (door_hit_bottom): before, the frame is the
+  // open one; from the frame it is home, the closed one.
+  const closingAt = (ms) =>
+    page.evaluate(
+      ({ view, ms }) => {
+        window.quack.setLevelTime(ms);
+        window.quack.setView(view);
+        const { data } = window.quack.readPixels();
+        const { brushModels, areaCulled } = window.quack.stats;
+        return { stats: { brushModels, areaCulled }, open: window.quack.openPortalsAt(), spawn: window.quack.openPortals, data: Array.from(data) };
+      },
+      { view: AREA_WEST, ms },
+    );
+  const closingError = await loadMap("map=data/areas-closing.bsp");
+  const closingFrames = [];
+  for (const ms of [1000, 3600, 3601, 5000, 1000]) closingFrames.push({ ms, ...(await closingAt(ms)) });
+  await page.screenshot({ path: join(outDir, "areas-closing.png") });
+  console.log(`  areas closing: ${JSON.stringify(closingFrames.map(strip))}`);
+  const [beforeHome, lastOpen, home, later, reopened] = closingFrames;
+  check(
+    !closingError && same(beforeHome.spawn, [1]) && [beforeHome, lastOpen, reopened].every((f) => same(f.open, [1])) && [home, later].every((f) => same(f.open, [])),
+    "a door the settle frames sent up opens its portal, and closes it in the frame it is back down (3601 ms); going back in time opens it again",
+  );
+  check(
+    [beforeHome, lastOpen, reopened].every((f) => same(f.data, ignoredWest.data) && f.stats.brushModels === 1),
+    "while the portal is open the frame is the open one, pixel for pixel",
+  );
+  check(
+    [home, later].every((f) => same(f.data, closedWest.data) && f.stats.brushModels === 0 && f.stats.areaCulled === 2),
+    "once the door is home the frame is the closed one, pixel for pixel, and the east func_wall is culled by area",
+  );
 
   // Game data: ?pak= mounts in order; 404s are reported, in URL order, and skipped.
   await page.goto(`${ORIGIN}/?pak=data/absent-1.pak&pak=data/synthetic.pak&pak=data/absent-2.pak&pak=data/synthetic.zip`);

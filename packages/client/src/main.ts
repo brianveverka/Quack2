@@ -60,6 +60,8 @@ export interface QuackDebug {
   setCull(on: boolean): void;
   /** Area portals the game opened at spawn (their numbers, ascending); the rest are closed. */
   openPortals?: readonly number[];
+  /** Area portals open at level time `ms` (default now), ascending: those open at spawn less those a door coming back down closed. Each frame is culled by these. */
+  openPortalsAt(ms?: number): number[];
   /** Ignore area portals, connecting every area (the server's map_noareas), or not (the default). */
   setNoAreas(on: boolean): void;
   /** Hold the level clock (light styles, warps) at `ms` since the map loaded, or let it run again (undefined). */
@@ -106,6 +108,7 @@ async function main(): Promise<void> {
     setLevelTime: () => {},
     brushOrigins: () => [],
     brushAngles: () => [],
+    openPortalsAt: () => [],
     lightmapUploads: 0,
   });
   // An opaque drawing buffer: fragment alpha (texture alpha, the alpha pass's blend)
@@ -178,8 +181,12 @@ async function main(): Promise<void> {
   // Light styles and warps animate on level time, which starts with the map here.
   const levelStart = performance.now();
   let levelTime: number | undefined;
-  const motion = new BrushMotion(() => doorMovers(bsp, entities));
-  const posesAt = (ms: number | undefined) => motion.posesAt(ms ?? levelTime ?? performance.now() - levelStart);
+  const openPortals = openAreaPortals(entities);
+  debug.openPortals = [...openPortals].sort((a, b) => a - b);
+  const motion = new BrushMotion(() => doorMovers(bsp, entities), openPortals);
+  const now = (ms: number | undefined) => ms ?? levelTime ?? performance.now() - levelStart;
+  const posesAt = (ms: number | undefined) => motion.posesAt(now(ms));
+  debug.openPortalsAt = (ms) => [...motion.openPortalsAt(now(ms))].sort((a, b) => a - b);
   debug.brushOrigins = (ms) => {
     const poses = posesAt(ms);
     return brush.instances.map((b) => poses.get(b.entity)?.origin ?? [b.origin[0], b.origin[1], b.origin[2]]);
@@ -189,8 +196,6 @@ async function main(): Promise<void> {
     return brush.instances.map((b) => poses.get(b.entity)?.angles ?? [b.angles[0], b.angles[1], b.angles[2]]);
   };
   const styleValues = lightStyleValues(DEATHMATCH_LIGHTSTYLES, 0);
-  const openPortals = openAreaPortals(entities);
-  debug.openPortals = [...openPortals].sort((a, b) => a - b);
   const renderer = new WorldRenderer(gl, bsp, noTextures, brush.instances, styleValues, openPortals);
   debug.missingTextures = renderer.missingTextures;
   const sky = skySettings(entities);
@@ -272,6 +277,7 @@ async function main(): Promise<void> {
     renderer.setLightStyles(styleValues);
     renderer.setTime(time);
     renderer.moveBrushModels(motion.posesAt(time), motion.linkedPoses(time));
+    renderer.setOpenPortals(motion.openPortalsAt(time));
     debug.stats = renderer.render(camera, canvas.width, canvas.height);
     debug.lightmapUploads = debug.stats.lightmapUploads;
     debug.frames++;

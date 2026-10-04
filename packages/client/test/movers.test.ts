@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { levelTimeAt, parseBsp, parseEntities, stepPusher } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
-import { brushModelInstances, doorMovers } from "../src/bmodels.js";
+import { brushModelInstances, doorMovers, openAreaPortals } from "../src/bmodels.js";
 import { BrushMotion, lerpAngle, networkAngle, networkCoord, type MoverPose } from "../src/movers.js";
 
 const bsp = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
@@ -386,6 +386,71 @@ describe("rotating door movers", () => {
     // LerpAngle takes -180 back up to 180 coming from 168.75, and from -180 on it blends
     // between the sent angles.
     expect([1800, 1850, 1900, 1950, 2000].map((ms) => angles(m.posesAt(ms))[2]![1])).toEqual([168.75, 174.375, 180, -175.078125, -170.15625]);
+  });
+});
+
+describe("area portals of doors coming back down", () => {
+  const portalsMotion = (src: string) => {
+    const ents = parseEntities(src);
+    return new BrushMotion(() => doorMovers(bsp, ents), openAreaPortals(ents));
+  };
+  const open = (m: BrushMotion, ms: number) => [...m.openPortalsAt(ms)].sort((a, b) => a - b);
+  // The team of "door movers" above, home in game frame 39, which client times 3601 to
+  // 3700 draw towards. The master's "target" names portal 1, and portal 3 through a
+  // targetname in another case, which a START_OPEN door (never moving) also opens; the
+  // slave's names portal 2. A trigger_always opens portal 5, which no door names.
+  const PORTALS = `
+    { "classname" "worldspawn" }
+    { "classname" "trigger_always" "target" "d" }
+    { "classname" "func_door" "model" "*1" "targetname" "d" "target" "p" "angle" "-1" "team" "t" }
+    { "classname" "func_door" "model" "*1" "target" "q" "angle" "0" "speed" "50" "team" "t" }
+    { "classname" "func_areaportal" "targetname" "p" "style" "1" }
+    { "classname" "func_areaportal" "targetname" "q" "style" "2" }
+    { "classname" "func_door" "model" "*1" "origin" "2000 0 0" "target" "s" "spawnflags" "1" }
+    { "classname" "func_areaportal" "targetname" "s" "style" "3" }
+    { "classname" "func_areaportal" "targetname" "P" "style" "3" }
+    { "classname" "trigger_always" "target" "s5" }
+    { "classname" "func_areaportal" "targetname" "s5" "style" "5" }
+  `;
+  // A later trigger_always frees the master's portal entities after it opened them.
+  const FREED = `${PORTALS}{ "classname" "trigger_always" "killtarget" "p" }`;
+
+  it("gives each door the portals door_use_areaportals finds, in G_Find order", () => {
+    const portals = (src: string) => doorMovers(bsp, parseEntities(src)).map((t) => t.map((d) => [d.entity, d.portals]));
+    expect(portals(PORTALS)).toEqual([
+      [
+        [2, [1, 3]],
+        [3, [2]],
+      ],
+      [[6, [3]]],
+    ]);
+    expect(portals(FREED)[0]).toEqual([
+      [2, []],
+      [3, [2]],
+    ]);
+  });
+
+  it("closes them in the frame each door reaches the bottom, whoever opened them, and opens them again going back in time", () => {
+    const m = portalsMotion(PORTALS);
+    expect(open(m, 0)).toEqual([1, 2, 3, 5]);
+    expect(open(m, 3600)).toEqual([1, 2, 3, 5]);
+    expect(open(m, 3601)).toEqual([5]);
+    expect(open(m, 60000)).toEqual([5]);
+    expect(open(m, 100)).toEqual([1, 2, 3, 5]);
+  });
+
+  it("leaves open the portals whose entities a killtarget freed", () => {
+    const m = portalsMotion(FREED);
+    expect(open(m, 0)).toEqual([1, 2, 3, 5]);
+    expect(open(m, 3601)).toEqual([1, 3, 5]);
+  });
+
+  it("hands out a set that later frames do not change", () => {
+    const m = portalsMotion(PORTALS);
+    const before = m.openPortalsAt(0);
+    expect(m.openPortalsAt(3600)).toBe(before);
+    expect(m.openPortalsAt(3601)).not.toBe(before);
+    expect([...before].sort()).toEqual([1, 2, 3, 5]);
   });
 });
 

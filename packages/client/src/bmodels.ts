@@ -743,13 +743,20 @@ function userOf(s: Settle, index: number): User {
   return { index, classname: liveClassname(e), target: e.target, killtarget: e.killtarget, delay: Math.fround(atof(e.delay ?? "0")) };
 }
 
-/** door_use_areaportals: set every portal the entity's "target" names (func_areaportal by classname, any case). */
-function doorUseAreaportals(s: Settle, index: number, open: boolean): void {
+/** The portals door_use_areaportals sets for an entity: those of the func_areaportal entities (by classname, any case) its "target" names, in G_Find order. */
+function areaportalsOf(s: Settle, index: number): number[] {
   const target = s.entities[index]!.target;
-  if (target === undefined) return;
+  if (target === undefined) return [];
+  const out: number[] = [];
   for (const t of findTargets(s, target)) {
-    if (stricmpEqual(s.entities[t]!.classname ?? "", "func_areaportal")) s.portals.set(atoi(s.entities[t]!.style ?? "0"), open);
+    if (stricmpEqual(s.entities[t]!.classname ?? "", "func_areaportal")) out.push(atoi(s.entities[t]!.style ?? "0"));
   }
+  return out;
+}
+
+/** door_use_areaportals: set every portal the entity's "target" names (`areaportalsOf`). */
+function doorUseAreaportals(s: Settle, index: number, open: boolean): void {
+  for (const p of areaportalsOf(s, index)) s.portals.set(p, open);
 }
 
 /**
@@ -1059,6 +1066,8 @@ function settleSpawnFrames(entities: readonly BspEntity[]): {
   freed: Set<number>;
   shown: Map<number, boolean>;
   doorMoves: readonly { index: number; up: boolean }[];
+  /** `areaportalsOf` as the settle frames leave the map: nothing is freed after them. */
+  areaportalsOf: (index: number) => number[];
 } {
   const teams = new Map<number, number[]>();
   const slaves = new Set<number>();
@@ -1120,6 +1129,7 @@ function settleSpawnFrames(entities: readonly BspEntity[]): {
     freed: s.freed,
     shown: s.shown,
     doorMoves: s.doorMoves,
+    areaportalsOf: (index) => areaportalsOf(s, index),
   };
 }
 
@@ -1128,10 +1138,12 @@ export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
   return settleSpawnFrames(entities).portals;
 }
 
-/** A door and the entity it is. */
+/** A door, the entity it is, and the area portals its door_hit_bottom closes. */
 export interface MovingDoor {
   readonly entity: number;
   readonly mover: BrushMover;
+  /** The portals door_use_areaportals finds for the door's "target" (`areaportalsOf`), in the order it sets them. */
+  readonly portals: readonly number[];
 }
 
 /** The classes door_go_up moves: func_door (func_water is one after spawn) and func_door_rotating. */
@@ -1205,7 +1217,7 @@ function rotatingDoor(ent: BspEntity, origin: Vec3): BrushMoverInit {
  * (SV_Physics_Pusher returns for the slaves).
  */
 export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor[][] {
-  const { freed, doorMoves } = settleSpawnFrames(entities);
+  const { freed, doorMoves, areaportalsOf } = settleSpawnFrames(entities);
   const turrets = settleTurrets(entities);
   const doors = new Map<number, MovingDoor>();
   entities.forEach((ent, i) => {
@@ -1221,7 +1233,7 @@ export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor
     if (ent.classname === "func_door_rotating") {
       const init = rotatingDoor(ent, origin);
       const a = init.angles!;
-      doors.set(i, { entity: i, mover: brushMover({ ...init, angles: [a[0], a[1] + yaw, a[2]] }) });
+      doors.set(i, { entity: i, mover: brushMover({ ...init, angles: [a[0], a[1] + yaw, a[2]] }), portals: areaportalsOf(i) });
       return;
     }
     const { mins, maxs } = modelBounds(bsp, model);
@@ -1250,7 +1262,7 @@ export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor
       toggle: doorToggles(ent),
       state: "bottom",
     });
-    doors.set(i, { entity: i, mover });
+    doors.set(i, { entity: i, mover, portals: areaportalsOf(i) });
   });
 
   const groups = [...findTeams(entities).values()];
