@@ -16,8 +16,9 @@ worldspawn sky box drawn where the world's sky faces bound it (R_DrawSkyBox, wit
 skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS (with
 R_SetupFrame's second view cluster 16 units below or above the eye), area portals
 (closed except those the two settle frames open: START_OPEN doors, and trigger_always
-firing portals, doors, secret doors and relays; a door's door_hit_bottom closes its own
-again in the game frame it is back down) culling world leafs and brush models,
+firing portals, doors, secret doors and relays, a "delay" on the way firing in the
+second frame when due by then and G_Spawn puts its DelayedUse in a slot still ahead;
+a door's door_hit_bottom closes its own again in the game frame it is back down) culling world leafs and brush models,
 brush entities a killtarget frees in the settle frames left out, and func_wall and
 func_object entities a use there shows or hides drawn or left out to match,
 the world walked per frame as R_RecursiveWorldNode does (R_CullBox on nodes and leafs,
@@ -44,10 +45,15 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- Only func_areaportal, doors, func_door_secret, trigger_relay, func_train, func_wall and
-  func_object uses are modeled in the settle frames (and a train's pathtarget at a
-  corner it reaches at once), and a door's or relay's own "delay" always defers its
-  targets (a tiny or negative one can come due within the second frame in the game).
+- The settle frames model the uses of func_areaportal, doors, func_door_secret,
+  trigger_relay, func_train, func_plat, func_button, func_wall, func_object and
+  target_crosslevel_trigger (and a train's pathtarget at a corner it reaches at once).
+  Not modeled: the uses that pass a use on (trigger_once and trigger_multiple's
+  Use_Multi, trigger_counter, trigger_elevator, func_timer, and target_explosion, whose
+  own "delay" can come due in the second frame too), trigger_enable arming a TRIGGERED
+  trigger_multiple, and func_rotating's rotate_use, which starts or stops a drawn brush
+  model turning. Any of them that spawns or frees an edict in the second frame also
+  moves where a DelayedUse lands (`spawnEdict` in bmodels.ts).
 - A team whose master a settle-frame killtarget frees stops moving from that frame (its
   members move and think only through the master's SV_Physics_Pusher), but
   `settleTurrets` ignores frees: a freed breach master is left out while its team is
@@ -69,7 +75,10 @@ Remaining:
   slave never thinks and stays at its spawn origin; under a TOSS master it takes the
   master's origin (SV_Physics_Toss). `PUSHER_CLASSES` in bmodels.ts has the master
   rule `settleTurrets` uses. `brushMovers` leaves a slave train out, drawn where the
-  settle frames leave it.
+  settle frames leave it. Since the settle frames free edicts (turret_breach_finish_init
+  in the first frame, killtargets in the second), the slot matters: a breach between the
+  master and the train can free the train's first path_corner first, and a slave behind
+  a teamchain a free cut, or under a master freed earlier in the frame, never thinks.
 - Malformed entity lumps: when the first entity is not worldspawn, InitBodyQue never runs,
   so entities 1-8 land in the body-queue slots G_FreeEdict refuses to free, and stay in
   the game whatever `inGame` says (spawn spots, teams, targets). ED_ParseEdict also ends
@@ -125,6 +134,11 @@ Remaining:
   plat moving after the settle frames. It also snapshots target_ent's origin where
   train_resume reads it live, and a slave train or one with no inline model, which
   `brushMovers` leaves out, keeps the origin the settle frames left it.
+- The settle frames' use budget (MAX_USES in bmodels.ts) is per entity slot run, so a
+  hostile map with many trigger_always each setting off a branching trigger_relay loop
+  (which crashes the game) costs about 160 ms each to load, measured 2026-10-04 in Node 22.
+  One budget for the whole frame would bound it, at the cost of starving later uses on
+  such maps.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
