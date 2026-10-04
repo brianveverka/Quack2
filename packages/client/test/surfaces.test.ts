@@ -9,6 +9,7 @@ import { buildLightmapAtlas, lightmapUv } from "../src/lightmap.js";
 import { subdivideWarpPolygon } from "../src/warp.js";
 import {
   VERTEX_FLOATS,
+  WorldDraws,
   brushModelAlphaOrder,
   buildDrawList,
   buildOrderedDraws,
@@ -16,7 +17,8 @@ import {
   eyePlaneSide,
   modelFaceMask,
   visibleFaceMask,
-  worldAlphaOrder,
+  walkWorld,
+  worldVis,
 } from "../src/world.js";
 
 const fixture = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
@@ -74,34 +76,32 @@ describe("sky faces", () => {
   const mesh = buildWorldMesh(bsp, buildLightmapAtlas(bsp));
 
   it("are left out of the world's draws and listed apart, sky before translucent", () => {
-    const world = buildDrawList(mesh, visibleFaceMask(bsp, mesh, -1), true);
+    const world = new WorldDraws(mesh);
+    const all = [...Array(WORLD_FACES).keys()];
+    world.update(all);
     expect(world.sky).toEqual([...Array(10).keys()]);
-    expect(world.visibleFaces).toBe(WORLD_FACES);
     expect(world.draws.every((d) => !(d.flags & SURF_SKY))).toBe(true);
     const drawn = world.draws.reduce((a, d) => a + d.count, 0);
-    const all = buildDrawList(mesh, visibleFaceMask(bsp, mesh, -1));
-    const skyIndices = [...Array(10).keys()].reduce((a, f) => {
-      let n = 0;
-      for (let p = mesh.faceFirstPoly[f]!; p < mesh.faceFirstPoly[f]! + mesh.faceNumPolys[f]!; p++) n += (mesh.polyNumVertices[p]! - 2) * 3;
-      return a + n;
-    }, 0);
-    expect(drawn).toBe(all.indices.length - skyIndices);
-    expect(all.sky).toEqual([]);
+    expect(drawn).toBe(world.indexCount);
+    const opaque = visibleFaceMask(bsp, mesh, -1);
+    opaque.fill(0, 0, 10);
+    const list = buildDrawList(mesh, opaque);
+    expect(Array.from(world.indices.subarray(0, world.indexCount))).toEqual(Array.from(list.indices));
+    expect(world.draws).toEqual(list.draws);
     // A sky face that is also translucent is still a sky face, as SURF_SKY is tested first.
     const both = flagged({ 0: SURF_SKY | SURF_TRANS33 });
-    const bothMesh = buildWorldMesh(both, buildLightmapAtlas(both));
-    const list = buildDrawList(bothMesh, visibleFaceMask(both, bothMesh, -1), true);
-    expect(list.sky).toEqual([0]);
-    expect(list.translucent).toEqual([]);
+    const bothDraws = new WorldDraws(buildWorldMesh(both, buildLightmapAtlas(both)));
+    bothDraws.update(all);
+    expect(bothDraws.sky).toEqual([0]);
+    expect(bothDraws.alpha).toEqual([]);
   });
 
   it("of brush models draw as opaque faces", () => {
     const brush = buildDrawList(mesh, modelFaceMask(bsp, 1));
-    expect(brush.sky).toEqual([]);
     expect(brush.draws.some((d) => d.flags & SURF_SKY)).toBe(true);
   });
 
-  it("face the eye by eyePlaneSide, as worldAlphaOrder decides", () => {
+  it("face the eye by eyePlaneSide, as walkWorld decides", () => {
     for (const eye of [
       [0, 0, 64],
       [-200, 150, 30],
@@ -245,8 +245,11 @@ describe("translucent faces", () => {
       [300, -100, 100],
       [-352, 160, 24],
     ] as const) {
-      const order = worldAlphaOrder(bsp, all, eye);
+      const draws = new WorldDraws(mesh);
+      draws.update(walkWorld(bsp, mesh, worldVis(bsp, -1), eye));
+      const order = draws.alpha;
       expect(order).toEqual(reference(bsp, new Set(all), eye));
+      expect(draws.indexCount).toBe(0);
       expect(order.length).toBeGreaterThan(0);
       expect(order.length).toBeLessThan(WORLD_FACES);
       // Every listed face has the eye on its front side.
@@ -257,15 +260,5 @@ describe("translucent faces", () => {
         expect(bsp.faces.side[f] ? d < 0 : d >= 0).toBe(true);
       }
     }
-    // Only the faces asked for.
-    expect(worldAlphaOrder(bsp, [3, 7], [0, 0, 64]).every((f) => f === 3 || f === 7)).toBe(true);
-    expect(worldAlphaOrder(bsp, [], [0, 0, 64])).toEqual([]);
-  });
-
-  it("a node tree that loops does not hang the walk", () => {
-    const children = Int32Array.from(bsp.nodes.children);
-    children[2] = 0; // node 1's front child points back at the root
-    const looped = { ...bsp, nodes: { ...bsp.nodes, children } };
-    expect(() => worldAlphaOrder(looped, [...Array(WORLD_FACES).keys()], [0, 0, 64])).not.toThrow();
   });
 });

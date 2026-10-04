@@ -5,7 +5,7 @@ pool. Planned shape: a WebGL2 browser client and an authoritative Node server ru
 shared simulation.
 
 Status: early. The BSP parser, pak/zip readers, and a WebGL2 world renderer (lightmaps
-with animated light styles, warped and translucent surfaces, the sky box, PVS and area portal culling, inline brush models such as doors and plats
+with animated light styles, warped and translucent surfaces, the sky box, PVS, area portal and view frustum culling, inline brush models such as doors and plats
 drawn where the game has them after spawn and culled by area portal, PVS and view frustum, free-fly camera,
 `.wal` textures from game data you mount, checker placeholders for anything missing) are
 implemented and tested.
