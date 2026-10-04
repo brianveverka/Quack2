@@ -699,6 +699,96 @@ describe("area portals open at spawn", () => {
       expect(chain(`"delay" "0.1"`)).toEqual([]);
     });
 
+    it("a delay due by the second frame's level.time + 0.001, in float, fires in it from a slot after the one running", () => {
+      const chain = (delay: string) =>
+        open(`{ "classname" "trigger_always" "target" "d" }
+          { "classname" "func_door" "targetname" "d" "target" "e" "delay" "${delay}" }
+          { "classname" "func_door" "targetname" "e" "target" "q" }`);
+      expect(chain("0.0005")).toEqual([3]);
+      expect(chain("0.0009")).toEqual([3]);
+      // 0.2f + 0.001f rounds to just above the bound.
+      expect(chain("0.001")).toEqual([]);
+      expect(chain("-0.1")).toEqual([3]);
+      expect(chain("-0.19999")).toEqual([3]);
+      // SV_RunThink never runs a nextthink at or below 0.
+      expect(chain("-0.2")).toEqual([]);
+      expect(chain("-1")).toEqual([]);
+      const relay = `{ "classname" "trigger_relay" "targetname" "r" "target" "q" "delay" "0.0005" }`;
+      expect(open(`{ "classname" "trigger_always" "target" "r" } ${relay}`)).toEqual([3]);
+      const train = (delay: string) => `{ "classname" "func_train" "target" "a" }
+        { "classname" "path_corner" "targetname" "a" "target" "b" "origin" "1 2 3" }
+        { "classname" "path_corner" "targetname" "b" "pathtarget" "q" "origin" "1 2 3" "delay" "${delay}" }`;
+      expect(open(train("0.0005"))).toEqual([3]);
+      expect(open(train("0.001"))).toEqual([]);
+    });
+
+    it("G_Spawn puts a DelayedUse in the first free slot, and one before the edict running waits a frame", () => {
+      const relay = `{ "classname" "trigger_relay" "targetname" "r" "target" "q" "delay" "0.0005" }`;
+      // The first trigger_always's DelayedUse frees its slot after firing; the relay's lands there.
+      expect(open(`{ "classname" "trigger_always" "target" "x" } { "classname" "trigger_always" "target" "r" } ${relay}`)).toEqual([]);
+      // One not yet due keeps its slot.
+      expect(open(`{ "classname" "trigger_always" "target" "x" "delay" "0.3" } { "classname" "trigger_always" "target" "r" } ${relay}`)).toEqual([3]);
+      // A killtarget frees a slot before the relay's use: before the trigger, or after it.
+      const wall = `{ "classname" "func_wall" "model" "*1" "targetname" "k" }`;
+      expect(open(`${wall} { "classname" "trigger_always" "target" "r" "killtarget" "k" } ${relay}`)).toEqual([]);
+      expect(open(`{ "classname" "trigger_always" "target" "r" "killtarget" "k" } ${wall} ${relay}`)).toEqual([3]);
+      // turret_breach_finish_init frees the breach's target in the first frame.
+      const turret = `{ "classname" "info_notnull" "targetname" "m" }
+        { "classname" "turret_breach" "model" "*1" "team" "tt" "target" "m" }
+        { "classname" "turret_base" "model" "*1" "team" "tt" }`;
+      expect(open(`${turret} { "classname" "trigger_always" "target" "r" } ${relay}`)).toEqual([]);
+      expect(open(`{ "classname" "trigger_always" "target" "r" } ${turret} ${relay}`)).toEqual([3]);
+      // A door after the breach G_Spawns its trigger into that slot in the first frame.
+      const door = `{ "classname" "func_door" "model" "*1" }`;
+      expect(open(`${turret} ${door} { "classname" "trigger_always" "target" "r" } ${relay}`)).toEqual([3]);
+      expect(open(`${door} ${turret} { "classname" "trigger_always" "target" "r" } ${relay}`)).toEqual([]);
+      // A door with a targetname or health, or a team slave, spawns no trigger.
+      for (const keys of [`"targetname" "n"`, `"health" "5"`, `"team" "dt"`]) {
+        const other = `{ "classname" "func_door" "model" "*1" "team" "dt" }`;
+        expect(open(`${other} ${turret} { "classname" "func_door" "model" "*1" ${keys} } { "classname" "trigger_always" "target" "r" } ${relay}`)).toEqual([]);
+      }
+      // A breach freeing a later member of its team ends the teamchain: the next breach does not run.
+      expect(
+        open(`{ "classname" "turret_breach" "model" "*1" "team" "tt" "target" "b" }
+          { "classname" "turret_breach" "model" "*1" "team" "tt" "targetname" "b" "target" "q" }
+          { "classname" "trigger_always" "target" "q" }`),
+      ).toEqual([3]);
+      // A master freed earlier in the frame runs no team.
+      expect(
+        open(`{ "classname" "turret_breach" "model" "*1" "team" "t1" "target" "w" }
+          { "classname" "func_wall" "model" "*1" "team" "t2" "targetname" "w" }
+          { "classname" "turret_breach" "model" "*1" "team" "t2" "target" "q" }
+          { "classname" "trigger_always" "target" "q" }`),
+      ).toEqual([3]);
+      // A START_OPEN door before the breach opens the portal before the breach frees it.
+      const breachQ = `{ "classname" "turret_breach" "model" "*1" "team" "tt" "target" "q" } { "classname" "turret_base" "model" "*1" "team" "tt" }`;
+      const openDoor = `{ "classname" "func_door" "model" "*1" "target" "q" "spawnflags" "1" }`;
+      expect(open(`${openDoor} ${breachQ}`)).toEqual([3]);
+      expect(open(`${breachQ} ${openDoor}`)).toEqual([]);
+      // A used target_crosslevel_trigger frees itself.
+      const cross = `{ "classname" "target_crosslevel_trigger" "targetname" "c" }`;
+      expect(open(`${cross} { "classname" "trigger_always" "target" "c" } ${relay.replace('"r"', '"c"')}`)).toEqual([]);
+      expect(open(`{ "classname" "trigger_always" "target" "c" } ${cross} ${relay.replace('"r"', '"c"')}`)).toEqual([3]);
+      // G_FreeEdict refuses worldspawn.
+      const worldCross = parseEntities(`{ "classname" "target_crosslevel_trigger" "targetname" "c" }
+        { "classname" "func_areaportal" "targetname" "q" "style" "3" }
+        { "classname" "trigger_always" "target" "c" } ${relay.replace('"r"', '"c"')}`);
+      expect([...openAreaPortals(worldCross)]).toEqual([3]);
+    });
+
+    it("ends a chain of tiny delays that spawns faster than it frees (ED_Alloc errors in the game)", () => {
+      const relay = `{ "classname" "trigger_relay" "targetname" "r" "target" "r" "delay" "0.0005" }`;
+      expect(open(`{ "classname" "trigger_always" "target" "r" } ${relay} ${relay}`)).toEqual([]);
+      // The DelayedUses it spawns share one use budget: each here sets off a branching relay loop.
+      const loop = `{ "classname" "trigger_relay" "targetname" "x" "target" "x" }`;
+      const start = performance.now();
+      open(`{ "classname" "trigger_always" "target" "t" }
+        { "classname" "trigger_relay" "targetname" "t" "target" "t" "delay" "0.0005" }
+        { "classname" "trigger_relay" "targetname" "t" "target" "t" "delay" "0.0005" }
+        { "classname" "trigger_relay" "targetname" "t" "target" "x" } ${loop} ${loop} ${loop}`);
+      expect(performance.now() - start).toBeLessThan(3000);
+    });
+
     it("func_water is a door named func_door after spawn, toggling unless it has a wait", () => {
       const water = `{ "classname" "func_water" "targetname" "w" "target" "q" }`;
       expect(open(`{ "classname" "trigger_always" "target" "w" } ${water}`)).toEqual([3]);

@@ -640,6 +640,13 @@ const DOOR_TOGGLE = 32;
  */
 const SECOND_FRAME_DUE = Math.fround(2 * FRAMETIME) + 0.001;
 /**
+ * Edicts G_Spawn may append in the settle frames (door triggers, DelayedUses); the rest are
+ * dropped, which ends a chain of tiny delays that spawns faster than it frees. The game errors
+ * ("ED_Alloc: no free edicts") sooner, when all its edicts (1024 by default, counting
+ * clients, the body queue and spawned triggers) are in use.
+ */
+const MAX_SPAWNED = 1024;
+/**
  * Uses one trigger_always may set off, and how deeply they may nest; the rest are
  * dropped. A trigger_relay loop recurses until the game crashes, and three relays that
  * each target all of them branch at every level, so the depth limit alone would not end
@@ -657,6 +664,21 @@ interface User {
   delay: number;
 }
 
+/** G_UseTargets' temp edict: Think_Delay fires its target and killtarget at nextthink, then frees it. */
+interface DelayedUse {
+  nextthink: number;
+  /** Spawned in the second frame: such DelayedUses share one use budget (`Settle.spawnedBudget`). */
+  inFrame: boolean;
+  target: string | undefined;
+  killtarget: string | undefined;
+}
+
+/**
+ * An edict slot in the settle frames: a map entity by index, a DelayedUse, a door's
+ * trigger (Think_SpawnDoorTrigger's, which never thinks), or free (null).
+ */
+type Slot = number | DelayedUse | "doorTrigger" | null;
+
 /** Game state the settle frames' use chains read and change. */
 interface Settle {
   entities: readonly BspEntity[];
@@ -664,6 +686,12 @@ interface Settle {
   byTargetname: Map<string, number[]>;
   /** Entities a killtarget freed. */
   freed: Set<number>;
+  /** The edicts G_RunFrame walks in both frames, in slot order (`settleSpawnFrames`). */
+  slots: Slot[];
+  /** Each in-game entity's index in `slots`. */
+  slotOf: Map<number, number>;
+  /** Edicts appended to `slots` so far (MAX_SPAWNED). */
+  spawned: number;
   /**
    * Whether a func_wall or func_object used so far is sent to clients (SVF_NOCLIENT
    * clear); the rest are as `visibleAtSpawn` says.
@@ -691,8 +719,13 @@ interface Settle {
   trains: Map<number, BrushMover>;
   /** The entity whose think is running (level.current_entity), -1 for a DelayedUse. */
   current: number;
-  /** Uses left for the current trigger_always before MAX_USES cuts the walk off. */
+  /**
+   * Uses left before MAX_USES cuts the walk off: per entity run, and for every DelayedUse
+   * the second frame spawns together (`spawnedBudget`), so a chain of them cannot
+   * multiply the work by MAX_SPAWNED.
+   */
   budget: number;
+  spawnedBudget: number;
   depth: number;
 }
 
@@ -761,20 +794,41 @@ function doorUseAreaportals(s: Settle, index: number, open: boolean): void {
   for (const p of areaportalsOf(s, index)) s.portals.set(p, open);
 }
 
+/** G_FreeEdict on a map entity: freed, and its slot free for G_Spawn (freetime < 2). */
+function freeEdict(s: Settle, index: number): void {
+  s.freed.add(index);
+  s.slots[s.slotOf.get(index)!] = null;
+}
+
 /**
- * G_UseTargets within the settle frames. A user with a nonzero "delay" queues a
- * DelayedUse and fires nothing here. One due by the second frame's level.time + 0.001 (a
- * delay under about 0.001, or negative) still runs in that frame in the game if G_Spawn
- * places it after the edict being run; that is not modeled. Messages and sounds do not
- * change the map.
+ * G_Spawn in the settle frames: the first free slot (every slot freed so far is reusable,
+ * as freetime < 2), else a new one at the end, which G_RunFrame still reaches this frame.
+ */
+function spawnEdict(s: Settle, d: DelayedUse | "doorTrigger"): void {
+  const free = s.slots.indexOf(null);
+  if (free >= 0) s.slots[free] = d;
+  else if (s.spawned < MAX_SPAWNED) {
+    s.spawned++;
+    s.slots.push(d);
+  }
+}
+
+/**
+ * G_UseTargets within the settle frames, which run uses only in the second. A user with a
+ * nonzero "delay" spawns a DelayedUse due at level.time + delay (in float) and fires
+ * nothing here; `settleSpawnFrames` runs it if it is due in that frame and lies after
+ * the edict being run. Messages and sounds do not change the map.
  */
 function useTargets(s: Settle, user: User): void {
-  if (user.delay !== 0) return;
+  if (user.delay !== 0) {
+    spawnEdict(s, { nextthink: f32(levelTimeAt(2) + user.delay), inFrame: true, target: user.target, killtarget: user.killtarget });
+    return;
+  }
   const gone = () => user.index >= 0 && s.freed.has(user.index);
   if (user.killtarget !== undefined) {
     for (const t of findTargets(s, user.killtarget)) {
       // G_FreeEdict refuses worldspawn (and the client and body queue edicts before the map's).
-      if (t !== 0) s.freed.add(t);
+      if (t !== 0) freeEdict(s, t);
       if (gone()) return;
     }
   }
@@ -827,6 +881,10 @@ function useOne(s: Settle, index: number): void {
     }
     case "trigger_relay":
       useTargets(s, userOf(s, index));
+      return;
+    case "target_crosslevel_trigger":
+      // trigger_crosslevel_trigger_use sets serverflags and frees itself (G_FreeEdict refuses worldspawn).
+      if (index !== 0) freeEdict(s, index);
       return;
     case "func_wall":
     case "func_object":
@@ -1045,21 +1103,32 @@ function doorUse(s: Settle, index: number): void {
  * Area portals start closed (CM_SetAreaPortalState; SP_func_areaportal leaves them so;
  * a portal is its entity's "style").
  *
- * First frame: a START_OPEN func_door or func_door_rotating with no "health" and no
- * "targetname" runs Think_SpawnDoorTrigger, which, unless the door is a team slave,
- * opens every portal door_use_areaportals finds: in-game entities whose classname is
- * func_areaportal and whose "targetname" is the door's "target", compared case
- * insensitively (G_Find, Q_stricmp). Every train runs func_train_find (`trainFind`).
- * A train's mins are its inline model's in `bsp`, else 0 0 0 (without `bsp`, or a
- * train with no inline model).
+ * Edict slots: SpawnEntities refills a slot an entity freed at spawn with the next one, so
+ * the in-game entities lie in entity order, each trigger_always's DelayedUse right after
+ * it. Both frames run them in slot order, skipping slots freed earlier in the frame.
  *
- * Second frame: edicts run in entity order. A train runs its think if due
+ * First frame: a func_door or func_door_rotating with no "health" and no "targetname"
+ * that is no team slave runs Think_SpawnDoorTrigger: it G_Spawns its trigger (`spawnEdict`)
+ * and, if START_OPEN, opens every portal door_use_areaportals finds: in-game entities
+ * whose classname is func_areaportal and whose "targetname" is the door's "target",
+ * compared case insensitively (G_Find, Q_stricmp). Every train not yet freed runs
+ * func_train_find (`trainFind`) at its own slot, a team slave's included (BACKLOG.md). A train's mins are its inline model's in `bsp`, else 0 0 0 (without
+ * `bsp`, or a train with no inline model). A breach on a team whose master is in
+ * PUSHER_CLASSES runs turret_breach_finish_init in the master's slot, along the
+ * teamchain up to a freed member, freeing its target.
+ *
+ * Second frame: a train runs its think if due
  * (SV_Physics_Pusher: train_next for a START_ON one, or what a use earlier in the frame
  * left it). Every
  * in-game trigger_always fires its targets through a DelayedUse (SP_trigger_always
  * raises "delay" to at least 0.2 s; one above that comes due later and is skipped),
  * which G_Spawn placed right after it: freed slots are refilled by the next spawn, so
- * none lies earlier. G_UseTargets first frees its killtargets, then uses its targets: a
+ * none lies earlier. A use with a "delay" spawns a DelayedUse into the first slot freed
+ * so far in this frame (a killtarget's, or a DelayedUse's that ran), else after every
+ * slot; it fires in this frame if it is due and its slot lies ahead (`useTargets`).
+ * Slots droptofloor frees (a start-solid item, in the second frame) need the trace and
+ * are not modeled, nor is a target_crosslevel_target with a "delay" up to about 0.2
+ * firing and freeing itself in either frame. G_UseTargets first frees its killtargets, then uses its targets: a
  * func_areaportal toggles, a door goes up with its team (each member at the bottom fires
  * its own targets, except portals, and opens its portals), a func_door_secret at origin
  * 0 0 0 opens its portals, a trigger_relay fires its targets, a train runs train_use
@@ -1097,10 +1166,24 @@ function settleSpawnFrames(
     if (list) list.push(i);
     else byTargetname.set(key, [i]);
   });
+  // SP_trigger_always raises "delay" to at least 0.2 s, at level.time 0.
+  const slots: Slot[] = [];
+  const slotOf = new Map<number, number>();
+  entities.forEach((e, i) => {
+    if (i !== 0 && !inGame(e)) return;
+    slotOf.set(i, slots.length);
+    slots.push(i);
+    if (i === 0 || e.classname !== "trigger_always") return;
+    const delay = Math.fround(atof(e.delay ?? "0"));
+    slots.push({ nextthink: Math.max(delay, Math.fround(0.2)), inFrame: false, target: e.target, killtarget: e.killtarget });
+  });
   const s: Settle = {
     entities,
     byTargetname,
     freed: new Set(),
+    slots,
+    slotOf,
+    spawned: 0,
     shown: new Map(),
     useCleared: new Set(),
     teams,
@@ -1113,6 +1196,7 @@ function settleSpawnFrames(
     trains: new Map(),
     current: -1,
     budget: MAX_USES,
+    spawnedBudget: MAX_USES,
     depth: 0,
   };
   entities.forEach((e, i) => {
@@ -1121,29 +1205,53 @@ function settleSpawnFrames(
     const mins: Vec3 = bsp && model !== undefined ? modelBounds(bsp, model).mins : [0, 0, 0];
     s.trains.set(i, trainMover(s, i, mins));
   });
-  for (const [i, m] of s.trains) trainFind(s, i, m);
-  entities.forEach((door, i) => {
-    if (door.classname !== "func_door" && door.classname !== "func_door_rotating") return;
-    if (!inGame(door) || slaves.has(i)) return;
-    if (!(atoi(door.spawnflags ?? "0") & DOOR_START_OPEN)) return;
-    if (atoi(door.health ?? "0") || door.targetname !== undefined) return;
-    doorUseAreaportals(s, i, true);
-  });
+  // The first frame, in slot order (a slot freed earlier in it is skipped).
+  for (const slot of [...s.slots]) {
+    if (typeof slot !== "number" || s.freed.has(slot)) continue;
+    const ent = entities[slot]!;
+    const train = s.trains.get(slot);
+    if (train) trainFind(s, slot, train);
+    if (
+      (ent.classname === "func_door" || ent.classname === "func_door_rotating") &&
+      !slaves.has(slot) &&
+      !atoi(ent.health ?? "0") &&
+      ent.targetname === undefined
+    ) {
+      // Think_SpawnDoorTrigger: G_Spawn the door's trigger, then open its portals if START_OPEN.
+      spawnEdict(s, "doorTrigger");
+      if (atoi(ent.spawnflags ?? "0") & DOOR_START_OPEN) doorUseAreaportals(s, slot, true);
+    }
+    // SV_Physics_Pusher runs a PUSH or STOP master's team thinks along its teamchain, which
+    // ends at a freed member. turret_breach_finish_init frees the breach's target
+    // (G_PickTarget; the game crashes on a target that names nothing).
+    const members = teams.get(slot);
+    if (!members || !PUSHER_CLASSES.has(ent.classname ?? "")) continue;
+    for (const m of members) {
+      if (s.freed.has(m)) break;
+      if (entities[m]!.classname !== "turret_breach") continue;
+      const t = pickTarget(s, entities[m]!.target);
+      if (t !== undefined && t !== 0) freeEdict(s, t);
+    }
+  }
   const second = levelTimeAt(2);
-  entities.forEach((e, i) => {
-    const train = s.trains.get(i);
-    if (train && !s.freed.has(i)) {
-      s.budget = MAX_USES;
-      s.current = i;
+  // G_RunFrame reads num_edicts each pass, so a slot appended in this frame is run too.
+  for (let p = 0; p < s.slots.length; p++) {
+    const slot = s.slots[p]!;
+    s.budget = MAX_USES;
+    if (typeof slot === "number") {
+      const train = s.trains.get(slot);
+      if (!train) continue;
+      s.current = slot;
       stepPusher([train], second);
       s.current = -1;
+    } else if (slot !== null && slot !== "doorTrigger" && slot.nextthink > 0 && slot.nextthink <= SECOND_FRAME_DUE) {
+      // SV_RunThink: a nextthink at or below 0 never runs. Think_Delay frees the slot after its uses.
+      if (slot.inFrame) s.budget = s.spawnedBudget;
+      useTargets(s, { index: -1, classname: "DelayedUse", target: slot.target, killtarget: slot.killtarget, delay: 0 });
+      if (slot.inFrame) s.spawnedBudget = s.budget;
+      s.slots[p] = null;
     }
-    if (i === 0 || e.classname !== "trigger_always" || !inGame(e)) return;
-    const delay = Math.fround(atof(e.delay ?? "0"));
-    if (Math.max(delay, Math.fround(0.2)) > SECOND_FRAME_DUE) return;
-    s.budget = MAX_USES;
-    useTargets(s, { index: -1, classname: "DelayedUse", target: e.target, killtarget: e.killtarget, delay: 0 });
-  });
+  }
   for (const m of s.trains.values()) m.train!.usePathtarget = undefined;
   return {
     portals: new Set([...s.portals].filter(([, open]) => open).map(([p]) => p)),
