@@ -8,9 +8,10 @@ The WebGL2 world renderer is in `packages/client` (faces, lightmaps with the dea
 light styles animated at 10 Hz, warped surfaces moved per vertex as EmitWaterPolys does,
 translucent surfaces blended in R_DrawAlphaSurfaces' order, no lightmap on sky, warp or
 translucent faces, the worldspawn sky box drawn where the world's sky faces bound it
-(R_DrawSkyBox, with skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS,
-area portals (closed except those a START_OPEN door opens at spawn) culling world leafs
-and brush models, the world walked per frame as R_RecursiveWorldNode does (R_CullBox on
+(R_DrawSkyBox, with skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS
+(with R_SetupFrame's second view cluster 16 units below or above the eye), area portals
+(closed except those a START_OPEN door opens at spawn) culling world leafs and brush
+models, the world walked per frame as R_RecursiveWorldNode does (R_CullBox on
 nodes and leafs, so the sky box is bounded by the sky faces in view), inline brush
 models where the game has them after spawn (untargeted plats lowered, START_OPEN doors
 open, trains at their first path_corner or a teleport one after it, turrets turned to
@@ -19,8 +20,6 @@ free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data (zip
 self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- The engine's second view cluster near water surfaces (R_SetupFrame `viewcluster2`,
-  merged in R_MarkLeaves) is not handled.
 - Area portals the game opens in the second settle frame are not modeled: a
   trigger_always (DelayedUse at 0.2 s) firing a func_areaportal toggles it open, and one
   firing a door opens the door's portals. Shares the search for what targets an entity
