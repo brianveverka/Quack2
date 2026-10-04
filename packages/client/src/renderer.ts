@@ -141,7 +141,10 @@ export interface FrameStats {
   readonly area: number;
   /** World faces in the PVS and in areas connected to the eye's; brush model faces are not counted. */
   readonly visibleFaces: number;
-  /** World faces R_RecursiveWorldNode passes: those, less faces in leafs outside the view frustum or facing away; sky and translucent ones included. */
+  /**
+   * World faces R_RecursiveWorldNode passes: those, less faces in leafs outside the view
+   * frustum or facing away; sky and translucent ones included.
+   */
   readonly drawnFaces: number;
   /** Brush model instances drawn. */
   readonly brushModels: number;
@@ -541,9 +544,10 @@ export class WorldRenderer {
   }
 
   /**
-   * R_AddSkySurface for each world sky face R_RecursiveWorldNode passed, then R_DrawSkyBox: depth tested and written, after the world's opaque
-   * faces, so nearer geometry hides the box and anything drawn behind a sky face nearer
-   * than the box shows through it, as in the engine.
+   * R_AddSkySurface for each world sky face R_RecursiveWorldNode passed, then
+   * R_DrawSkyBox: depth tested and written, after the world's opaque faces, so nearer
+   * geometry hides the box and anything drawn behind a sky face nearer than the box shows
+   * through it, as in the engine.
    */
   private drawSkyBox(eye: readonly [number, number, number]): { polygons: number; sides: number } {
     const { gl, bsp, mesh } = this;

@@ -314,7 +314,6 @@ export function brushModelAlphaOrder(faces: readonly number[]): number[] {
   return [...faces].reverse();
 }
 
-
 /**
  * What R_MarkLeaves and the area bits leave R_RecursiveWorldNode for one eye cluster and
  * area. `nodes`: a leaf under the node is in the PVS (its visframe; areas play no part).
@@ -327,6 +326,7 @@ export interface WorldVis {
   readonly leafs: Uint8Array;
 }
 
+/** R_MarkLeaves' marks for an eye in `cluster`, with the area test on leafs (WorldVis). */
 export function worldVis(bsp: Bsp, cluster: number, areaBits?: Uint8Array): WorldVis {
   const { nodes, leafs } = bsp;
   const nodeVis = new Uint8Array(nodes.count);

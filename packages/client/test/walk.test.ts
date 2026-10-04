@@ -3,7 +3,7 @@
 // R_RecursiveWorldNode written as the C does, and WorldDraws' per-frame index rebuild.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { CONTENTS_SOLID, areaBits, clusterPvs, parseBsp, pointLeaf, type Bsp } from "@quack2/sim";
+import { CONTENTS_SOLID, SURF_SKY, SURF_TRANS33, SURF_TRANS66, areaBits, clusterPvs, parseBsp, pointLeaf, type Bsp } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
 import { closedFlood, withEastArea } from "./areas-fixture.js";
 import { frustumPlanes } from "../src/cull.js";
@@ -95,7 +95,17 @@ function reference(bsp: Bsp, view: View | undefined, eye: Vec3, cluster: number,
     }
     if (!nodeVis[child]) return;
     if (frustum && cullBox(frustum, nodes.mins, nodes.maxs, child * 3)) return;
-    const side = eyePlaneSide(bsp, nodes.planeNum[child]!, eye);
+    // float modelorg; axial planes compare one coordinate, others a float DotProduct.
+    const p = nodes.planeNum[child]!;
+    const n = bsp.planes.normal;
+    const type = bsp.planes.type[p]!;
+    const f = Math.fround;
+    const o = eye.map(f);
+    const dot =
+      type >= 0 && type < 3
+        ? f(o[type]! - bsp.planes.dist[p]!)
+        : f(f(f(f(o[0]! * n[p * 3]!) + f(o[1]! * n[p * 3 + 1]!)) + f(o[2]! * n[p * 3 + 2]!)) - bsp.planes.dist[p]!);
+    const side = dot >= 0 ? 0 : 1;
     walk(nodes.children[child * 2 + side]!);
     for (let k = 0; k < nodes.numFaces[child]!; k++) {
       const f = nodes.firstFace[child]! + k;
@@ -184,6 +194,17 @@ describe("walkWorld", () => {
     expect(faces.length).toBeLessThan(walkWorld(fixture, mesh, vis, view.origin).length / 2);
   });
 
+  it("leaves out faces that are not drawn (no texture)", () => {
+    const view: View = { origin: [-448, 0, 46], pitch: 0, yaw: 0, aspect: 4 / 3 };
+    const cluster = clusterAt(fixture, view.origin);
+    const expected = reference(fixture, view, view.origin, cluster);
+    const dropped = expected.slice(0, 3);
+    const faceTexture = Int32Array.from(mesh.faceTexture);
+    for (const f of dropped) faceTexture[f] = -1;
+    const faces = walkWorld(fixture, { ...mesh, faceTexture }, worldVis(fixture, cluster), view.origin, sidePlanes(view));
+    expect(faces).toEqual(expected.filter((f) => !dropped.includes(f)));
+  });
+
   it("a node tree that loops does not hang the walk", () => {
     const children = Int32Array.from(fixture.nodes.children);
     children[2] = 0; // node 1's front child points back at the root
@@ -200,6 +221,13 @@ describe("WorldDraws", () => {
     return buildDrawList(m, mask);
   };
 
+  /** The opaque faces (what `update` reports changes in), as a comparable string. */
+  const opaqueKey = (faces: readonly number[]) =>
+    faces
+      .filter((f) => !(mesh.faceFlags[f]! & (SURF_SKY | SURF_TRANS33 | SURF_TRANS66)))
+      .sort((a, b) => a - b)
+      .join();
+
   it("draws the walked faces as buildDrawList groups them, rebuilding only on change", () => {
     const draws = new WorldDraws(mesh);
     let changes = 0;
@@ -207,7 +235,7 @@ describe("WorldDraws", () => {
     for (const view of VIEWS) {
       const faces = walkWorld(fixture, mesh, worldVis(fixture, clusterAt(fixture, view.origin)), view.origin, sidePlanes(view));
       const changed = draws.update(faces);
-      const same = faces.length === last.length && [...faces].sort().join() === [...last].sort().join();
+      const same = opaqueKey(faces) === opaqueKey(last);
       expect(changed).toBe(!same);
       if (changed) changes++;
       last = faces;
