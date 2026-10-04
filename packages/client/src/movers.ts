@@ -62,7 +62,7 @@ export class BrushMotion {
     return out;
   }
 
-  /** Step the movers to the game frame client time `ms` draws towards; returns that time, floored. */
+  /** Step the movers to the game frame client time `ms` draws towards; returns that time, floored and at least 0. */
   private stepTo(ms: number): number {
     // Steps one game frame per 100 ms: an infinite time never ends (a huge one takes as long).
     if (!Number.isFinite(ms)) throw new RangeError(`level time ${ms} ms is not finite`);

@@ -4,10 +4,10 @@
 // the brush models drawn at their entity origins and angles (movers' origins set each
 // frame), one draw per texture and surface flags per model. World leafs and brush
 // models behind a closed area portal, outside the eye's PVS, or outside the view
-// frustum are skipped. Warped faces
-// (SURF_WARP) are moved in the vertex shader as EmitWaterPolys does; translucent ones
-// (SURF_TRANS33/66) are blended last, in R_DrawAlphaSurfaces' order. The world's sky
-// faces are not drawn; the sky box is, where they bound it (R_DrawSkyBox).
+// frustum are skipped. Warped faces (SURF_WARP) are moved in the vertex shader as
+// EmitWaterPolys does; translucent ones (SURF_TRANS33/66) are blended last, in
+// R_DrawAlphaSurfaces' order. The world's sky faces are not drawn; the sky box is,
+// where they bound it (R_DrawSkyBox).
 
 import { SURF_FLOWING, SURF_TRANS33, SURF_TRANS66, SURF_WARP, areaBits, floodAreas, pointLeaf, type Bsp } from "@quack2/sim";
 import type { BrushModelInstance } from "./bmodels.js";
