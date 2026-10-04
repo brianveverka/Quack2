@@ -628,7 +628,9 @@ function trainFind(s: Settle, index: number): Train {
  * whatever the class) puts the train's mins on it at once and steps on again; at a
  * second one in a row the train stays put, though self->target has stepped past it.
  * Any other corner starts a Move_Calc, which moves nothing in the settle frames: run
- * from a use it defers Move_Begin a frame; run from the train's own think (`think`) it
+ * from a use in another entity's slot it defers Move_Begin a frame (a use from within
+ * the train's own think, by its pathtarget, only matters for maps whose resume loop
+ * recurses until the game crashes); run from the train's own think (`think`) it
  * sets a velocity the next frame applies, except that a corner at no distance (with a
  * positive speed) finishes the move at once and runs train_wait.
  */

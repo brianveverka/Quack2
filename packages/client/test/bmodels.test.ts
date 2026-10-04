@@ -312,6 +312,17 @@ describe("brush model instances", () => {
       expect(x(`"origin" "10.001 0 0"`)).toEqual([10]); // some distance: moves next frame
       expect(x(`"origin" "10 0 0" "wait" "2"`)).toEqual([10]); // waits past the settle frames
       expect(x(`"origin" "10 0 0" "wait" "-1"`)).toEqual([10]); // not TOGGLE: stays
+      const train = (flags: string, zb: string, before = "") =>
+        place(`{ "classname" "worldspawn" }${before}
+          { "classname" "func_train" "model" "*1" "target" "za" ${flags} }
+          { "classname" "path_corner" "targetname" "za" "target" "zb" "origin" "10 0 0" }
+          { "classname" "path_corner" "targetname" "zb" "target" "zc" "origin" "10 0 0" ${zb} }
+          { "classname" "path_corner" "targetname" "zc" "origin" "30 0 0" "spawnflags" "1" }`).map((b) => b.origin[0] - 385);
+      expect(train(`"spawnflags" "2"`, `"wait" "-1"`)).toEqual([30]); // TOGGLE: train_next, then stops
+      expect(train(`"speed" "-5"`, "")).toEqual([10]); // Move_Begin does not finish a negative-speed move
+      expect(train(`"targetname" "tr" "spawnflags" "1"`, `"killtarget" "tr" "pathtarget" "none"`)).toEqual([10]); // freed by its corner
+      // Used from a trigger_always's slot, Move_Calc defers Move_Begin: no train_wait.
+      expect(train(`"targetname" "tr"`, "", `{ "classname" "trigger_always" "target" "tr" }`)).toEqual([10]);
       // A loop of coincident corners is cut off, not run forever.
       expect(
         place(`{ "classname" "worldspawn" } { "classname" "func_train" "model" "*1" "target" "l1" }
