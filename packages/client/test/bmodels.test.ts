@@ -27,6 +27,17 @@ describe("brush model instances", () => {
     });
   });
 
+  it("matches keys case insensitively, and classnames case sensitively", () => {
+    const ents = parseEntities(`
+      { "ClassName" "func_wall" "Model" "*1" "ORIGIN" "16 -32 8" "Angle" "90" }
+      { "classname" "Func_Wall" "model" "*1" }
+    `);
+    expect(brushModelInstances(bsp, ents)).toEqual({
+      instances: [{ model: 1, origin: [16, -32, 8], angles: [0, 90, 0], classname: "func_wall" }],
+      errors: [],
+    });
+  });
+
   it("keeps spawn angles only for classes whose spawn function keeps them", () => {
     const ents = parseEntities(`
       { "classname" "func_wall" "model" "*1" "angle" "90" }
@@ -58,6 +69,9 @@ describe("brush model instances", () => {
     expect(angles(`"angles" "1 2"`)).toEqual([0, 0, 0]); // malformed: none, as for "origin"
     expect(angles(`"angle" "90" "angles" "1 2 3"`)).toEqual([1, 2, 3]); // the later key wins
     expect(angles(`"angles" "1 2 3" "angle" "90"`)).toEqual([0, 90, 0]);
+    expect(angles(`"angle" "90" "angles" "1 2 3" "angle" "45"`)).toEqual([0, 45, 0]); // a repeat counts as later
+    expect(angles(`"Angle" "90"`)).toEqual([0, 90, 0]); // keys match case insensitively
+    expect(angles(`"angle" "90" "ANGLES" "1 2 3"`)).toEqual([1, 2, 3]);
   });
 
   it("reports references to models the map does not have", () => {

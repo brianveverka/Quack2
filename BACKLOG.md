@@ -12,9 +12,6 @@ PVS and frustum, free-fly camera, `.wal` textures and `?map=` BSPs from mounted 
 data (zip64 and self-extractor stubs included), picked archives read by range, checker
 fallback, `pnpm smoke`).
 Remaining:
-- Entity keys match case sensitively; the game's ED_ParseField uses Q_stricmp, so a
-  map with "Origin" or "Angle" places the entity differently here, and one with
-  "Model" is not drawn.
 - Only light style 0 is drawn; styles 1-3 (switchable and animated lights) are ignored.
 - Surface flags: SURF_SKY, SURF_WARP, SURF_TRANS33/66 draw as ordinary opaque faces
   (NODRAW is skipped). Needs a sky box, warp shader, and a sorted translucent pass.
@@ -40,6 +37,9 @@ Remaining:
   pitch range (minpitch > maxpitch) makes the game's clamp flip move_angles between the
   two limits every frame, forever; here it runs to the frame cap (pitch by parity) or
   stops on a zero-step frame.
+- The free-fly camera's spawn yaw (main.ts `spawnPoint`) reads only "angle", through
+  Number() rather than atof; it ignores "angles" and the later-key rule that
+  `entityAngles` implements.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

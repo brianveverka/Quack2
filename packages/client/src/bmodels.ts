@@ -6,7 +6,7 @@
 // entity string alone, and turret breaches (with their teams) turned to where they
 // come to rest in their pitch/yaw range. DOM-free.
 
-import { entityVec3, type Bsp, type BspEntity } from "@quack2/sim";
+import { asciiLower, entityVec3, type Bsp, type BspEntity } from "@quack2/sim";
 import { angleVectors } from "./math.js";
 
 /** game/g_local.h: entities with this flag are freed at spawn in deathmatch. */
@@ -67,12 +67,11 @@ function atof(s: string): number {
 
 /**
  * Entity angles (pitch, yaw, roll): "angle" is a yaw alone, "angles" all three, and
- * whichever key comes later wins, as in ED_ParseField. Unlike the game, keys match case
- * sensitively (as for every key here) and an "angles" that is not exactly three numbers
- * counts as none, as a malformed "origin" does.
+ * whichever key comes later wins, as in ED_ParseField (parseEntities folds key case and
+ * orders keys by last assignment). Unlike the game, an "angles" that is not exactly three
+ * numbers counts as none, as a malformed "origin" does.
  */
 export function entityAngles(ent: BspEntity): [number, number, number] {
-  // Key order is first appearance: a key repeated after the other one is not seen as later.
   const keys = Object.keys(ent).filter((k) => k === "angle" || k === "angles");
   const last = keys[keys.length - 1];
   if (last === "angle") return [0, atof(ent.angle!), 0];
@@ -90,10 +89,9 @@ const DOOR_Y_AXIS = 128;
 const TRAIN_START_ON = 1;
 const PATH_CORNER_TELEPORT = 1;
 
-/** Q_stricmp: case folds ASCII letters only. */
+/** Q_stricmp equality (see `asciiLower`). */
 function stricmpEqual(a: string, b: string): boolean {
-  const fold = (s: string) => s.replace(/[a-z]/g, (c) => c.toUpperCase());
-  return fold(a) === fold(b);
+  return asciiLower(a) === asciiLower(b);
 }
 
 /**
