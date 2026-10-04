@@ -319,8 +319,9 @@ export function brushModelAlphaOrder(faces: readonly number[]): number[] {
  * The order R_DrawAlphaSurfaces draws brush model instances' translucent faces in.
  * V_RenderView sorts the entity list by model pointer, and inline models sit in one
  * array, so R_DrawEntitiesOnList walks brush models by ascending model number, each
- * prepended to the alpha chain: highest model number first. Instances of one model
- * compare equal and keep whatever the unstable qsort leaves; here the later one first.
+ * prepended to the alpha chain: highest model number first. Two drawn instances of
+ * one model with a translucent face make ref_gl's chain loop on itself (it links the
+ * model's own surfaces), hanging R_DrawAlphaSurfaces; here both draw, the later first.
  */
 export function brushInstanceAlphaOrder<T extends { readonly modelIndex: number }>(instances: readonly T[]): T[] {
   return [...instances].reverse().sort((a, b) => b.modelIndex - a.modelIndex);

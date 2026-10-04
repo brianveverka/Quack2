@@ -62,8 +62,6 @@ Remaining:
   face away, which R_DrawInlineBModel skips; same light, extra cost.
 - `brushModelInstances` draws an inline model on entity 0 of a malformed map; the engine
   puts that entity in edict 0, which SV_BuildClientFrame never sends (it starts at 1).
-- `pointLeaf` (sim vis.ts) has no loop guard: a corrupt tree whose children loop hangs
-  it, where `renderLeaf` and `boxLeafs` stop.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
