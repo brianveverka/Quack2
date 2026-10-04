@@ -331,7 +331,9 @@ export interface WorldVis {
  * The leaf ref_gl's Mod_PointInLeaf finds for a point: from node 0, in float, a point on
  * a node's plane goes to the back child. CM_PointLeafnum (pointLeaf in @quack2/sim), which
  * the server and so the area bits use, sends it to the front. Each operation rounds to
- * float, as an SSE build does; an x87 build keeps more precision until `d` is stored.
+ * float, as an SSE build and the win32 x87 build (24-bit precision control, see
+ * lightmapExtents) do; an x87 build without it (Linux) keeps more precision until `d` is
+ * stored.
  */
 export function renderLeaf(bsp: Bsp, p: readonly [number, number, number]): number {
   const { nodes, planes } = bsp;

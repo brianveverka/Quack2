@@ -4,25 +4,23 @@ Milestones in order; each bullet is roughly one session. Chain sessions take the
 order (see CLAUDE.md, Orchestration).
 
 ## 1. Game data and renderer completeness
-The WebGL2 world renderer is in `packages/client` (faces, lightmaps with the deathmatch
-light styles animated at 10 Hz, warped surfaces moved per vertex as EmitWaterPolys does,
-translucent surfaces blended in R_DrawAlphaSurfaces' order, no lightmap on sky, warp or
-translucent faces, the worldspawn sky box drawn where the world's sky faces bound it
-(R_DrawSkyBox, with skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS
-(with R_SetupFrame's second view cluster 16 units below or above the eye), area portals
-(closed except those the two settle frames open: START_OPEN doors, and trigger_always
-firing portals, doors, secret doors and relays) culling world leafs and brush
-models, the world walked per frame as R_RecursiveWorldNode does (R_CullBox on
-nodes and leafs, so the sky box is bounded by the sky faces in view), inline brush
-models where the game has them after spawn (untargeted plats lowered, START_OPEN doors
-open, trains at their first path_corner or a teleport one after it, turrets turned to
-rest in their pitch/yaw range with their teams), culled by area, PVS and frustum,
-free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data (zip64 and
-self-extractor stubs included), picked archives read by range, checker fallback,
-`pnpm smoke`).
+The WebGL2 world renderer is in `packages/client` (faces, lightmaps sized in float as
+the win32 CalcSurfaceExtents does, with the deathmatch light styles animated at 10 Hz,
+warped surfaces moved per vertex as EmitWaterPolys does, translucent surfaces blended in
+R_DrawAlphaSurfaces' order, no lightmap on sky, warp or translucent faces, the
+worldspawn sky box drawn where the world's sky faces bound it (R_DrawSkyBox, with
+skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS (with R_SetupFrame's
+second view cluster 16 units below or above the eye), area portals (closed except those
+the two settle frames open: START_OPEN doors, and trigger_always firing portals, doors,
+secret doors and relays) culling world leafs and brush models, the world walked per
+frame as R_RecursiveWorldNode does (R_CullBox on nodes and leafs, so the sky box is
+bounded by the sky faces in view), inline brush models where the game has them after
+spawn (untargeted plats lowered, START_OPEN doors open, trains at their first
+path_corner or a teleport one after it, turrets turned to rest in their pitch/yaw range
+with their teams), culled by area, PVS and frustum, free-fly camera, `.wal` textures and
+`?map=` BSPs from mounted pak/zip data (zip64 and self-extractor stubs included), picked
+archives read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- `lightmapExtents` computes in double, the engine in float; may differ by a luxel on
-  non-axial texinfo. Check against a map with rotated or scaled textures.
 - A targeted func_train that a trigger_always fires (DelayedUse at 0.2 s, the second
   settle frame) also runs train_next before clients see it, so it too jumps on to a
   TELEPORT path_corner after its first; only untargeted and START_ON trains do here.
@@ -70,6 +68,11 @@ Remaining:
   starts moving the next frame. Only func_areaportal, doors, func_door_secret and
   trigger_relay uses are modeled, and a door's or relay's own "delay" always defers its
   targets (a tiny or negative one can come due within the second frame in the game).
+- win32 Quake 2 runs every frame at x87 24-bit precision (`_controlfp(_PC_24)` in
+  sys_win.c WinMain), which rounds the C's `double` steps to a 24-bit mantissa too
+  (unless a GL driver resets it mid-frame; see `lightmapExtents`).
+  Ports that follow the C's double (warp.ts, renderer.ts, skyimage.ts, bmodels.ts) match
+  SSE builds instead; decide which build is the reference, then audit them.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

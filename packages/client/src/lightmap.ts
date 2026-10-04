@@ -123,9 +123,11 @@ export function updateLightmapAtlas(bsp: Bsp, atlas: LightmapAtlas, styles: Arra
  * sum each stored map times its style's brightness in float, truncate to int (Q_ftol
  * as its C fallback defines it), clamp negatives to 0, and scale all three channels
  * down by the brightest when it passes 255. Every float operation rounds to IEEE single,
- * as SSE (x86-64) builds evaluate it. x87 builds keep extended precision until a store,
- * which can move overbright or multi-style luxels one step; the Windows asm Q_ftol
- * rounds to nearest, which moves any luxel with a fraction (any style not at 'm'). A face with lightmap data but no styles composes to black, as there.
+ * as SSE (x86-64) builds and the win32 x87 build (24-bit precision control, see
+ * lightmapExtents) evaluate it. x87 builds without it (Linux) keep extended precision
+ * until a store, which can move overbright or multi-style luxels one step. Separately,
+ * the Windows asm Q_ftol rounds to nearest, which moves any luxel with a fraction (any
+ * style not at 'm'). A face with lightmap data but no styles composes to black, as there.
  */
 function composeFace(bsp: Bsp, atlas: LightmapAtlas, f: number): void {
   const r = atlas.rects[f]!;
