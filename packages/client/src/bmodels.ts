@@ -1152,8 +1152,8 @@ function teamSpeeds(ent: BspEntity): MoveSpeeds {
 
 /**
  * The linear doors (func_door, and func_water, which SP_func_water renames func_door) as
- * the two settle frames leave them, by team in master entity order, master first; a
- * door with no team is a team of one. SP_func_door and SP_func_water set up each door
+ * the two settle frames leave them, by team in master entity order, in team order (the
+ * master first when it is a linear door); a door with no team is a team of one. SP_func_door and SP_func_water set up each door
  * (`doorPositions`; a door's "speed", default 100, is doubled in deathmatch, and its
  * "accel" and "decel" default to that, "wait" 0 becomes 3; func_water takes "speed",
  * default 25, for all three, and "wait" 0 becomes -1, which makes it DOOR_TOGGLE). In the

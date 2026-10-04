@@ -38,6 +38,10 @@ Remaining:
   team the settle frames send moving stays at its rest angles while its linear
   teammates move; drawing it turning needs angles in `moveInstance` (cull.ts), which
   moves origins only.
+- A door team master with a negative "speed" makes Think_CalcMoveSpeed's time -0 when a
+  member has no distance (any button or wall in the team): the linear doors' speeds go
+  -Infinity and `stepPusher` turns their origins NaN, which reach the renderer. The C is
+  undefined there too (NaN velocity, (int) of NaN in SV_Push); decide on a guard.
 - Only func_areaportal, doors, func_door_secret, trigger_relay, func_train, func_wall and
   func_object uses are modeled in the settle frames (and a train's pathtarget at a
   corner it reaches at once), and a door's or relay's own "delay" always defers its

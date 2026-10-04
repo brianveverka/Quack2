@@ -199,6 +199,21 @@ describe("door movers", () => {
     expect(water!.speed).toBe(25);
   });
 
+  it("takes a func_door_rotating master's default distance (90) and speed (100)", () => {
+    const teams = doorMovers(
+      bsp,
+      parseEntities(`
+        { "classname" "worldspawn" }
+        { "classname" "func_door_rotating" "model" "*1" "team" "rot" }
+        { "classname" "func_door" "model" "*1" "angle" "-1" "lip" "-50" "team" "rot" }
+      `),
+    );
+    const slave = teams[0]![0]!.mover;
+    // 50 + 50 up, longer than the 90 degrees that set the team's time at 100 a second.
+    expect(slave.distance).toBe(100);
+    expect(slave.speed).toBe(Math.fround(100 / Math.fround(90 / 100)));
+  });
+
   it("moves a door teamed with a member at no distance all the way in one frame", () => {
     const src = `
       { "classname" "worldspawn" }
@@ -263,6 +278,9 @@ describe("door movers", () => {
       `),
     );
     expect(teams.map((t) => t.map((d) => d.entity))).toEqual([[1], [4]]);
+    // Think_CalcMoveSpeed ran in the first frame, before the second frame's killtarget
+    // freed the button, so its distance 0 still set the team's speeds.
+    expect(teams[1]![0]!.mover.speed).toBe(Infinity);
   });
 });
 
