@@ -403,17 +403,17 @@ function breachThink(b: Breach): [number, number] {
  *
  * Only a master in PUSHER_CLASSES runs its slaves' thinks; under any other the team keeps
  * its spawn angles. A spawnflags-0 func_object master turns MOVETYPE_TOSS in its think in
- * the second frame (func_object_release), so its team turns for two frames only, and the
- * master alone once more in the third: SV_Physics_Toss turns it by the avelocity the
+ * the second frame (func_object_release), so its team runs for two frames only (turning in
+ * the second), and the master alone turns once more in the third: SV_Physics_Toss turns it by the avelocity the
  * breaches last set until it lands (later frames need the trace). An item on the team
  * cuts the master's chain after itself in its droptofloor, in the second frame: members
  * after it are neither turned nor thought for from then on. Other frees that cut a chain
  * the same way are not modeled (a killtarget, turret_breach_finish_init freeing its
  * target, a target_crosslevel_target firing), nor a use that releases a triggered
- * func_object. A turned
- * member's own spin (a START_ON func_rotating) is not added. An inverted pitch range
- * (minpitch > maxpitch) flips move_angles between the limits every frame, forever; it
- * runs to MAX_SETTLE_FRAMES here, or stops on a frame that turns nothing.
+ * func_object. A turned member's own spin (a START_ON func_rotating) is not added. An
+ * inverted pitch range (minpitch > maxpitch) flips move_angles between the limits every
+ * frame, forever; it runs to MAX_SETTLE_FRAMES here, or stops on a frame that turns
+ * nothing.
  *
  * Returns, per entity index, the breach's angles at rest, or for any other team member
  * the yaw it has turned by. A team with a non-finite angle or field is not run.
