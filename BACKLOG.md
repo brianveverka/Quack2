@@ -44,18 +44,6 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- Nothing blocks a push (needs the box trace, milestone 2): no door_blocked or
-  train_blocked, and
-  Think_AccelMove's restart of a blocked move (current_speed 0) never happens.
-- A door team master with a negative "speed" makes Think_CalcMoveSpeed's time -0 when a
-  member has no distance (a button, a wall, a door whose lip equals its size): the
-  linear doors' speeds go -Infinity and `stepPusher` sends their moving axis to
-  -Infinity and the others to NaN. `linkedPoses` hands those to the renderer's
-  re-link; the drawn origins come out 0 0 0 through `networkCoord`. The same team with
-  a door whose "accel" or "decel" is negative gives it -Infinity there, so Think_AccelMove sets
-  a NaN velocity: `stepPusher` reads NaN as at rest and leaves the door where it is, while
-  SV_Push's velocity test reads NaN as moving and (int) of NaN gives INT_MIN on x86. The
-  C is undefined in both ((int) of NaN or Inf in SV_Push); decide on a guard.
 - Only func_areaportal, doors, func_door_secret, trigger_relay, func_train, func_wall and
   func_object uses are modeled in the settle frames (and a train's pathtarget at a
   corner it reaches at once), and a door's or relay's own "delay" always defers its
@@ -138,6 +126,15 @@ Remaining:
 - Port `CM_BoxTrace` / `CM_PointContents` against the parsed brushes into `packages/sim`.
 - Port `Pmove` (walk, jump, step, crouch, water) using the player box constants.
 - Test against fixture geometry: spawn points not in solid, walls stop the box.
+- Nothing blocks a push: no door_blocked, plat_blocked or train_blocked, and
+  Think_AccelMove's restart of a blocked move (current_speed 0) never happens. SV_Push
+  finds a block with SV_TestEntityPosition, a box trace against the world and solid
+  entities, the pusher among them; on one SV_Physics_Pusher bumps the team's nextthinks and runs none of its
+  thinks that frame. Without clients or monsters the obstacles are items, func_objects
+  and misc_explobox, which every *_blocked frees (T_Damage, BecomeExplosion1) without
+  turning the move back; where they rest needs droptofloor's trace as well. Only a
+  client or monster obstacle sends a door or plat back (door_go_up/down, so Move_Calc's
+  restart), which needs pmove.
 - With the trace: a team under a MOVETYPE_TOSS master (misc_gib_*, or a spawnflags-0
   func_object from its third frame) takes the master's origin each frame the master starts
   off the ground (SV_Physics_Toss), so its brush models leave their spawn origin; `settleTurrets`
