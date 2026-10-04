@@ -99,8 +99,9 @@
   page, the test output). "It parsed" is not verification. If you couldn't check, say so.
 - Run the smallest relevant validation (test/lint/typecheck/build). If you couldn't
   validate, say so plainly.
-- Conventional commits (`feat:`/`fix:`/`docs:`/...), one concern per commit. Don't bump
-  versions or tag unless the change warrants it.
+- Conventional commits (`feat:`/`fix:`/`docs:`/...), one concern per PR: squash merge
+  lands each PR on `main` as one commit. Don't bump versions or tag unless the change
+  warrants it.
 - Installers and scripts are idempotent and rerunnable.
 
 ## Review loop
@@ -120,13 +121,15 @@ For each unit of work:
 
    Self-review can't find this class of bug: the mistake and the review share the same
    assumptions.
-4. **Fix findings and your logged concerns in one pass,** so the next review gets one
-   coherent diff. A reviewer's diagnosis is a claim, not a finding. Verify the cause, not
-   just the symptom; a reviewer can be right that something is broken and wrong about why.
-5. **Second review, scoped to step 4's diff only.** Not a re-sweep. Fixes introduce
+4. **Fix findings and your logged concerns in one pass, as one new commit,** so the next
+   review gets one coherent diff. A reviewer's diagnosis is a claim, not a finding. Verify
+   the cause, not just the symptom; a reviewer can be right that something is broken and
+   wrong about why.
+5. **Second review, scoped to step 4's commit only.** Not a re-sweep. Fixes introduce
    defects.
-6. **Fix, then amend the step 2 commit,** so the history shows only the finished change
-   with no debug cycles. Then push the task branch and open its PR per Git workflow.
+6. **Fix in a new commit, then push the task branch and open its PR** per Git workflow.
+   Don't amend or rebase to tidy up: squash merge collapses the branch into one commit on
+   `main`, and pushed commits are never rewritten.
 
 **What gets fixed now:** decide by coupling, not timing. Caused by this change, or blocks
 the next one: fix now. Belongs to code that's about to be replaced: defer.
