@@ -134,12 +134,76 @@ describe("linear door mover", () => {
     expect(c.origin[2]).toBe(0.125);
   });
 
-  it("leaves an accelerative mover where it is (Think_AccelMove is not ported)", () => {
+  // Expected values below are the original g_func.c functions compiled with gcc (SSE
+  // float) and stepped through SV_Push's 1/8 unit snap, measured 2026-10-04.
+  it("accelerates and decelerates a plat-like mover (Think_AccelMove)", () => {
+    // A func_plat's per-frame speed 20, accel 5, decel 5 (its keys times 0.1).
+    const d = door({ speed: 20, accel: 5, decel: 5, distance: 100, endOrigin: [0, 0, 100] });
+    doorGoUp(d, levelTimeAt(1), true);
+    expect(d.think).toBe("thinkAccelMove");
+    const r = run([d], 1, 11);
+    // The first think sets 5 a frame; it moves from the next frame.
+    expect([2, 3, 4, 5, 6, 7, 8, 9, 10].map((f) => r[f]!.z[0])).toEqual([0, 5, 15, 30, 50, 70, 85, 95, 100]);
+    expect([9, 10].map((f) => r[f]!.state[0])).toEqual(["up", "top"]);
+    expect(d.decelDistance).toBe(50);
+  });
+
+  it("averages the speed of a move that crosses the decel distance (next_speed)", () => {
+    const d = door({ speed: 20, accel: 5, decel: 3, distance: 46, endOrigin: [0, 0, 46] });
+    doorGoUp(d, levelTimeAt(1), true);
+    const r = run([d], 1, 4);
+    expect([d.moveSpeed, d.decelDistance]).toEqual([Math.fround(11.3920879), Math.fround(27.3259869)]);
+    expect([d.currentSpeed, d.nextSpeed]).toEqual([Math.fround(11.1627979), Math.fround(9.38034534)]);
+    r.push(...run([d], 4, 10).slice(5));
+    expect([2, 3, 4, 5, 6, 7, 8, 9, 10].map((f) => r[f]!.z[0])).toEqual([0, 5, 15, 26.125, 35.5, 41.875, 45.25, 45.625, 46]);
+    expect(r[10]!.state[0]).toBe("top");
+  });
+
+  it("moves a distance under accel in one frame", () => {
+    const d = door({ speed: 20, accel: 5, decel: 5, distance: 3, endOrigin: [0, 0, 3] });
+    doorGoUp(d, levelTimeAt(1), true);
+    const r = run([d], 1, 3);
+    expect([r[2]!.z[0], r[3]!.z[0], r[3]!.state[0]]).toEqual([0, 3, "top"]);
+  });
+
+  it("runs a deathmatch door's accel per frame, overshooting as the game does", () => {
+    // speed 200 and accel 50 are per second on a func_door, but Think_AccelMove takes
+    // them per frame. The move too short to reach speed takes the sqrt path; its
+    // next_speed goes negative, so the door overshoots, comes back and stops 1/8 short.
     const d = door({ accel: 50 });
     doorGoUp(d, levelTimeAt(1), true);
+    const r = run([d], 1, 8);
+    expect(d.moveSpeed).toBe(Math.fround(65.8300552));
+    expect([2, 3, 4, 5, 6, 7, 8].map((f) => r[f]!.z[0])).toEqual([0, 50, 112.5, 62.625, 62.75, 119.875, 119.875]);
+    expect([6, 7].map((f) => r[f]!.state[0])).toEqual(["up", "top"]);
+  });
+
+  it("matches the C on moves that pin its float rounding and edge tests", () => {
+    // The average speed across the decel distance (p1_speed rounded to float), and a
+    // distance equal to accel, which takes the full calculation and swings back first.
+    const cases = [
+      { speed: 158, accel: 21.916, decel: 158, distance: 259.1, z: [0, 21.875, 65.75, 131.5, 206.75, 259.125], finalSpeed: 60.8269386 },
+      { speed: 383.7, accel: 263, decel: 383.7, distance: 263, z: [0, -227, -191, 108, 263], finalSpeed: 181.751801 },
+    ];
+    for (const { z, finalSpeed, ...c } of cases) {
+      const d = door({ ...c, endOrigin: [0, 0, c.distance] });
+      doorGoUp(d, levelTimeAt(1), true);
+      const r = run([d], 1, 1 + z.length);
+      expect(z.map((_, i) => r[2 + i]!.z[0])).toEqual(z);
+      expect(r[1 + z.length]!.state[0]).toBe("top");
+      expect(d.currentSpeed).toBe(Math.fround(finalSpeed));
+    }
+  });
+
+  it("starts an accelerative move back down from rest (Move_Calc clears current_speed)", () => {
+    const d = door({ speed: 20, accel: 5, decel: 5, distance: 100, endOrigin: [0, 0, 100], wait: 1 });
+    doorGoUp(d, levelTimeAt(1), true);
     const r = run([d], 1, 30);
-    expect(r[30]!.z[0]).toBe(0);
-    expect(r[30]!.state[0]).toBe("up");
+    // door_hit_top at frame 10 sends it down at frame 20; its first accel think runs at
+    // 21 and it moves from 22, the way up mirrored.
+    const z = [20, 21, 22, 23, 24, 25, 26, 27, 28, 29].map((f) => r[f]!.z[0]);
+    expect(z).toEqual([100, 100, 95, 85, 70, 50, 30, 15, 5, 0]);
+    expect([28, 29].map((f) => r[f]!.state[0])).toEqual(["down", "bottom"]);
   });
 });
 

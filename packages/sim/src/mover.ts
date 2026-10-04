@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Linear brush movers stepped at the game's 10 Hz frame, ported from id's game source:
-// Move_Calc and its thinks, the func_door state functions and Think_CalcMoveSpeed
+// Move_Calc and its thinks, the accelerative move (Think_AccelMove and the plat_
+// functions it calls), the func_door state functions and Think_CalcMoveSpeed
 // (game/g_func.c), and the move and think order of SV_Physics_Pusher and SV_RunThink
 // (game/g_phys.c). Shared so the server and the client step movers the same way.
 //
-// Fields the C keeps as float are rounded with Math.fround where it stores them; the
-// C's double intermediates stay double, so this matches SSE builds (see BACKLOG.md on
-// x87). Not modeled yet: the accelerative move (Think_AccelMove: such a mover stays
-// put), rotating movers
-// (AngleMove_Calc), and anything that blocks a push (that needs the box trace).
+// Fields the C keeps as float are rounded with Math.fround where it stores them, and
+// float-only arithmetic is rounded at each operation; the C's double intermediates stay
+// double, so this matches SSE builds (see BACKLOG.md on x87). Not modeled yet: rotating
+// movers (AngleMove_Calc), and anything that blocks a push (that needs the box trace).
 
 /** Seconds per game frame (g_local.h); level.time is framenum * FRAMETIME. */
 export const FRAMETIME = 0.1;
@@ -43,6 +43,16 @@ export interface LinearMover {
   /** moveinfo.dir and remaining_distance of the move under way. */
   readonly dir: Vec3f;
   remainingDistance: number;
+  /**
+   * The accelerative move's moveinfo fields, in units per frame: Think_AccelMove moves
+   * current_speed a frame, and treats speed, accel and decel as per-frame amounts too
+   * (a func_door's are per second, so an accelerative door reaches ten times its speed).
+   * Move_Calc resets only current_speed.
+   */
+  currentSpeed: number;
+  moveSpeed: number;
+  nextSpeed: number;
+  decelDistance: number;
   /** moveinfo.endfunc: the door function Move_Done calls. */
   endfunc: "doorHitTop" | "doorHitBottom" | undefined;
   think: MoverThink | undefined;
@@ -80,6 +90,10 @@ export function linearMover(init: LinearMoverInit): LinearMover {
     state: init.state,
     dir: [0, 0, 0],
     remainingDistance: 0,
+    currentSpeed: 0,
+    moveSpeed: 0,
+    nextSpeed: 0,
+    decelDistance: 0,
     endfunc: undefined,
     think: undefined,
     nextthink: 0,
@@ -153,7 +167,7 @@ function moveCalc(m: LinearMover, dest: Vec3f, endfunc: LinearMover["endfunc"], 
   m.remainingDistance = vectorNormalize(m.dir);
   m.endfunc = endfunc;
   if (m.speed !== m.accel || m.speed !== m.decel) {
-    // Think_AccelMove is not ported: the mover stays where it is.
+    m.currentSpeed = 0;
     m.think = "thinkAccelMove";
     m.nextthink = Math.fround(levelTime + FRAMETIME);
   } else if (current) {
@@ -212,6 +226,88 @@ function doorHitTop(m: LinearMover, levelTime: number): void {
   }
 }
 
+/** AccelerationDistance: a float macro, rounded at each operation. */
+function accelerationDistance(target: number, rate: number): number {
+  return Math.fround(Math.fround(target * Math.fround(Math.fround(target / rate) + 1)) / 2);
+}
+
+function calcAcceleratedMove(m: LinearMover): void {
+  m.moveSpeed = m.speed;
+  if (m.remainingDistance < m.accel) {
+    m.currentSpeed = m.remainingDistance;
+    return;
+  }
+  const accelDist = accelerationDistance(m.speed, m.accel);
+  let decelDist = accelerationDistance(m.speed, m.decel);
+  if (Math.fround(Math.fround(m.remainingDistance - accelDist) - decelDist) < 0) {
+    const f = Math.fround(Math.fround(m.accel + m.decel) / Math.fround(m.accel * m.decel));
+    // sqrt takes and returns double, so the numerator and the division are double.
+    const disc = Math.fround(4 - Math.fround(Math.fround(4 * f) * Math.fround(-2 * m.remainingDistance)));
+    m.moveSpeed = Math.fround((-2 + Math.sqrt(disc)) / Math.fround(2 * f));
+    decelDist = accelerationDistance(m.moveSpeed, m.decel);
+  }
+  m.decelDistance = decelDist;
+}
+
+function accelerate(m: LinearMover): void {
+  // Decelerating?
+  if (m.remainingDistance <= m.decelDistance) {
+    if (m.remainingDistance < m.decelDistance) {
+      if (m.nextSpeed) {
+        m.currentSpeed = m.nextSpeed;
+        m.nextSpeed = 0;
+        return;
+      }
+      if (m.currentSpeed > m.decel) m.currentSpeed = Math.fround(m.currentSpeed - m.decel);
+    }
+    return;
+  }
+  // At full speed and starting to decelerate during this move?
+  if (m.currentSpeed === m.moveSpeed && Math.fround(m.remainingDistance - m.currentSpeed) < m.decelDistance) {
+    const p1Distance = Math.fround(m.remainingDistance - m.decelDistance);
+    const p2Distance = Math.fround(m.moveSpeed * (1.0 - Math.fround(p1Distance / m.moveSpeed)));
+    const distance = Math.fround(p1Distance + p2Distance);
+    m.currentSpeed = m.moveSpeed;
+    m.nextSpeed = Math.fround(m.moveSpeed - Math.fround(m.decel * Math.fround(p2Distance / distance)));
+    return;
+  }
+  // Accelerating?
+  if (m.currentSpeed < m.speed) {
+    const oldSpeed = m.currentSpeed;
+    m.currentSpeed = Math.fround(m.currentSpeed + m.accel);
+    if (m.currentSpeed > m.speed) m.currentSpeed = m.speed;
+    // Accelerating throughout this move?
+    if (Math.fround(m.remainingDistance - m.currentSpeed) >= m.decelDistance) return;
+    // Accelerating to move_speed and crossing decel_distance during this move: the
+    // average speed over the whole move.
+    const p1Distance = Math.fround(m.remainingDistance - m.decelDistance);
+    const p1Speed = Math.fround(Math.fround(oldSpeed + m.moveSpeed) / 2.0);
+    const p2Distance = Math.fround(m.moveSpeed * (1.0 - Math.fround(p1Distance / p1Speed)));
+    const distance = Math.fround(p1Distance + p2Distance);
+    m.currentSpeed = Math.fround(
+      Math.fround(p1Speed * Math.fround(p1Distance / distance)) + Math.fround(m.moveSpeed * Math.fround(p2Distance / distance)),
+    );
+    m.nextSpeed = Math.fround(m.moveSpeed - Math.fround(m.decel * Math.fround(p2Distance / distance)));
+  }
+  // Otherwise at constant speed (move_speed).
+}
+
+/** Think_AccelMove: the team has moved a frame, so set the speed for the next. */
+function thinkAccelMove(m: LinearMover, levelTime: number): void {
+  m.remainingDistance = Math.fround(m.remainingDistance - m.currentSpeed);
+  // Starting (or blocked, which is not modeled).
+  if (m.currentSpeed === 0) calcAcceleratedMove(m);
+  accelerate(m);
+  // Will the whole move complete in the next frame?
+  if (m.remainingDistance <= m.currentSpeed) {
+    moveFinal(m, levelTime);
+    return;
+  }
+  vectorScale(m.dir, Math.fround(m.currentSpeed * 10), m.velocity);
+  m.nextthink = Math.fround(levelTime + FRAMETIME);
+  m.think = "thinkAccelMove";
+}
+
 /** VectorScale: the scale is a float parameter. */
 function vectorScale(v: Vec3f, scale: number, out: Vec3f): void {
   const s = Math.fround(scale);
@@ -252,7 +348,7 @@ function runThink(m: LinearMover, levelTime: number): void {
     case "moveDone":
       return moveDone(m, levelTime);
     case "thinkAccelMove":
-      return;
+      return thinkAccelMove(m, levelTime);
     case "doorGoDown":
       // Run from the door's own think, so its master is level.current_entity: unless
       // it is a team slave, whose think runs inside its master's SV_Physics_Pusher with
