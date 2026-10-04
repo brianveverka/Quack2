@@ -7,7 +7,7 @@
 
 import { areasConnected, boxLeafs, clusterPvs, visRowBytes, type Bsp } from "@quack2/sim";
 import { modelBounds, type BrushModelInstance } from "./bmodels.js";
-import type { Mat4 } from "./math.js";
+import { modelMatrix, type Mat4 } from "./math.js";
 
 export type Vec3 = readonly [number, number, number];
 
@@ -49,6 +49,108 @@ export function linkBox(bsp: Bsp, inst: BrushModelInstance): Box {
     mins: [o[0] + mins[0]! - 1, o[1] + mins[1]! - 1, o[2] + mins[2]! - 1],
     maxs: [o[0] + maxs[0]! + 1, o[1] + maxs[1]! + 1, o[2] + maxs[2]! + 1],
   };
+}
+
+/**
+ * A brush model instance where the client draws it and where the server links it. The
+ * client draws it at its blended origin and culls it by frustum there (R_DrawBrushModel);
+ * the server links it where the last game frame left it (SV_LinkEdict) and sends it by
+ * the clusters and areas found there. The two differ only while it moves.
+ */
+export interface PlacedInstance {
+  readonly source: BrushModelInstance;
+  /** Where it is drawn. */
+  origin: Vec3;
+  /** Where it is linked. */
+  linkOrigin: Vec3;
+  /** Model to world: entity angles, then `origin`. */
+  model: Mat4;
+  /** World box enclosing it at `origin`, for the frustum test. */
+  box: Box;
+  /** Distinct non-solid clusters its box at `linkOrigin` touches. */
+  clusters: readonly number[];
+  /** areanum and areanum2 of the server's link box at `linkOrigin` (boxAreas). */
+  areas: readonly [number, number];
+  /** In the fat PVS last tested against. */
+  inPvs: boolean;
+}
+
+/** A brush model instance drawn and linked at its own origin, in every PVS until tested. */
+export function placeInstance(bsp: Bsp, source: BrushModelInstance): PlacedInstance {
+  const o: Vec3 = [source.origin[0], source.origin[1], source.origin[2]];
+  return {
+    source,
+    origin: o,
+    linkOrigin: o,
+    model: modelMatrix(o, source.angles),
+    box: instanceBox(bsp, source),
+    clusters: boxClusters(bsp, instanceBox(bsp, source)),
+    areas: boxAreas(bsp, linkBox(bsp, source)),
+    inPvs: true,
+  };
+}
+
+const sameVec = (a: Vec3, b: Vec3) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+
+/**
+ * Draw `inst` at `origin` and link it at `linkOrigin`, re-testing it against `pvs` (the
+ * fat PVS last tested; undefined passes every model) when its link moved. What did not
+ * move is left as it is, so a mover at rest costs a comparison.
+ */
+export function moveInstance(bsp: Bsp, inst: PlacedInstance, origin: Vec3, linkOrigin: Vec3, pvs: Uint8Array | undefined): void {
+  if (!sameVec(origin, inst.origin)) {
+    const at = { ...inst.source, origin };
+    inst.origin = [origin[0], origin[1], origin[2]];
+    inst.model = modelMatrix(origin, inst.source.angles);
+    inst.box = instanceBox(bsp, at);
+  }
+  if (!sameVec(linkOrigin, inst.linkOrigin)) {
+    const at = { ...inst.source, origin: linkOrigin };
+    inst.linkOrigin = [linkOrigin[0], linkOrigin[1], linkOrigin[2]];
+    inst.clusters = boxClusters(bsp, instanceBox(bsp, at));
+    inst.areas = boxAreas(bsp, linkBox(bsp, at));
+    inst.inPvs = !pvs || clustersVisible(inst.clusters, pvs);
+  }
+}
+
+/**
+ * Brush model instances and the fat PVS they were last tested against: an eye whose fat
+ * clusters did not change tests nothing, and a moved instance is re-tested against that
+ * PVS as it moves.
+ */
+export class PlacedInstances<T extends PlacedInstance> {
+  readonly list: T[] = [];
+  /** Clusters of the fat PVS last tested; "" before the first test, undefined for none. */
+  private fatKey: string | undefined = "";
+  /** That fat PVS; undefined passes every instance. */
+  private pvs: Uint8Array | undefined;
+
+  constructor(private readonly bsp: Bsp) {}
+
+  /** Test every instance against the fat PVS of `fat` (fatClusters; undefined passes them all), unless those clusters were the last tested. */
+  testPvs(fat: readonly number[] | undefined): void {
+    const key = fat?.join(",");
+    if (key === this.fatKey) return;
+    this.fatKey = key;
+    const pvs = fat && pvsUnion(this.bsp, fat);
+    this.pvs = pvs;
+    for (const inst of this.list) inst.inPvs = !pvs || clustersVisible(inst.clusters, pvs);
+  }
+
+  /**
+   * Move brush entities, by entity index: each is drawn at its `origins` entry (the
+   * client's blended origin) and linked, for the PVS and area tests, at its `linked` one
+   * (where the last game frame left it), or at `origins` without one. An entity in
+   * neither keeps its place.
+   */
+  move(origins: ReadonlyMap<number, Vec3>, linked: ReadonlyMap<number, Vec3> = origins): void {
+    for (const inst of this.list) {
+      const entity = inst.source.entity;
+      const origin = origins.get(entity) ?? linked.get(entity);
+      if (!origin) continue;
+      moveInstance(this.bsp, inst, origin, linked.get(entity) ?? origin, this.pvs);
+    }
+  }
 }
 
 /** SV_LinkEdict's MAX_TOTAL_ENT_LEAFS: areas come from the first this many leafs the box touches. */
