@@ -106,7 +106,12 @@ describe("lightmap extents", () => {
     const v = rotated.texinfo.vecs;
     const exactMax = 232 * v[o]! + 256 * v[o + 1]! + v[o + 3]!;
     expect(exactMax).toBe(48);
-    expect(lightmapExtents(rotated, 2)).toEqual({ textureMinS: -96, textureMinT: -256, width: 11, height: 15 });
+    expect(lightmapExtents(rotated, 2)).toEqual({
+      textureMinS: -96,
+      textureMinT: -256,
+      width: 11,
+      height: 15,
+    });
   });
 
   it("integrity check flags a lightmap that runs past the lighting lump", () => {

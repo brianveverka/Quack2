@@ -69,7 +69,8 @@ Remaining:
   trigger_relay uses are modeled, and a door's or relay's own "delay" always defers its
   targets (a tiny or negative one can come due within the second frame in the game).
 - win32 Quake 2 runs every frame at x87 24-bit precision (`_controlfp(_PC_24)` in
-  sys_win.c WinMain), which rounds the C's `double` steps to a 24-bit mantissa too.
+  sys_win.c WinMain), which rounds the C's `double` steps to a 24-bit mantissa too
+  (unless a GL driver resets it mid-frame; see `lightmapExtents`).
   Ports that follow the C's double (warp.ts, renderer.ts, skyimage.ts, bmodels.ts) match
   SSE builds instead; decide which build is the reference, then audit them.
 

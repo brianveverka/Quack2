@@ -46,13 +46,12 @@ export interface LightmapExtents {
 /**
  * Lightmap placement of a face, derived from the texture-space bounds of its corners, as
  * CalcSurfaceExtents computes it. Each product and sum rounds to float, as in SSE builds
- * and in the win32 x87 build, which sets 24-bit precision (`_controlfp(_PC_24)`) before
- * every frame, so before the map loads that connecting runs; Math.fround reproduces that,
- * in the engine's left-to-right order. Unverified: a vid_restart reloads the map after
- * loading the GL driver with no reset in between, and drivers of the era could change
- * the control word. On
- * rotated or scaled texinfo this can move a bound across a multiple of 16 and change the
- * size by a luxel. ericw-tools light accumulates in long double and rounds once, so in that
+ * and in the win32 x87 build, which sets 24-bit precision (`_controlfp(_PC_24)`) at the
+ * start of every frame; Math.fround reproduces that, in the engine's left-to-right order.
+ * Unverified: GL driver calls run between that and every map load (SCR_UpdateScreen on
+ * connect, the driver load itself on vid_restart), and drivers of the era could change
+ * the control word. On rotated or scaled texinfo the rounding can move a bound across a
+ * multiple of 16 and change the size by a luxel. ericw-tools light accumulates in long double and rounds once, so in that
  * case the compiler's lightmap size differs too; the engine's is the one that reads it.
  * The 999999 / -99999 starting bounds are the engine's.
  */
