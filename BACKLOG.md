@@ -16,22 +16,18 @@ secret doors and relays) culling world leafs and brush models, the world walked 
 frame as R_RecursiveWorldNode does (R_CullBox on nodes and leafs, so the sky box is
 bounded by the sky faces in view), inline brush models where the game has them after
 spawn (untargeted plats lowered, START_OPEN doors open, trains at their first
-path_corner or a teleport one after it, turrets turned to rest in their pitch/yaw range
-with their teams), culled by area, PVS and frustum, free-fly camera, `.wal` textures and
+path_corner or a teleport one after it, also when a trigger_always uses them, turrets
+turned to rest in their pitch/yaw range with their teams), culled by area, PVS and frustum, free-fly camera, `.wal` textures and
 `?map=` BSPs from mounted pak/zip data (zip64 and self-extractor stubs included), picked
 archives read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- A targeted func_train that a trigger_always fires (DelayedUse at 0.2 s, the second
-  settle frame) also runs train_next before clients see it, so it too jumps on to a
-  TELEPORT path_corner after its first; only untargeted and START_ON trains do here.
-  `openAreaPortals` (bmodels.ts) already walks the second frame's use chains; add a
-  func_train case to its `use` dispatch and share that walk with `brushModelInstances`.
 - A turret team whose master (first member) is not a turret keeps its spawn angles here;
   the game runs it under the master's movetype (a MOVETYPE_NONE or TOSS master never
   runs the slaves' thinks, a PUSH one does). Needs the movetype per spawn function. Of
   the entities their spawn function frees in deathmatch, team membership leaves out only
   lights and func_explosive; monsters, misc_explobox, target_secret/goal/help and
-  dmflags-removed items still count, and pickTarget counts all of them. An inverted
+  dmflags-removed items still count, in team membership and in `findTargets` (so as
+  train corners) alike. An inverted
   pitch range (minpitch > maxpitch) makes the game's clamp flip move_angles between the
   two limits every frame, forever; here it runs to the frame cap (pitch by parity) or
   stops on a zero-step frame.
@@ -63,16 +59,20 @@ Remaining:
   marks and face lists each time; the opaque index list is rebuilt and uploaded whenever
   the walked face set changes. Measured 2026-10-04 in Node 22 on the fixture (25 nodes,
   111 faces), turning so every frame rebuilds: 11.4 us per frame. Measure on a large map.
-- The second settle frame's use chains change only area portals here. A brush entity a
-  killtarget frees is still drawn, and a door they send up is drawn at rest although it
-  starts moving the next frame. Only func_areaportal, doors, func_door_secret and
-  trigger_relay uses are modeled, and a door's or relay's own "delay" always defers its
+- The second settle frame's use chains change only area portals and trains here. A
+  brush entity a killtarget frees is still drawn, and a door they send up is drawn at
+  rest although it starts moving the next frame. Only func_areaportal, doors,
+  func_door_secret, trigger_relay and func_train uses are modeled, and a door's or relay's own "delay" always defers its
   targets (a tiny or negative one can come due within the second frame in the game).
 - win32 Quake 2 runs every frame at x87 24-bit precision (`_controlfp(_PC_24)` in
   sys_win.c WinMain), which rounds the C's `double` steps to a 24-bit mantissa too
   (unless a GL driver resets it mid-frame; see `lightmapExtents`).
   Ports that follow the C's double (warp.ts, renderer.ts, skyimage.ts, bmodels.ts) match
   SSE builds instead; decide which build is the reference, then audit them.
+- A func_train that is a team slave runs its train_next think at its own entity slot in
+  `settleSpawnFrames`; the game runs it in its master's slot (SV_Physics_Pusher), and
+  never if the master is not MOVETYPE_PUSH, so an untargeted slave train would stay at
+  its first corner. Needs the movetype per spawn function, as the turret team item does.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
