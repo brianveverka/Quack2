@@ -1213,8 +1213,10 @@ export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor
     const model = inlineModel(bsp, ent.model);
     if (model === undefined) return;
     const origin = entityVec3(ent, "origin") ?? [0, 0, 0];
-    // A door in a turret's team starts turned by the breach's yaw, as
-    // `brushModelInstances` draws it; neither move resets s.angles.
+    // A door in a turret's team starts turned by the yaw its breach comes to rest at, as
+    // `brushModelInstances` draws it (the game reaches it after the settle frames when the
+    // breach is slow). Move_Calc leaves s.angles alone; AngleMove turns towards absolute
+    // start or end angles, so a rotating door turns the yaw back as it moves (BACKLOG.md).
     const yaw = turrets.get(i)?.yaw ?? 0;
     if (ent.classname === "func_door_rotating") {
       const init = rotatingDoor(ent, origin);

@@ -87,7 +87,9 @@ Remaining:
   a door the server would not.
 - turret_breach_think sets every team member's avelocity[1] to the breach's each frame,
   overriding a func_door_rotating teammate's own turn; `doorMovers` seeds such a door
-  with the breach's settled yaw but the mover does not model the override.
+  with the breach's at-rest yaw, but the mover does not model the override, so the door
+  turns its yaw back to its start or end angles as it moves. The seed is also the yaw
+  at rest, not after the two settle frames: a slow breach reaches it later in the game.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

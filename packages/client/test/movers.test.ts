@@ -401,12 +401,14 @@ describe("network angles", () => {
     expect(lerpAngle(-170, 170, 0.5)).toBe(-180);
     expect(lerpAngle(0, 90, 0.25)).toBe(22.5);
     expect(lerpAngle(0, 0.1, 1)).toBe(Math.fround(0.1));
-    // From a gcc (SSE) build of LerpAngle: every step rounds to float (in double the
-    // first would be 14.148000402450561).
+    // From a gcc (SSE) build of LerpAngle: every step rounds to float (all in double
+    // the first would be 14.148000452041629).
     expect(lerpAngle(Math.fround(10.3), Math.fround(20.7), Math.fround(0.37))).toBe(14.148000717163086);
     expect(lerpAngle(Math.fround(170.3), Math.fround(-171.1), Math.fround(1 - (300 - 237) * 0.01))).toBe(177.1820068359375);
     // Here the double product rounds once less and lands on 30.58589744567871.
     expect(lerpAngle(34.940181732177734, 26.91077423095703, 0.5422919988632202)).toBe(30.585899353027344);
+    // And here a1 - a2 left in double gives 34.180824279785156.
+    expect(lerpAngle(56.886077880859375, 0.000978014781139791, 0.39914241433143616)).toBe(34.18082046508789);
   });
 });
 
