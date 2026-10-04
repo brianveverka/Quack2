@@ -16,6 +16,7 @@ import {
   linkBox,
   moveInstance,
   placeInstance,
+  PlacedInstances,
   pvsUnion,
   type Box,
 } from "../src/cull.js";
@@ -171,6 +172,33 @@ describe("moving brush models", () => {
     expect(placed.model).not.toBe(model);
     expect(placed.clusters).toBe(clusters);
     expect(placed.inPvs).toBe(false);
+  });
+
+  it("tests a set of instances once per fat PVS, and a moved one against the last tested", () => {
+    const set = new PlacedInstances(bsp);
+    set.list.push(placeInstance(bsp, wall([0, 0, 0])), placeInstance(bsp, { ...wall(outside), entity: 2 }));
+    const eye = [clusterAt(-448, 0, 46)];
+    set.testPvs(eye);
+    expect(set.list.map((i) => i.inPvs)).toEqual([true, false]);
+    // Leaving the PVS while the eye stands still re-tests against the cached PVS.
+    set.move(new Map([[1, outside]]));
+    expect(set.list.map((i) => i.inPvs)).toEqual([false, false]);
+    // Linked at home, drawn elsewhere: in the PVS again; entity 2 is not in the maps and stays.
+    set.move(new Map([[1, corridor]]), new Map([[1, [0, 0, 0]]]));
+    expect([set.list[0]!.origin, set.list[0]!.linkOrigin, set.list[0]!.inPvs]).toEqual([corridor, [0, 0, 0], true]);
+    expect(set.list[1]!.origin).toEqual(outside);
+    // Only a link origin: drawn there too.
+    set.move(new Map(), new Map([[2, [0, 0, 0]]]));
+    expect([set.list[1]!.origin, set.list[1]!.inPvs]).toEqual([[0, 0, 0], true]);
+    // The same fat clusters test nothing again; other ones (or none) do.
+    set.list[0]!.inPvs = false;
+    set.testPvs([...eye]);
+    expect(set.list[0]!.inPvs).toBe(false);
+    set.testPvs(undefined);
+    expect(set.list.map((i) => i.inPvs)).toEqual([true, true]);
+    // No fat PVS passes a moved instance too.
+    set.move(new Map([[1, outside]]));
+    expect(set.list[0]!.inPvs).toBe(true);
   });
 
   it("keeps its own copies of the origins", () => {

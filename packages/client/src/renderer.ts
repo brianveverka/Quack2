@@ -2,8 +2,9 @@
 // WebGL2 world renderer: one static vertex buffer for every model, a world index buffer
 // rebuilt when the faces R_RecursiveWorldNode passes change, a static index buffer for
 // the brush models drawn at their entity origins and angles (movers' origins set each
-// frame), one draw per texture and surface flags per model. World leafs and brush models behind a closed area portal,
-// outside the eye's PVS, or outside the view frustum are skipped. Warped faces
+// frame), one draw per texture and surface flags per model. World leafs and brush
+// models behind a closed area portal, outside the eye's PVS, or outside the view
+// frustum are skipped. Warped faces
 // (SURF_WARP) are moved in the vertex shader as EmitWaterPolys does; translucent ones
 // (SURF_TRANS33/66) are blended last, in R_DrawAlphaSurfaces' order. The world's sky
 // faces are not drawn; the sky box is, where they bound it (R_DrawSkyBox).
@@ -13,12 +14,10 @@ import type { BrushModelInstance } from "./bmodels.js";
 import {
   areasVisible,
   boxOutsideFrustum,
-  clustersVisible,
   fatClusters,
   frustumPlanes,
-  moveInstance,
   placeInstance,
-  pvsUnion,
+  PlacedInstances,
   type PlacedInstance,
   type Vec3,
 } from "./cull.js";
@@ -198,7 +197,7 @@ export class WorldRenderer {
   private readonly vao: WebGLVertexArrayObject;
   private readonly indexBuffer: WebGLBuffer;
   private readonly brushIndexBuffer: WebGLBuffer;
-  private readonly instances: InstanceDraws[] = [];
+  private readonly instances: PlacedInstances<InstanceDraws>;
   private textures: { tex: WebGLTexture; width: number; height: number }[] = [];
   private readonly atlas: LightmapAtlas;
   private readonly lightmap: WebGLTexture;
@@ -227,10 +226,6 @@ export class WorldRenderer {
   private area = Number.NaN;
   /** Flood number per area (floodAreas) for the portals open at spawn. */
   private readonly flood: Int32Array;
-  /** Clusters of the fat PVS the brush models were last tested against. */
-  private fatKey: string | undefined = "";
-  /** That fat PVS; undefined passes every model. */
-  private fatPvs: Uint8Array | undefined;
   private vis: WorldVis = { nodes: new Uint8Array(0), leafs: new Uint8Array(0) };
   private visibleFaces = 0;
   private readonly worldWalk: WorldWalk;
@@ -256,6 +251,7 @@ export class WorldRenderer {
     openPortals: ReadonlySet<number> = new Set(),
   ) {
     this.flood = floodAreas(bsp, openPortals);
+    this.instances = new PlacedInstances(bsp);
     const atlas = buildLightmapAtlas(bsp, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number, lightStyles);
     this.atlas = atlas;
     this.mesh = buildWorldMesh(bsp, atlas);
@@ -314,7 +310,7 @@ export class WorldRenderer {
       const { base, list, alpha, faces } = lists.get(inst.model)!;
       if (list.draws.length === 0 && alpha.draws.length === 0) continue;
       const alphaBase = base + list.indices.length;
-      this.instances.push({
+      this.instances.list.push({
         ...placeInstance(bsp, inst),
         modelIndex: inst.model,
         draws: list.draws.map((d) => ({ ...d, first: d.first + base })),
@@ -409,19 +405,9 @@ export class WorldRenderer {
     return stale.length;
   }
 
-  /**
-   * Move brush entities, by entity index: each is drawn at its `origins` entry (the
-   * client's blended origin) and linked, for the PVS and area tests, at its `linked` one
-   * (where the last game frame left it), or at `origins` without one. An entity in
-   * neither keeps its place.
-   */
+  /** Move brush entities, by entity index, as PlacedInstances.move does. */
   moveBrushModels(origins: ReadonlyMap<number, Vec3>, linked: ReadonlyMap<number, Vec3> = origins): void {
-    for (const inst of this.instances) {
-      const entity = inst.source.entity;
-      const origin = origins.get(entity) ?? linked.get(entity);
-      if (!origin) continue;
-      moveInstance(this.bsp, inst, origin, linked.get(entity) ?? origin, this.fatPvs);
-    }
+    this.instances.move(origins, linked);
   }
 
   /** Set the level time in milliseconds that warps move with. */
@@ -462,13 +448,7 @@ export class WorldRenderer {
     // Farthest a near-plane point lies from the eye on any axis is at most its corner distance.
     const nearCorner = NEAR * Math.hypot(1, Math.tan((FOV_X * Math.PI) / 360), Math.tan((fy * Math.PI) / 360));
     const fat = fatClusters(bsp, view.origin, bsp.leafs.cluster[serverLeaf] ?? -1, Math.max(8, nearCorner));
-    const fatKey = fat?.join(",");
-    if (fatKey !== this.fatKey) {
-      this.fatKey = fatKey;
-      const pvs = fat && pvsUnion(bsp, fat);
-      this.fatPvs = pvs;
-      for (const inst of this.instances) inst.inPvs = !pvs || clustersVisible(inst.clusters, pvs);
-    }
+    this.instances.testPvs(fat);
 
     // Any model point on screen is seen along a ray from a point of the near plane, which
     // is inside the fat PVS box, and the model's box touches the leaf the point is in.
@@ -477,7 +457,7 @@ export class WorldRenderer {
     let areaCulled = 0, pvsCulled = 0, frustumCulled = 0;
     const eyeArea = this.noAreas ? 0 : area;
     const drawn: InstanceDraws[] = [];
-    for (const inst of this.instances) {
+    for (const inst of this.instances.list) {
       if (this.cull && !areasVisible(this.flood, eyeArea, inst.areas)) {
         areaCulled++;
         continue;

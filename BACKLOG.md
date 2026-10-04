@@ -27,9 +27,10 @@ turrets turned to rest in their pitch/yaw range with their teams under a MOVETYP
 or STOP master), the linear doors the settle frames send moving drawn moving
 (`doorMovers`, stepped at the 10 Hz game frame by `BrushMotion` and blended as
 CL_AddPacketEntities does, re-linked each frame they move), culled by area, PVS and
-frustum, free-fly camera at the spawn spot and yaw SelectSpawnPoint gives the first deathmatch player, `.wal` textures and `?map=` BSPs
-from mounted pak/zip data (zip64 and self-extractor stubs included), picked archives
-read by range, checker fallback, `pnpm smoke`).
+frustum, free-fly camera at the spawn spot and yaw SelectSpawnPoint gives the first
+deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (zip64
+and self-extractor stubs included), picked archives read by range, checker fallback,
+`pnpm smoke`).
 Remaining:
 - `doorMovers` leaves out a door team with a member that is not a linear door (a
   func_door_rotating, a button): Think_CalcMoveSpeed would mix that member's

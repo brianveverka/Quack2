@@ -263,7 +263,7 @@ async function main(): Promise<void> {
     lightStyleValues(DEATHMATCH_LIGHTSTYLES, time, styleValues);
     renderer.setLightStyles(styleValues);
     renderer.setTime(time);
-    renderer.moveBrushModels(motion.originsAt(time), motion.linkedOrigins());
+    renderer.moveBrushModels(motion.originsAt(time), motion.linkedOrigins(time));
     debug.stats = renderer.render(camera, canvas.width, canvas.height);
     debug.lightmapUploads = debug.stats.lightmapUploads;
     debug.frames++;

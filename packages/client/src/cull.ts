@@ -113,6 +113,46 @@ export function moveInstance(bsp: Bsp, inst: PlacedInstance, origin: Vec3, linkO
   }
 }
 
+/**
+ * Brush model instances and the fat PVS they were last tested against: an eye whose fat
+ * clusters did not change tests nothing, and a moved instance is re-tested against that
+ * PVS as it moves.
+ */
+export class PlacedInstances<T extends PlacedInstance> {
+  readonly list: T[] = [];
+  /** Clusters of the fat PVS last tested; "" before the first test, undefined for none. */
+  private fatKey: string | undefined = "";
+  /** That fat PVS; undefined passes every instance. */
+  private pvs: Uint8Array | undefined;
+
+  constructor(private readonly bsp: Bsp) {}
+
+  /** Test every instance against the fat PVS of `fat` (fatClusters; undefined passes them all), unless those clusters were the last tested. */
+  testPvs(fat: readonly number[] | undefined): void {
+    const key = fat?.join(",");
+    if (key === this.fatKey) return;
+    this.fatKey = key;
+    const pvs = fat && pvsUnion(this.bsp, fat);
+    this.pvs = pvs;
+    for (const inst of this.list) inst.inPvs = !pvs || clustersVisible(inst.clusters, pvs);
+  }
+
+  /**
+   * Move brush entities, by entity index: each is drawn at its `origins` entry (the
+   * client's blended origin) and linked, for the PVS and area tests, at its `linked` one
+   * (where the last game frame left it), or at `origins` without one. An entity in
+   * neither keeps its place.
+   */
+  move(origins: ReadonlyMap<number, Vec3>, linked: ReadonlyMap<number, Vec3> = origins): void {
+    for (const inst of this.list) {
+      const entity = inst.source.entity;
+      const origin = origins.get(entity) ?? linked.get(entity);
+      if (!origin) continue;
+      moveInstance(this.bsp, inst, origin, linked.get(entity) ?? origin, this.pvs);
+    }
+  }
+}
+
 /** SV_LinkEdict's MAX_TOTAL_ENT_LEAFS: areas come from the first this many leafs the box touches. */
 const MAX_TOTAL_ENT_LEAFS = 128;
 

@@ -62,12 +62,31 @@ export class BrushMotion {
     return out;
   }
 
+  /** Step the movers to the game frame client time `ms` draws towards; returns that time, floored. */
+  private stepTo(ms: number): number {
+    // Steps one game frame per 100 ms: an infinite time never ends (a huge one takes as long).
+    if (!Number.isFinite(ms)) throw new RangeError(`level time ${ms} ms is not finite`);
+    const time = Math.max(0, Math.floor(ms));
+    const target = SETTLE_FRAMES + Math.ceil(time / 100);
+    if (target < this.framenum) this.reset();
+    while (this.framenum < target) {
+      this.framenum++;
+      const levelTime = levelTimeAt(this.framenum);
+      for (const team of this.teams) stepPusher(team.map((d) => d.mover), levelTime);
+      this.prev = this.cur;
+      this.cur = this.snapshot();
+    }
+    return time;
+  }
+
   /**
-   * Where the last game frame `originsAt` stepped to left every moving entity, by entity
-   * index: the origin the server links it at (SV_LinkEdict) and so decides by whether to
-   * send it, where the drawn origin is blended towards it. The arrays are the caller's.
+   * Where the game frame client time `ms` draws towards left every moving entity, by
+   * entity index: the origin the server links it at (SV_LinkEdict) and so decides by
+   * whether to send it, where the drawn origin is blended towards it. The arrays are the
+   * caller's.
    */
-  linkedOrigins(): Map<number, Vec3> {
+  linkedOrigins(ms: number): Map<number, Vec3> {
+    this.stepTo(ms);
     const out = new Map<number, Vec3>();
     for (const team of this.teams) {
       for (const { entity, mover } of team) out.set(entity, [mover.origin[0], mover.origin[1], mover.origin[2]]);
@@ -77,20 +96,9 @@ export class BrushMotion {
 
   /** The drawn origin of every moving entity at `ms`, by entity index; the arrays are the caller's. */
   originsAt(ms: number): Map<number, Vec3> {
-    // Steps one game frame per 100 ms: an infinite time never ends (a huge one takes as long).
-    if (!Number.isFinite(ms)) throw new RangeError(`level time ${ms} ms is not finite`);
-    const time = Math.max(0, Math.floor(ms));
-    const serverframe = Math.ceil(time / 100);
-    const target = SETTLE_FRAMES + serverframe;
-    if (target < this.framenum) this.reset();
-    while (this.framenum < target) {
-      this.framenum++;
-      const levelTime = levelTimeAt(this.framenum);
-      for (const team of this.teams) stepPusher(team.map((d) => d.mover), levelTime);
-      this.prev = this.cur;
-      this.cur = this.snapshot();
-    }
+    const time = this.stepTo(ms);
     if (this.framenum === SETTLE_FRAMES) return new Map([...this.cur].map(([e, o]) => [e, [...o] as Vec3]));
+    const serverframe = this.framenum - SETTLE_FRAMES;
     const frac = Math.fround(1 - (serverframe * 100 - time) * 0.01);
     const out = new Map<number, Vec3>();
     for (const [entity, cur] of this.cur) {
