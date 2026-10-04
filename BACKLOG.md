@@ -32,10 +32,11 @@ Remaining:
 - A door the second settle frame's use chains send up is drawn at rest although it
   starts moving the next frame (Move_Calc defers Move_Begin a frame). Brush entity
   motion lives in sim, stepped at FRAMETIME (`packages/sim/src/mover.ts`, linear doors
-  only). Next: build a `LinearMover` per func_door from the values `spawnMove` already
-  works out (pos1, pos2, distance, deathmatch speed, wait, DOOR_TOGGLE, team via
-  `calcMoveSpeed`), send the settle frames' doors up with `doorGoUp`, step them from
-  level time in main.ts, blend the origin between the last two frames as
+  only). Next: build a `LinearMover` per func_door as SP_func_door sets it up (pos1 and
+  pos2 as `spawnMove` works them out, which it does not return yet; "speed" doubled in
+  deathmatch, "accel", "decel", "wait" and DOOR_TOGGLE, none read by the client yet;
+  teams through `calcMoveSpeed`), send the settle frames' doors up with `doorGoUp`,
+  step them from level time in main.ts, blend the origin between the last two frames as
   CL_AddPacketEntities does, and give the renderer per-frame instance origins (it bakes
   them, and their area and PVS links, at construction).
 - The mover lacks Think_AccelMove (an accel or decel unlike speed leaves it in place),

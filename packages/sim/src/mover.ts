@@ -219,8 +219,9 @@ export function stepPusher(team: readonly LinearMover[], levelTime: number): voi
     if (!v[0] && !v[1] && !v[2]) continue;
     for (let i = 0; i < 3; i++) {
       const move = Math.fround(v[i]! * FRAMETIME_F);
-      let temp = move * 8.0;
-      temp += temp > 0 ? 0.5 : -0.5;
+      // temp is a float in the C, stored after each step.
+      let temp = Math.fround(move * 8.0);
+      temp = Math.fround(temp + (temp > 0 ? 0.5 : -0.5));
       m.origin[i] = Math.fround(m.origin[i]! + Math.fround(0.125 * Math.trunc(temp)));
     }
   }

@@ -106,6 +106,32 @@ describe("linear door mover", () => {
     expect([r[2]!.z[0], r[3]!.z[0]]).toEqual([3.25, 6.5]);
   });
 
+  it("goes down the frame after reaching the top with wait 0", () => {
+    const d = door({ wait: 0 });
+    doorGoUp(d, levelTimeAt(2), false);
+    const r = run([d], 2, 11);
+    expect([9, 10, 11].map((f) => r[f]!.state[0])).toEqual(["top", "down", "down"]);
+    expect(r[11]!.z[0]).toBe(100);
+  });
+
+  it("rounds the move as floats the way the C stores them", () => {
+    // Move_Begin's (remaining / speed) is a float: 224.4 / 20.4 rounds to 11 s as a float,
+    // so 110 frames; as a double it is a hair under 11, and 109.
+    const a = door({ speed: 20.4, accel: 20.4, decel: 20.4, distance: 224.4, endOrigin: [0, 0, 224.4] });
+    doorGoUp(a, levelTimeAt(1), true);
+    expect(a.nextthink).toBe(Math.fround(levelTimeAt(1) + 110 * 0.1));
+    // Move_Final's velocity is the float remaining / FRAMETIME, scaled by the float dir.
+    const b = door({ endOrigin: [8.36, 0, 4.19] });
+    doorGoUp(b, levelTimeAt(1), true);
+    expect([...b.velocity]).toEqual([83.5999984741211, 0, 41.900001525878906]);
+    // SV_Push: 0.62499994 * 0.1f is 0.0625 as a float; temp 0.5 + 0.5 rounds to 1.0f.
+    const c = door({ distance: 0.0625, endOrigin: [0, 0, 0.0624999925494194] });
+    doorGoUp(c, levelTimeAt(1), true);
+    expect(c.velocity[2]).toBe(0.6249999403953552);
+    stepPusher([c], levelTimeAt(2));
+    expect(c.origin[2]).toBe(0.125);
+  });
+
   it("leaves an accelerative mover where it is (Think_AccelMove is not ported)", () => {
     const d = door({ accel: 50 });
     doorGoUp(d, levelTimeAt(1), true);
