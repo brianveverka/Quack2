@@ -17,6 +17,8 @@ skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS (with
 R_SetupFrame's second view cluster 16 units below or above the eye), area portals
 (closed except those the two settle frames open: START_OPEN doors, and trigger_always
 firing portals, doors, secret doors and relays) culling world leafs and brush models,
+brush entities a killtarget frees in the settle frames left out, and func_wall and
+func_object entities a use there shows or hides drawn or left out to match,
 the world walked per frame as R_RecursiveWorldNode does (R_CullBox on nodes and leafs,
 so the sky box is bounded by the sky faces in view), inline brush models where the game
 has them after spawn (untargeted plats lowered, START_OPEN doors open, trains at their
@@ -27,13 +29,17 @@ yaw SelectSpawnPoint gives the first deathmatch player, `.wal` textures and `?ma
 from mounted pak/zip data (zip64 and self-extractor stubs included), picked archives
 read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- The second settle frame's use chains change only area portals and trains here. A
-  brush entity a killtarget frees is still drawn, and a door they send up is drawn at
-  rest although it starts moving the next frame. Only func_areaportal, doors,
-  func_door_secret, trigger_relay and func_train uses are modeled (and a train's
-  pathtarget at a corner it reaches at once), and a door's or relay's own "delay"
-  always defers its targets (a tiny or negative one can come due within the second
-  frame in the game).
+- A door the second settle frame's use chains send up is drawn at rest although it
+  starts moving the next frame (Move_Calc defers Move_Begin a frame); drawing it where
+  it is needs brush entity motion over time.
+- Only func_areaportal, doors, func_door_secret, trigger_relay, func_train, func_wall and
+  func_object uses are modeled in the settle frames (and a train's pathtarget at a
+  corner it reaches at once), and a door's or relay's own "delay" always defers its
+  targets (a tiny or negative one can come due within the second frame in the game).
+- A team whose master a settle-frame killtarget frees stops moving from that frame (its
+  members move and think only through the master's SV_Physics_Pusher), but
+  `settleTurrets` ignores frees: a freed breach master is left out while its team is
+  drawn turned to rest.
 - win32 Quake 2 runs every frame at x87 24-bit precision (`_controlfp(_PC_24)` in
   sys_win.c WinMain), which rounds the C's `double` steps to a 24-bit mantissa too
   (unless a GL driver resets it mid-frame; see `lightmapExtents`).
@@ -67,7 +73,9 @@ Remaining:
   func_object from its third frame) takes the master's origin each frame the master starts
   off the ground (SV_Physics_Toss), so its brush models leave their spawn origin; `settleTurrets`
   keeps them there. Items cut their team chain in droptofloor first, so an item master
-  moves no slave.
+  moves no slave. A func_object a settle-frame use shows turns MOVETYPE_TOSS and falls
+  the same way, and the KillBox a func_wall or func_object runs as a use shows it damages
+  what its box overlaps; neither is modeled (`wallUse`).
 
 ## 3. Server and netcode
 - Authoritative server in `packages/server` over `ws`, fixed tick.

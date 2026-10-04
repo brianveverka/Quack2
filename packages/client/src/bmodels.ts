@@ -4,7 +4,9 @@
 // "origin", then moved as the game moves it during spawn (lowered plats, doors that
 // start open, trains at their first path_corner or the teleport one after it), from the
 // entity string alone, and turret breaches (with their teams) turned to where they
-// come to rest in their pitch/yaw range. DOM-free.
+// come to rest in their pitch/yaw range. Those a killtarget frees in the settle frames
+// are left out, and func_wall and func_object entities a use there shows or hides are
+// drawn or left out to match. DOM-free.
 
 import { asciiLower, entityVec3, type Bsp, type BspEntity } from "@quack2/sim";
 import { angleVectors } from "./math.js";
@@ -540,7 +542,7 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
   const instances: BrushModelInstance[] = [];
   const errors: string[] = [];
   const turrets = settleTurrets(entities);
-  const { trains } = settleSpawnFrames(entities);
+  const { trains, freed, shown } = settleSpawnFrames(entities);
   entities.forEach((ent, i) => {
     const ref = ent.model;
     // Point entities carry model paths ("models/..."); only "*N" is an inline model.
@@ -552,7 +554,7 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
       errors.push(`entity ${i} (${classname}): model "${ref}" is not an inline model of this map`);
       return;
     }
-    if (!visibleAtSpawn(ent)) return;
+    if (freed.has(i) || !(shown.get(i) ?? visibleAtSpawn(ent))) return;
     const { mins, maxs } = modelBounds(bsp, model);
     const spawn = entityVec3(ent, "origin") ?? [0, 0, 0];
     const keep = KEEPS_ANGLES.has(classname) ? entityAngles(ent) : ([0, 0, 0] as Vec3);
@@ -596,6 +598,13 @@ interface Settle {
   byTargetname: Map<string, number[]>;
   /** Entities a killtarget freed. */
   freed: Set<number>;
+  /**
+   * Whether a func_wall or func_object used so far is sent to clients (SVF_NOCLIENT
+   * clear); the rest are as `visibleAtSpawn` says.
+   */
+  shown: Map<number, boolean>;
+  /** func_wall and func_object entities whose use function their own use cleared. */
+  useCleared: Set<number>;
   /** Team members, master first, by master index. */
   teams: Map<number, number[]>;
   slaves: Set<number>;
@@ -714,9 +723,9 @@ function useTargets(s: Settle, user: User): void {
 }
 
 /**
- * An entity's use function, for the classes whose use changes area portals or a train's
- * position now, or the moveinfo.state door_go_up reads. The rest (func_wall and others)
- * are not modeled and do nothing here.
+ * An entity's use function, for the classes whose use changes area portals, a train's
+ * position or whether a brush entity is drawn now, or the moveinfo.state door_go_up
+ * reads. The rest are not modeled and do nothing here.
  */
 function use(s: Settle, index: number): void {
   if (s.budget <= 0 || s.depth >= MAX_USE_DEPTH) return;
@@ -752,6 +761,10 @@ function useOne(s: Settle, index: number): void {
     }
     case "trigger_relay":
       useTargets(s, userOf(s, index));
+      return;
+    case "func_wall":
+    case "func_object":
+      wallUse(s, index);
       return;
     case "func_train":
       trainUse(s, index);
@@ -895,6 +908,29 @@ function trainUse(s: Settle, index: number): void {
   }
 }
 
+/**
+ * func_wall_use and func_object_use. SP_func_wall gives a use only to a wall with any of
+ * TRIGGER_SPAWN, TOGGLE or START_ON, and SP_func_object to an object with any spawnflag;
+ * the use shows a hidden one and hides a shown wall. An object's use then clears itself,
+ * and a wall's does unless it has TOGGLE (which START_ON forces). The KillBox a shown
+ * one runs needs the trace and is not modeled, nor the fall a used func_object starts
+ * (MOVETYPE_TOSS).
+ */
+function wallUse(s: Settle, index: number): void {
+  if (s.useCleared.has(index)) return;
+  const ent = s.entities[index]!;
+  const flags = atoi(ent.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK;
+  if (ent.classname === "func_object") {
+    if (flags === 0) return;
+    s.shown.set(index, true);
+    s.useCleared.add(index);
+    return;
+  }
+  if (!(flags & 7)) return;
+  s.shown.set(index, !(s.shown.get(index) ?? visibleAtSpawn(ent)));
+  if (!(flags & 6)) s.useCleared.add(index);
+}
+
 /** Whether a door's spawn function gave it DOOR_TOGGLE: the spawnflag, or a func_water whose "wait" is -1 or unset. */
 function doorToggles(ent: BspEntity): boolean {
   if (atoi(ent.spawnflags ?? "0") & DOOR_TOGGLE) return true;
@@ -933,7 +969,8 @@ function doorUse(s: Settle, index: number): void {
 
 /**
  * The two frames SV_SpawnServer runs to settle the map before any client is sent an
- * entity: the area portals left open, and where every in-game func_train is.
+ * entity: the area portals left open, where every in-game func_train is, the entities
+ * a killtarget freed, and the func_wall and func_object entities a use showed or hid.
  *
  * Area portals start closed (CM_SetAreaPortalState; SP_func_areaportal leaves them so;
  * a portal is its entity's "style").
@@ -951,11 +988,17 @@ function doorUse(s: Settle, index: number): void {
  * none lies earlier. G_UseTargets first frees its killtargets, then uses its targets: a
  * func_areaportal toggles, a door goes up with its team (each member at the bottom fires
  * its own targets, except portals, and opens its portals), a func_door_secret at origin
- * 0 0 0 opens its portals, a trigger_relay fires its targets, a train runs train_use.
- * Other use functions are not modeled, nor are a team slave train's thinks (both
- * func_train_find and train_next) running in its master's slot.
+ * 0 0 0 opens its portals, a trigger_relay fires its targets, a train runs train_use,
+ * a func_wall or func_object is shown or hidden (`wallUse`); an entity a killtarget
+ * freed is not drawn. Other use functions are not modeled, nor are a team slave train's
+ * thinks (both func_train_find and train_next) running in its master's slot.
  */
-function settleSpawnFrames(entities: readonly BspEntity[]): { portals: Set<number>; trains: Map<number, Train> } {
+function settleSpawnFrames(entities: readonly BspEntity[]): {
+  portals: Set<number>;
+  trains: Map<number, Train>;
+  freed: Set<number>;
+  shown: Map<number, boolean>;
+} {
   const teams = new Map<number, number[]>();
   const slaves = new Set<number>();
   for (const members of findTeams(entities).values()) {
@@ -974,6 +1017,8 @@ function settleSpawnFrames(entities: readonly BspEntity[]): { portals: Set<numbe
     entities,
     byTargetname,
     freed: new Set(),
+    shown: new Map(),
+    useCleared: new Set(),
     teams,
     slaves,
     moveState: new Map(),
@@ -1007,7 +1052,12 @@ function settleSpawnFrames(entities: readonly BspEntity[]): { portals: Set<numbe
     s.budget = MAX_USES;
     useTargets(s, { index: -1, classname: "DelayedUse", target: e.target, killtarget: e.killtarget, delay: 0 });
   });
-  return { portals: new Set([...s.portals].filter(([, open]) => open).map(([p]) => p)), trains: s.trains };
+  return {
+    portals: new Set([...s.portals].filter(([, open]) => open).map(([p]) => p)),
+    trains: s.trains,
+    freed: s.freed,
+    shown: s.shown,
+  };
 }
 
 /** The area portals open after the settle frames (`settleSpawnFrames`). */
