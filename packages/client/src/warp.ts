@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Port of ref_gl/gl_warp.c's water-surface subdivision (BoundPoly, SubdividePolygon,
 // GL_SubdivideSurface) and the EmitWaterPolys texture-coordinate warp, with gl_rsurf.c's
-// scroll for unwarped SURF_FLOWING faces beside it. DOM-free so tests
-// can import it under Node. The C stores vec3_t, verts and locals as `float`; every store
-// or float-only operation is rounded with Math.fround so results match the engine bit for
-// bit where JS allows. Comments mark where the C mixes in `double`.
+// scroll for unwarped SURF_FLOWING faces beside it. DOM-free so tests can import it under
+// Node. The C stores vec3_t, verts and locals as `float`; every store or float-only
+// operation is rounded with Math.fround so results match the engine bit for bit where JS
+// allows. Comments mark where the C mixes in `double`.
 
 const f = Math.fround;
 

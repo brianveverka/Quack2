@@ -11,11 +11,11 @@
 // every face on an animated light style checks lightmaps are uploaded as styles change.
 // Copies with surface flags set check warps move with level time and draw unlit, that
 // SURF_FLOWING scrolls unwarped opaque faces (still lit) but not unwarped translucent
-// ones, and translucent faces blend with what is behind them at their alpha. A copy whose walls and
-// ceiling are sky checks the sky box: r_notexture without data, each side's synthetic
-// image in its direction and orientation with it, and skyrotate. A copy split into two
-// areas by an area portal checks that a closed portal hides the world and brush models
-// beyond it, and that a START_OPEN door that targets it opens it.
+// ones, and translucent faces blend with what is behind them at their alpha. A copy
+// whose walls and ceiling are sky checks the sky box: r_notexture without data, each
+// side's synthetic image in its direction and orientation with it, and skyrotate. A copy
+// split into two areas by an area portal checks that a closed portal hides the world and
+// brush models beyond it, and that a START_OPEN door that targets it opens it.
 // Usage: node scripts/smoke-render.mjs [outdir]   (default packages/client/dist/smoke)
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
@@ -546,8 +546,11 @@ try {
   check(warpFloor.lit < 1.5 * warpFloor.shadow, "warped floor has no lightmap: no shadow under the pillar");
 
   // SURF_FLOWING without a warp: the scroll is -64 * frac(t / 40) texture widths, so 1 s
-  // moves the floor's checker 1.6 widths and 40 s (scroll -64 at both ends) none. The
-  // translucent trim goes through R_DrawAlphaSurfaces' DrawGLPoly and does not move.
+  // moves the floor 1.6 widths, while 2.5 s (-4 widths, against -64 at 0 s) is a whole
+  // number of widths and so of the checker's 16-texel period: no visible shift, where a
+  // scroll in texels would shift it 4 texels. -4 and -64 round differently in float, so
+  // a few edge pixels may still differ. The translucent trim goes through
+  // R_DrawAlphaSurfaces' DrawGLPoly and does not move.
   const flowFrames = (map, view) =>
     page.evaluate(async ({ map, view }) => {
       const frame = (ms) => {
@@ -560,8 +563,8 @@ try {
         for (let i = 0; i < a.length; i += 4) if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) n++;
         return n / (a.length / 4);
       };
-      const t0 = frame(0), t1 = frame(1000), t40 = frame(40000);
-      return { map, moved: diff(t0, t1), period: diff(t0, t40), stats: window.quack.stats };
+      const t0 = frame(0), t1 = frame(1000), whole = frame(2500);
+      return { map, moved: diff(t0, t1), whole: diff(t0, whole), stats: window.quack.stats };
     }, { map, view });
   await page.goto(`${ORIGIN}/?map=data/flowing.bsp`);
   await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
@@ -574,9 +577,10 @@ try {
   await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
   const flowTrans = await flowFrames("flowing-trans", WALL_VIEWS[0].view);
   console.log(`  flowing: ${JSON.stringify({ flowFloor, flowLight, flowTrans })}`);
-  check(flowFloor.moved > 0.05 && flowFloor.period === 0, `flowing floor scrolls with level time, period 40 s (${(flowFloor.moved * 100).toFixed(1)}% of pixels)`);
+  check(flowFloor.moved > 0.05, `flowing floor scrolls with level time (${(flowFloor.moved * 100).toFixed(1)}% of pixels)`);
+  check(flowFloor.whole < 0.005, `flowing floor scrolls in texture widths (${(flowFloor.whole * 100).toFixed(2)}% of pixels differ at a whole-width scroll)`);
   check(flowLight.lit > 4 * flowLight.shadow, "flowing floor keeps its lightmap");
-  check(flowTrans.stats.alphaFaces > 0 && flowTrans.moved === 0 && flowTrans.period === 0, "flowing translucent faces do not scroll");
+  check(flowTrans.stats.alphaFaces > 0 && flowTrans.moved === 0 && flowTrans.whole === 0, "flowing translucent faces do not scroll");
 
   // Translucent faces: the func_wall's box, with and without the wall, at alpha 0.33 and
   // 0.66. Solving P = a A + (1 - a) B for the wall's own colour A must give the same A

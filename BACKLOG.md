@@ -8,8 +8,8 @@ The WebGL2 world renderer is in `packages/client` (faces, lightmaps sized in flo
 the win32 CalcSurfaceExtents does, with the deathmatch light styles animated at 10 Hz
 and a face's lightmap composed again only as it is drawn, as ref_gl rebuilds it,
 warped surfaces moved per vertex as EmitWaterPolys does, SURF_FLOWING scrolled on warps
-and on unwarped opaque faces (DrawGLFlowingPoly) but not unwarped translucent ones, translucent surfaces blended in
-R_DrawAlphaSurfaces' order, no lightmap on sky, warp or translucent faces, the
+and on unwarped opaque faces (DrawGLFlowingPoly) but not unwarped translucent ones,
+translucent surfaces blended in R_DrawAlphaSurfaces' order, no lightmap on sky, warp or translucent faces, the
 worldspawn sky box drawn where the world's sky faces bound it (R_DrawSkyBox, with
 skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS (with R_SetupFrame's
 second view cluster 16 units below or above the eye), area portals (closed except those
