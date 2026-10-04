@@ -89,6 +89,9 @@ Remaining:
   with the breach's at-rest yaw, but the mover does not model the override, so the door
   turns its yaw back to its start or end angles as it moves. The seed is also the yaw
   at rest, not after the two settle frames: a slow breach reaches it later in the game.
+- A func_door_secret the settle frames open never moves, so its portals stay open: in
+  the game it moves out and back (door_secret_move1..6) and door_secret_done closes
+  them (door_use_areaportals false) unless its "wait" is -1, about 5 s after by default.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
