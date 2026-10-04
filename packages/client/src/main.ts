@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Browser entry: mounts game data (?pak=<url>, repeatable, later overrides earlier),
 // loads a BSP (?map=<path or url>, default the bundled test arena; a path in the mounted
-// archives wins over the same path on the server), spawns a free-fly camera at the
-// player start, and renders until the page closes. The file picker mounts more archives
-// at any time and re-textures the world and the sky. Click to capture the mouse; WASD to fly,
-// Space/C up/down, Shift fast.
+// archives wins over the same path on the server), spawns a free-fly camera where the
+// first player spawns in deathmatch, and renders until the page closes. The file picker
+// mounts more archives at any time and re-textures the world and the sky. Click to
+// capture the mouse; WASD to fly, Space/C up/down, Shift fast.
 
 import { DEATHMATCH_LIGHTSTYLES, GameFs, checkBspIntegrity, lightStyleValues, entityVec3, parseBsp, parseEntities, type BspEntity } from "@quack2/sim";
 import { MapLoadError, errorMessage, loadMap, loadSkyImages, loadWalTextures, openGameArchive } from "./assets.js";
-import { brushModelInstances, openAreaPortals } from "./bmodels.js";
+import { brushModelInstances, entityAngles, openAreaPortals, playerSpawnSpot } from "./bmodels.js";
 import { FlyCamera } from "./camera.js";
 import { transformPoint } from "./math.js";
 import { WorldRenderer, type FrameStats, type View } from "./renderer.js";
@@ -67,10 +67,9 @@ declare global {
 }
 
 function spawnPoint(ents: readonly BspEntity[]): FlyCamera {
-  const spawn =
-    ents.find((e) => e.classname === "info_player_start") ?? ents.find((e) => e.classname === "info_player_deathmatch");
+  const spawn = playerSpawnSpot(ents);
   const o = (spawn && entityVec3(spawn, "origin")) ?? [0, 0, 0];
-  return new FlyCamera([o[0], o[1], o[2] + VIEW_HEIGHT], 0, Number(spawn?.angle ?? 0) || 0);
+  return new FlyCamera([o[0], o[1], o[2] + VIEW_HEIGHT], 0, spawn ? entityAngles(spawn)[1] : 0);
 }
 
 function showError(message: string): void {

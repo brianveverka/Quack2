@@ -18,13 +18,11 @@ bounded by the sky faces in view), inline brush models where the game has them a
 spawn (untargeted plats lowered, START_OPEN doors open, trains at their first
 path_corner or a teleport one after it, also when a trigger_always uses them, turrets
 turned to rest in their pitch/yaw range with their teams under a MOVETYPE_PUSH or STOP
-master), culled by area, PVS and frustum, free-fly camera, `.wal` textures and `?map=`
+master), culled by area, PVS and frustum, free-fly camera at the spawn spot and yaw
+SelectSpawnPoint gives the first deathmatch player, `.wal` textures and `?map=`
 BSPs from mounted pak/zip data (zip64 and self-extractor stubs included), picked
 archives read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- The free-fly camera's spawn yaw (main.ts `spawnPoint`) reads only "angle", through
-  Number() rather than atof; it ignores "angles" and the later-key rule that
-  `entityAngles` implements.
 - `updateLightmapAtlas` recomposes every face on a changed light style, map-wide;
   ref_gl rebuilds only surfaces it draws. Measured 2026-10-04 in Node 22 on the fixture,
   warmed up: 33-34 ns per luxel with one style per face, about 73 with four, so 50k

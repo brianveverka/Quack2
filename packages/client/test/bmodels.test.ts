@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseBsp, parseEntities } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
-import { brushModelInstances, entityAngles, openAreaPortals, visibleAtSpawn } from "../src/bmodels.js";
+import { brushModelInstances, entityAngles, openAreaPortals, playerSpawnSpot, visibleAtSpawn } from "../src/bmodels.js";
 
 const bsp = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
 
@@ -456,6 +456,34 @@ describe("brush model instances", () => {
         { "classname" "path_corner" "targetname" "c" "origin" "100 200 300" }
       `).map((b) => b.origin)).toEqual([[100 + 385, 200 - 127, 300 + 1]]);
     });
+  });
+});
+
+describe("player spawn spot", () => {
+  const spot = (src: string) => playerSpawnSpot(parseEntities(src))?.origin;
+  const start = (origin: string, extra = "") => `{ "classname" "info_player_start" "origin" "${origin}" ${extra} }`;
+  const dm = (origin: string, extra = "") => `{ "classname" "info_player_deathmatch" "origin" "${origin}" ${extra} }`;
+
+  it("takes the first deathmatch spot over any player start", () => {
+    expect(spot(start("0 0 0") + dm("1 0 0") + dm("2 0 0"))).toBe("1 0 0");
+    expect(spot(`{ "classname" "Info_Player_Deathmatch" "origin" "3 0 0" }` + dm("1 0 0"))).toBe("3 0 0"); // G_Find: Q_stricmp
+  });
+
+  it("skips spots the game frees in deathmatch", () => {
+    expect(spot(dm("1 0 0", `"spawnflags" "2048"`) + dm("2 0 0"))).toBe("2 0 0");
+    expect(spot(dm("1 0 0", `"spawnflags" "2048"`) + start("0 0 0"))).toBe("0 0 0");
+  });
+
+  it("falls back to the first player start without a targetname, then the first", () => {
+    expect(spot(start("1 0 0", `"targetname" "a"`) + start("2 0 0"))).toBe("2 0 0");
+    expect(spot(start("1 0 0", `"targetname" ""`) + start("2 0 0"))).toBe("2 0 0"); // an empty value is still set
+    expect(spot(start("1 0 0", `"targetname" "a"`) + start("2 0 0", `"targetname" "b"`))).toBe("1 0 0");
+    expect(spot(`{ "classname" "info_player_coop" "origin" "1 0 0" }`)).toBeUndefined();
+  });
+
+  it("gives the fixture's first deathmatch spot, facing its yaw", () => {
+    const s = playerSpawnSpot(parseEntities(bsp.entityString))!;
+    expect([s.classname, s.origin, entityAngles(s)]).toEqual(["info_player_deathmatch", "-448 -192 24", [0, 45, 0]]);
   });
 });
 
