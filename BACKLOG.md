@@ -68,7 +68,7 @@ Remaining:
   an entity on any key starting with "}", quoted or not; `parseEntities` does not.
 - A light style change scans every face for the styles it uses (`setLightmapStyles`):
   0.7-0.9 ms per 10 Hz step over 5461 faces, measured 2026-10-04 in Node 22 on a
-  synthetic map, nothing animated. A per-style face list would make it scale with the
+  synthetic map where no face uses the changed style. A per-style face list would make it scale with the
   faces on changed styles. The renderer also composes a drawn brush model's faces that
   face away, which R_DrawInlineBModel skips; same light, extra cost.
 

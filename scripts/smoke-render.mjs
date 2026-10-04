@@ -442,8 +442,12 @@ try {
       ([ms, view]) => {
         window.quack.setView(view);
         window.quack.setLevelTime(ms);
-        const { data } = window.quack.readPixels();
+        const { width, height, data } = window.quack.readPixels();
         const uploads = window.quack.lightmapUploads;
+        // Centre of the func_wall's west face, which the wall view looks at.
+        const p = window.quack.project(-384, 160, 24);
+        const onScreen = !!p && p[0] >= 0 && p[0] < width && p[1] >= 0 && p[1] < height;
+        const wallPixel = onScreen ? Array.from(data.subarray(...[0, 4].map((k) => (Math.floor(p[1]) * width + Math.floor(p[0])) * 4 + k))) : undefined;
         // A second frame at the same time uploads nothing.
         window.quack.readPixels();
         let sum = 0, clear = 0;
@@ -451,7 +455,7 @@ try {
           if (data[i] === 64 && data[i + 1] === 0 && data[i + 2] === 64) clear++;
           else sum += data[i] + data[i + 1] + data[i + 2];
         }
-        return { uploads, again: window.quack.lightmapUploads, brushModels: window.quack.stats.brushModels, mean: sum / (data.length / 4), clear, data: Array.from(data) };
+        return { uploads, again: window.quack.lightmapUploads, brushModels: window.quack.stats.brushModels, wallPixel, mean: sum / (data.length / 4), clear, data: Array.from(data) };
       },
       [ms, view],
     );
@@ -492,9 +496,9 @@ try {
     "faces coming into view after a style change are composed then, and draw as unstyled faces at 'm'",
   );
   check(
-    lightWallFrame.brushModels === 1 && normalWall.brushModels === 1 &&
+    lightWallFrame.brushModels === 1 && !!normalWall.wallPixel && normalWall.wallPixel.slice(0, 3).some((c) => c > 0) &&
       lightWallFrame.data.length === normalWall.data.length && differWall === 0,
-    "a brush model drawn after a style change draws as unstyled at 'm'",
+    `a brush model drawn after a style change draws as unstyled at 'm' (wall face centre ${JSON.stringify(normalWall.wallPixel)})`,
   );
 
   // Warps: the floor moves with level time and has no lightmap, so the pillar's shadow
