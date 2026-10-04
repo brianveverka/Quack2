@@ -17,21 +17,11 @@ frame as R_RecursiveWorldNode does (R_CullBox on nodes and leafs, so the sky box
 bounded by the sky faces in view), inline brush models where the game has them after
 spawn (untargeted plats lowered, START_OPEN doors open, trains at their first
 path_corner or a teleport one after it, also when a trigger_always uses them, turrets
-turned to rest in their pitch/yaw range with their teams), culled by area, PVS and
-frustum, free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data
-(zip64 and self-extractor stubs included), picked archives read by range, checker
-fallback, `pnpm smoke`).
+turned to rest in their pitch/yaw range with their teams under a MOVETYPE_PUSH or STOP
+master), culled by area, PVS and frustum, free-fly camera, `.wal` textures and `?map=`
+BSPs from mounted pak/zip data (zip64 and self-extractor stubs included), picked
+archives read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- A turret team whose master (first member) is not a turret keeps its spawn angles here;
-  the game runs it under the master's movetype (a MOVETYPE_NONE or TOSS master never
-  runs the slaves' thinks, a PUSH one does). Needs the movetype per spawn function. Of
-  the entities their spawn function frees in deathmatch, team membership leaves out only
-  lights and func_explosive; monsters, misc_explobox, target_secret/goal/help and
-  dmflags-removed items still count, in team membership and in `findTargets` (so as
-  train corners) alike. An inverted
-  pitch range (minpitch > maxpitch) makes the game's clamp flip move_angles between the
-  two limits every frame, forever; here it runs to the frame cap (pitch by parity) or
-  stops on a zero-step frame.
 - The free-fly camera's spawn yaw (main.ts `spawnPoint`) reads only "angle", through
   Number() rather than atof; it ignores "angles" and the later-key rule that
   `entityAngles` implements.
@@ -76,8 +66,8 @@ Remaining:
   own entity slot in `settleSpawnFrames`; the game runs them in its master's slot, and
   only under a MOVETYPE_PUSH or STOP master (SV_Physics_Pusher). Under a NONE master the
   slave never thinks and stays at its spawn origin; under a TOSS master it takes the
-  master's origin (SV_Physics_Toss). Needs the movetype per spawn function, as the
-  turret team item does.
+  master's origin (SV_Physics_Toss). `PUSHER_CLASSES` in bmodels.ts has the master
+  rule `settleTurrets` uses.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
@@ -85,6 +75,11 @@ Remaining:
 - Port `CM_BoxTrace` / `CM_PointContents` against the parsed brushes into `packages/sim`.
 - Port `Pmove` (walk, jump, step, crouch, water) using the player box constants.
 - Test against fixture geometry: spawn points not in solid, walls stop the box.
+- With the trace: a team under a MOVETYPE_TOSS master (misc_gib_*, or a spawnflags-0
+  func_object from its third frame) takes the master's origin each frame the master starts
+  off the ground (SV_Physics_Toss), so its brush models leave their spawn origin; `settleTurrets`
+  keeps them there. Items cut their team chain in droptofloor first, so an item master
+  moves no slave.
 
 ## 3. Server and netcode
 - Authoritative server in `packages/server` over `ws`, fixed tick.

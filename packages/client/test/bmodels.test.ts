@@ -377,7 +377,7 @@ describe("brush model instances", () => {
         { "classname" "func_wall" "model" "*1" "team" "c" }
         { "classname" "turret_breach" "model" "*1" "minyaw" "90" "maxyaw" "100" "team" "c" }
         { "classname" "turret_base" "model" "*1" "angle" "45" }
-      `)).toEqual([0, 0, 45]); // a func_wall master: not run (known gap, see BACKLOG.md); an unteamed base never turns
+      `)).toEqual([90, 90, 45]); // a func_wall master (MOVETYPE_PUSH) runs and turns with its team; an unteamed base never turns
 
       // A master its spawn function frees in deathmatch is not in the team; the base leads it.
       expect(yaws(`
@@ -387,6 +387,70 @@ describe("brush model instances", () => {
         { "classname" "turret_base" "model" "*1" "team" "d" }
         { "classname" "turret_breach" "model" "*1" "minyaw" "80" "maxyaw" "100" "team" "d" }
       `).map((y) => Math.round(y * 1e9) / 1e9)).toEqual([80, 80]);
+    });
+
+    it("runs a team's turrets only under a MOVETYPE_PUSH or STOP master (SV_Physics_Pusher)", () => {
+      const yaws = (src: string) => place(`{ "classname" "worldspawn" }` + src).map((b) => Math.round(b.angles[1] * 1e9) / 1e9);
+      const breach = (team: string) => `{ "classname" "turret_breach" "model" "*1" "minyaw" "80" "maxyaw" "100" "team" "${team}" }`;
+      // MOVETYPE_STOP (func_button) runs like PUSH.
+      expect(yaws(`{ "classname" "func_button" "model" "*1" "team" "a" } ${breach("a")}`)).toEqual([80, 80]);
+      // MOVETYPE_NONE masters (func_conveyor, an item, a classname with no spawn function) run
+      // only their own think; a misc_gib (TOSS) master likewise, its origin copy not modeled.
+      expect(yaws(`{ "classname" "func_conveyor" "model" "*1" "angle" "10" "team" "a" } ${breach("a")}`)).toEqual([10, 0]);
+      expect(yaws(`{ "classname" "weapon_shotgun" "team" "a" } ${breach("a")}`)).toEqual([0]);
+      expect(yaws(`{ "classname" "no_such_class" "team" "a" } ${breach("a")}`)).toEqual([0]);
+      expect(yaws(`{ "classname" "misc_gib_arm" "team" "a" } ${breach("a")}`)).toEqual([0]);
+      // A spawnflags-0 func_object turns MOVETYPE_TOSS in the second frame: one 5 degree
+      // step (speed 50 * FRAMETIME) is pushed, in that frame. A triggered one stays PUSH.
+      expect(yaws(`{ "classname" "func_object" "model" "*1" "team" "a" } ${breach("a")}`)).toEqual([5, 5]);
+      expect(yaws(`{ "classname" "func_object" "model" "*1" "team" "a" "spawnflags" "1" } ${breach("a")}`)).toEqual([80]);
+    });
+
+    it("stops turning the members after an item, whose droptofloor cuts the team chain in the second frame", () => {
+      const yaws = (src: string) => place(`{ "classname" "worldspawn" }` + src).map((b) => Math.round(b.angles[1] * 1e9) / 1e9);
+      // The base after the item was pushed in the second frame only, by the first frame's 5 degrees.
+      expect(yaws(`
+        { "classname" "turret_base" "model" "*1" "team" "a" }
+        { "classname" "turret_breach" "model" "*1" "minyaw" "80" "maxyaw" "100" "team" "a" }
+        { "classname" "item_health" "team" "a" }
+        { "classname" "turret_base" "model" "*1" "team" "a" }
+      `)).toEqual([80, 80, 5]);
+      // A breach after the item no longer thinks: it stops after one step, and the team
+      // before it keeps the yaw velocity that step set, spinning to the frame cap.
+      const [base, cut] = yaws(`
+        { "classname" "turret_base" "model" "*1" "team" "b" }
+        { "classname" "ammo_shells" "team" "b" }
+        { "classname" "turret_breach" "model" "*1" "minyaw" "80" "maxyaw" "100" "team" "b" }
+      `);
+      expect(cut).toBe(5);
+      expect(base).toBe(5 * 9999); // no push in the first frame
+    });
+
+    it("leaves out of teams and target lookups the entities a spawn function frees in deathmatch", () => {
+      const yaws = (src: string) => place(`{ "classname" "worldspawn" }` + src).map((b) => Math.round(b.angles[1] * 1e9) / 1e9);
+      const team = (master: string) => yaws(`${master}
+        { "classname" "func_conveyor" "model" "*1" "angle" "10" "team" "a" }
+        { "classname" "turret_breach" "model" "*1" "minyaw" "80" "maxyaw" "100" "team" "a" }`);
+      // Freed: the conveyor (MOVETYPE_NONE) leads, and the breach keeps its angles.
+      for (const freed of [
+        `{ "classname" "monster_soldier" "team" "a" }`,
+        `{ "classname" "info_null" "team" "a" }`,
+        `{ "classname" "target_secret" "team" "a" }`,
+        `{ "classname" "path_corner" "team" "a" }`,
+        `{ "classname" "misc_teleporter" "team" "a" }`,
+        `{ "classname" "func_clock" "target" "x" "spawnflags" "2" "team" "a" }`,
+        `{ "classname" "trigger_gravity" "team" "a" }`,
+      ]) {
+        expect(team(freed)).toEqual([10, 0]);
+      }
+      // Kept: a func_wall leads, and turns the team.
+      expect(team(`{ "classname" "func_wall" "model" "*1" "team" "a" }`)).toEqual([80, 90, 80]);
+      // A train skips a freed monster with its corner's targetname.
+      expect(place(`
+        { "classname" "func_train" "model" "*1" "target" "c" }
+        { "classname" "monster_tank_commander" "targetname" "c" "origin" "1 1 1" }
+        { "classname" "path_corner" "targetname" "c" "origin" "100 200 300" }
+      `).map((b) => b.origin)).toEqual([[100 + 385, 200 - 127, 300 + 1]]);
     });
   });
 });
