@@ -18,13 +18,11 @@ bounded by the sky faces in view), inline brush models where the game has them a
 spawn (untargeted plats lowered, START_OPEN doors open, trains at their first
 path_corner or a teleport one after it, also when a trigger_always uses them, turrets
 turned to rest in their pitch/yaw range with their teams under a MOVETYPE_PUSH or STOP
-master), culled by area, PVS and frustum, free-fly camera, `.wal` textures and `?map=`
+master), culled by area, PVS and frustum, free-fly camera at the spawn spot and yaw
+SelectSpawnPoint gives the first deathmatch player, `.wal` textures and `?map=`
 BSPs from mounted pak/zip data (zip64 and self-extractor stubs included), picked
 archives read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- The free-fly camera's spawn yaw (main.ts `spawnPoint`) reads only "angle", through
-  Number() rather than atof; it ignores "angles" and the later-key rule that
-  `entityAngles` implements.
 - `updateLightmapAtlas` recomposes every face on a changed light style, map-wide;
   ref_gl rebuilds only surfaces it draws. Measured 2026-10-04 in Node 22 on the fixture,
   warmed up: 33-34 ns per luxel with one style per face, about 73 with four, so 50k
@@ -68,6 +66,10 @@ Remaining:
   slave never thinks and stays at its spawn origin; under a TOSS master it takes the
   master's origin (SV_Physics_Toss). `PUSHER_CLASSES` in bmodels.ts has the master
   rule `settleTurrets` uses.
+- Malformed entity lumps: when the first entity is not worldspawn, InitBodyQue never runs,
+  so entities 1-8 land in the body-queue slots G_FreeEdict refuses to free, and stay in
+  the game whatever `inGame` says (spawn spots, teams, targets). ED_ParseEdict also ends
+  an entity on any key starting with "}", quoted or not; `parseEntities` does not.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

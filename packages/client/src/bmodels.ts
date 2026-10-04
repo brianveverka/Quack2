@@ -498,6 +498,23 @@ export interface BrushModelInstances {
 }
 
 /**
+ * The spot SelectSpawnPoint (p_client.c) puts the first player on in deathmatch: an
+ * info_player_deathmatch, else the first info_player_start without a "targetname" (a map
+ * loaded directly has no game.spawnpoint), else the first info_player_start. G_Find
+ * matches classnames case insensitively and skips freed entities, and the first entity
+ * (edict 0) too unless SP_worldspawn marked it in use. With no player in the
+ * game yet, SelectFarthestDeathmatchSpawnPoint takes the first deathmatch spot, and
+ * SelectRandomDeathmatchSpawnPoint draws among the first count - 2 (all of them when
+ * there are two or fewer), so the first is the one spot both dmflags modes can give.
+ * PutClientInServer then faces the player along the spot's yaw (`entityAngles`), level.
+ */
+export function playerSpawnSpot(entities: readonly BspEntity[]): BspEntity | undefined {
+  const spots = (classname: string) => entities.filter((e, i) => i > 0 && inGame(e) && stricmpEqual(e.classname ?? "", classname));
+  const starts = spots("info_player_start");
+  return spots("info_player_deathmatch")[0] ?? starts.find((e) => e.targetname === undefined) ?? starts[0];
+}
+
+/**
  * Whether the deathmatch game sends this brush entity to clients right after spawning,
  * per the SP_ spawn functions in id's game source (g_spawn.c, g_misc.c, g_func.c,
  * g_trigger.c).
