@@ -9,19 +9,24 @@ light styles animated at 10 Hz, warped surfaces moved per vertex as EmitWaterPol
 translucent surfaces blended in R_DrawAlphaSurfaces' order, no lightmap on sky, warp or
 translucent faces, the worldspawn sky box drawn where the world's sky faces bound it
 (R_DrawSkyBox, with skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS,
-inline brush models where the game has them after spawn (untargeted plats lowered,
-START_OPEN doors open, trains at their first path_corner or a teleport one after it,
-turrets turned to rest in their pitch/yaw range with their teams), culled by PVS and
-frustum, free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data
+area portals (closed except those a START_OPEN door opens at spawn) culling world leafs
+and brush models, inline brush models where the game has them after spawn (untargeted
+plats lowered, START_OPEN doors open, trains at their first path_corner or a teleport
+one after it, turrets turned to rest in their pitch/yaw range with their teams), culled
+by area, PVS and frustum, free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data
 (zip64 and self-extractor stubs included), picked archives read by range, checker
 fallback, `pnpm smoke`).
 Remaining:
-- No area portal (areabits) culling, for the world or brush models (the server also
-  drops entities behind a closed door's area portal); no frustum culling of the world,
-  so the sky box's bounds also take sky faces outside the view, and can cover pixels
-  the engine leaves undrawn.
-  The engine's second view cluster near water surfaces (R_MarkLeaves `viewcluster2`) is
-  not handled either.
+- No frustum culling of the world (R_RecursiveWorldNode's R_CullBox on nodes), so the
+  sky box's bounds also take sky faces outside the view, and can cover pixels the engine
+  leaves undrawn. The world draw list is built per cluster and area; this makes it per
+  frame.
+- The engine's second view cluster near water surfaces (R_SetupFrame `viewcluster2`,
+  merged in R_MarkLeaves) is not handled.
+- Area portals the game opens in the second settle frame are not modeled: a
+  trigger_always (DelayedUse at 0.2 s) firing a func_areaportal toggles it open, and one
+  firing a door opens the door's portals. Shares the search for what targets an entity
+  with the func_train item below.
 - The world's PVS is the eye's own cluster; brush models use a fat PVS reaching past
   the near plane. An eye within a few units of a thin wall can show world faces of a
   cluster the eye's one does not see. Use the same fat PVS for the world.

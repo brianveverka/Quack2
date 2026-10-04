@@ -8,7 +8,7 @@
 
 import { DEATHMATCH_LIGHTSTYLES, GameFs, checkBspIntegrity, lightStyleValues, entityVec3, parseBsp, parseEntities, type BspEntity } from "@quack2/sim";
 import { MapLoadError, errorMessage, loadMap, loadSkyImages, loadWalTextures, openGameArchive } from "./assets.js";
-import { brushModelInstances } from "./bmodels.js";
+import { brushModelInstances, openAreaPortals } from "./bmodels.js";
 import { FlyCamera } from "./camera.js";
 import { transformPoint } from "./math.js";
 import { WorldRenderer, type FrameStats, type View } from "./renderer.js";
@@ -48,6 +48,10 @@ export interface QuackDebug {
   readPixels(): { width: number; height: number; data: Uint8Array };
   /** Turn brush model culling on (the default) or off. */
   setCull(on: boolean): void;
+  /** Area portals the game opened at spawn (their numbers, ascending); the rest are closed. */
+  openPortals?: readonly number[];
+  /** Ignore area portals, connecting every area (the server's map_noareas), or not (the default). */
+  setNoAreas(on: boolean): void;
   /** Hold the level clock (light styles, warps) at `ms` since the map loaded, or let it run again (undefined). */
   setLevelTime(ms: number | undefined): void;
   /** Faces whose lightmap the last frame uploaded because a light style changed. */
@@ -89,6 +93,7 @@ async function main(): Promise<void> {
     project: () => undefined,
     readPixels: () => ({ width: 0, height: 0, data: new Uint8Array(0) }),
     setCull: () => {},
+    setNoAreas: () => {},
     setLevelTime: () => {},
     lightmapUploads: 0,
   });
@@ -163,7 +168,9 @@ async function main(): Promise<void> {
   const levelStart = performance.now();
   let levelTime: number | undefined;
   const styleValues = lightStyleValues(DEATHMATCH_LIGHTSTYLES, 0);
-  const renderer = new WorldRenderer(gl, bsp, noTextures, brush.instances, styleValues);
+  const openPortals = openAreaPortals(entities);
+  debug.openPortals = [...openPortals].sort((a, b) => a - b);
+  const renderer = new WorldRenderer(gl, bsp, noTextures, brush.instances, styleValues, openPortals);
   debug.missingTextures = renderer.missingTextures;
   const sky = skySettings(entities);
   renderer.setSky(sky, []);
@@ -259,6 +266,9 @@ async function main(): Promise<void> {
   };
   debug.setCull = (on) => {
     renderer.cull = on;
+  };
+  debug.setNoAreas = (on) => {
+    renderer.noAreas = on;
   };
   debug.setLevelTime = (ms) => {
     levelTime = ms;

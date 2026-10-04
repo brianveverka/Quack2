@@ -5,8 +5,8 @@ pool. Planned shape: a WebGL2 browser client and an authoritative Node server ru
 shared simulation.
 
 Status: early. The BSP parser, pak/zip readers, and a WebGL2 world renderer (lightmaps
-with animated light styles, warped and translucent surfaces, the sky box, PVS culling, inline brush models such as doors and plats drawn
-where the game has them after spawn and culled by PVS and view frustum, free-fly camera,
+with animated light styles, warped and translucent surfaces, the sky box, PVS and area portal culling, inline brush models such as doors and plats
+drawn where the game has them after spawn and culled by area portal, PVS and view frustum, free-fly camera,
 `.wal` textures from game data you mount, checker placeholders for anything missing) are
 implemented and tested.
 Movement, the server, and netcode are not written yet. See [BACKLOG.md](BACKLOG.md).
@@ -15,7 +15,7 @@ Movement, the server, and netcode are not written yet. See [BACKLOG.md](BACKLOG.
 
 | Path | What |
 | --- | --- |
-| `packages/sim` | Shared simulation, runs in browser and Node. BSP v38 parser, entity parser, integrity checks, face/lightmap math, PVS, light style table, pak and zip readers, constants. |
+| `packages/sim` | Shared simulation, runs in browser and Node. BSP v38 parser, entity parser, integrity checks, face/lightmap math, PVS, area portal connectivity, light style table, pak and zip readers, constants. |
 | `packages/client` | Browser client: WebGL2 world renderer, free-fly camera, `.wal` and palette decoding, game data mounting. |
 | `packages/server` | Game server (Node, `ws`). Stub. |
 | `fixtures/maps` | Test map source (`.map`), its compiled `.bsp`, and a golden dump from ericw-tools. |

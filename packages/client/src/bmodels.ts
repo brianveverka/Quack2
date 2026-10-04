@@ -189,6 +189,27 @@ const MAX_SETTLE_FRAMES = 10000;
 /** A turn per frame below this (degrees) counts as settled; a double never quite reaches zero. */
 const SETTLED = 1e-9;
 
+/** Whether an entity is still in the game after spawning in deathmatch. */
+function inGame(e: BspEntity): boolean {
+  return !(atoi(e.spawnflags ?? "0") & SPAWNFLAG_NOT_DEATHMATCH) && !FREED_IN_DEATHMATCH.has(e.classname ?? "");
+}
+
+/**
+ * G_FindTeams: the in-game entities with the same "team", compared case sensitively, by
+ * entity index in entity order; the first of each is its master, the rest are
+ * FL_TEAMSLAVE. Edict 0 (worldspawn) is never in a team.
+ */
+function findTeams(entities: readonly BspEntity[]): Map<string, number[]> {
+  const teams = new Map<string, number[]>();
+  entities.forEach((e, i) => {
+    if (i === 0 || !inGame(e) || e.team === undefined) return;
+    const members = teams.get(e.team);
+    if (members) members.push(i);
+    else teams.set(e.team, [i]);
+  });
+  return teams;
+}
+
 /**
  * g_turret.c AnglesNormalize on one angle: `while (a > 360) a -= 360; while (a < 0) a += 360;`
  * in closed form, so a huge angle does not spin here as the game's loop would.
@@ -269,19 +290,11 @@ function breachThink(b: Breach): [number, number] {
  * members keep their spawn angles. So does a team with a non-finite angle or field.
  */
 function settleTurrets(entities: readonly BspEntity[]): Map<number, { angles?: Vec3; yaw?: number }> {
-  const inGame = (e: BspEntity) =>
-    !(atoi(e.spawnflags ?? "0") & SPAWNFLAG_NOT_DEATHMATCH) && !FREED_IN_DEATHMATCH.has(e.classname ?? "");
   const groups: number[][] = [];
-  const teams = new Map<string, number[]>();
   entities.forEach((e, i) => {
-    if (i === 0 || !inGame(e)) return; // edict 0 (worldspawn) is never in a team
-    if (e.team !== undefined) {
-      const members = teams.get(e.team);
-      if (members) members.push(i);
-      else teams.set(e.team, [i]);
-    } else if (e.classname === "turret_breach") groups.push([i]);
+    if (i > 0 && inGame(e) && e.team === undefined && e.classname === "turret_breach") groups.push([i]);
   });
-  for (const members of teams.values()) {
+  for (const members of findTeams(entities).values()) {
     const master = entities[members[0]!]!.classname;
     if (master === "turret_breach" || master === "turret_base") groups.push(members);
   }
@@ -387,4 +400,32 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
     instances.push({ model, origin, angles: turned, classname });
   });
   return { instances, errors };
+}
+
+/**
+ * Area portals the game has opened before any client sees the map (CM_SetAreaPortalState
+ * starts them all closed; SP_func_areaportal leaves them so). Only doors open any: a
+ * START_OPEN func_door or func_door_rotating with no "health" and no "targetname" gets
+ * Think_SpawnDoorTrigger as its first think (the first settle frame), which, unless the
+ * door is a team slave, opens every portal door_use_areaportals finds: in-game entities
+ * whose classname is func_areaportal and whose "targetname" is the door's "target",
+ * both compared case insensitively (G_Find, Q_stricmp). A portal is its "style".
+ * Portals the game opens later in the settle frames (a trigger_always firing a
+ * func_areaportal or a door) are not modeled.
+ */
+export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
+  const slaves = new Set<number>();
+  for (const members of findTeams(entities).values()) members.slice(1).forEach((i) => slaves.add(i));
+  const open = new Set<number>();
+  entities.forEach((door, i) => {
+    if (door.classname !== "func_door" && door.classname !== "func_door_rotating") return;
+    if (!inGame(door) || slaves.has(i) || door.target === undefined) return;
+    if (!(atoi(door.spawnflags ?? "0") & DOOR_START_OPEN)) return;
+    if (atoi(door.health ?? "0") || door.targetname !== undefined) return;
+    for (const t of entities) {
+      if (t.targetname === undefined || !stricmpEqual(t.targetname, door.target) || !inGame(t)) continue;
+      if (stricmpEqual(t.classname ?? "", "func_areaportal")) open.add(atoi(t.style ?? "0"));
+    }
+  });
+  return open;
 }

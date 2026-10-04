@@ -5,3 +5,4 @@ export * from "./entities.js";
 export * from "./integrity.js";
 export * from "./surface.js";
 export * from "./vis.js";
+export * from "./areas.js";

@@ -2,9 +2,10 @@
 // Brush model culling: by PVS, as the engine's server decides which entities a client
 // is sent (sv_ents.c SV_BuildClientFrame over the clusters SV_LinkEdict found), and by
 // view frustum, as the GL renderer skips a model before drawing it (gl_rsurf.c
-// R_DrawBrushModel, R_CullBox). DOM-free.
+// R_DrawBrushModel, R_CullBox), and by area, as the server leaves out an entity in no
+// area connected to the client's (CM_AreasConnected). DOM-free.
 
-import { boxLeafs, clusterPvs, visRowBytes, type Bsp } from "@quack2/sim";
+import { areasConnected, boxLeafs, clusterPvs, visRowBytes, type Bsp } from "@quack2/sim";
 import { modelBounds, type BrushModelInstance } from "./bmodels.js";
 import type { Mat4 } from "./math.js";
 
@@ -30,6 +31,57 @@ export function instanceBox(bsp: Bsp, inst: BrushModelInstance): Box {
     return { mins: [o[0] - r, o[1] - r, o[2] - r], maxs: [o[0] + r, o[1] + r, o[2] + r] };
   }
   return { mins: [o[0] + mins[0]!, o[1] + mins[1]!, o[2] + mins[2]!], maxs: [o[0] + maxs[0]!, o[1] + maxs[1]!, o[2] + maxs[2]!] };
+}
+
+/**
+ * The box SV_LinkEdict links a brush entity by (absmin/absmax): the model's bounds
+ * spread by a unit at the entity origin, or, when any angle is set, a cube of the
+ * largest single bound around it; either way grown by one more unit on every side.
+ */
+export function linkBox(bsp: Bsp, inst: BrushModelInstance): Box {
+  const { mins, maxs } = modelBounds(bsp, inst.model);
+  const o = inst.origin;
+  if (inst.angles[0] || inst.angles[1] || inst.angles[2]) {
+    const r = Math.max(...mins.map(Math.abs), ...maxs.map(Math.abs)) + 1;
+    return { mins: [o[0] - r, o[1] - r, o[2] - r], maxs: [o[0] + r, o[1] + r, o[2] + r] };
+  }
+  return {
+    mins: [o[0] + mins[0]! - 1, o[1] + mins[1]! - 1, o[2] + mins[2]! - 1],
+    maxs: [o[0] + maxs[0]! + 1, o[1] + maxs[1]! + 1, o[2] + maxs[2]! + 1],
+  };
+}
+
+/** SV_LinkEdict's MAX_TOTAL_ENT_LEAFS: areas come from the first this many leafs the box touches. */
+const MAX_TOTAL_ENT_LEAFS = 128;
+
+/**
+ * An entity's areanum and areanum2 as SV_LinkEdict sets them from the leafs its link box
+ * touches, in CM_BoxLeafnums' order and with its axial-plane ties: the first nonzero
+ * area, and the last nonzero one that differs from it (doors straddle two); 0 for none.
+ * Ties are compared in double; the engine's float bounds can differ off integer values. An entity touching three or more areas keeps
+ * only those two, as in the engine.
+ */
+export function boxAreas(bsp: Bsp, box: Box): [number, number] {
+  let area1 = 0;
+  let area2 = 0;
+  for (const leaf of boxLeafs(bsp, box.mins, box.maxs, undefined, true).slice(0, MAX_TOTAL_ENT_LEAFS)) {
+    const area = bsp.leafs.area[leaf]!;
+    if (!area) continue;
+    if (area1 && area1 !== area) area2 = area;
+    else area1 = area;
+  }
+  return [area1, area2];
+}
+
+/**
+ * Whether the server sends an entity with these areas to a client in `eyeArea`
+ * (SV_BuildClientFrame): its first or, if it has one, its second area is connected to
+ * the client's. An eye in area 0 (in solid or outside the map) passes every entity, as
+ * the PVS test does there; the engine would pass only entities in area 0.
+ */
+export function areasVisible(flood: Int32Array, eyeArea: number, areas: readonly [number, number]): boolean {
+  if (eyeArea === 0) return true;
+  return areasConnected(flood, eyeArea, areas[0]) || (areas[1] !== 0 && areasConnected(flood, eyeArea, areas[1]));
 }
 
 /**

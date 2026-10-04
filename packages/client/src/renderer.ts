@@ -1,15 +1,28 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // WebGL2 world renderer: one static vertex buffer for every model, a world index buffer
-// rebuilt when the eye changes cluster, a static index buffer for the brush models drawn
+// rebuilt when the eye changes cluster or area, a static index buffer for the brush models drawn
 // at their entity origins and angles, one draw per texture and surface flags per model.
-// Brush models outside the eye's PVS or the view frustum are skipped. Warped faces
+// World leafs and brush models behind a closed area portal, or outside the eye's PVS,
+// are skipped, and brush models outside the view frustum. Warped faces
 // (SURF_WARP) are moved in the vertex shader as EmitWaterPolys does; translucent ones
 // (SURF_TRANS33/66) are blended last, in R_DrawAlphaSurfaces' order. The world's sky
 // faces are not drawn; the sky box is, where they bound it (R_DrawSkyBox).
 
-import { SURF_FLOWING, SURF_TRANS33, SURF_TRANS66, SURF_WARP, pointLeaf, type Bsp } from "@quack2/sim";
+import { SURF_FLOWING, SURF_TRANS33, SURF_TRANS66, SURF_WARP, areaBits, floodAreas, pointLeaf, type Bsp } from "@quack2/sim";
 import type { BrushModelInstance } from "./bmodels.js";
-import { boxClusters, boxOutsideFrustum, clustersVisible, fatClusters, frustumPlanes, instanceBox, pvsUnion, type Box } from "./cull.js";
+import {
+  areasVisible,
+  boxAreas,
+  boxClusters,
+  boxOutsideFrustum,
+  clustersVisible,
+  fatClusters,
+  frustumPlanes,
+  instanceBox,
+  linkBox,
+  pvsUnion,
+  type Box,
+} from "./cull.js";
 import { buildLightmapAtlas, updateLightmapAtlas, type LightmapAtlas } from "./lightmap.js";
 import { fovY, modelMatrix, multiply, perspective, viewMatrix, type Mat4 } from "./math.js";
 import { addSkyPolygon, clearSkyBounds, newSkyBounds, skyBoxQuads, skyMatrix, type SkySettings } from "./sky.js";
@@ -122,11 +135,15 @@ export interface View {
 export interface FrameStats {
   readonly leaf: number;
   readonly cluster: number;
-  /** World faces in the PVS; brush model faces are not counted. */
+  /** The eye leaf's area; 0 in solid or outside the map. */
+  readonly area: number;
+  /** World faces in the PVS and in areas connected to the eye's; brush model faces are not counted. */
   readonly visibleFaces: number;
   /** Brush model instances drawn. */
   readonly brushModels: number;
-  /** Brush model instances skipped: touching no cluster in the eye's PVS. */
+  /** Brush model instances skipped: in no area connected to the eye's (behind a closed area portal). */
+  readonly areaCulled: number;
+  /** Brush model instances in a connected area but skipped: touching no cluster in the eye's PVS. */
   readonly pvsCulled: number;
   /** Brush model instances in the PVS but skipped: wholly outside the view frustum. */
   readonly frustumCulled: number;
@@ -151,6 +168,8 @@ interface InstanceDraws {
   readonly box: Box;
   /** Distinct non-solid clusters the box touches. Computed once: models do not move yet; a mover must recompute this and `box`. */
   readonly clusters: readonly number[];
+  /** areanum and areanum2 of the server's link box (boxAreas). Computed once, as `clusters` is. */
+  readonly areas: readonly [number, number];
   /** In the fat PVS of the current eye position. */
   inPvs: boolean;
 }
@@ -159,8 +178,10 @@ export class WorldRenderer {
   readonly mesh: WorldMesh;
   /** Texture names drawn as a checker placeholder. */
   missingTextures: readonly string[] = [];
-  /** Brush model culling, on by default; off draws every instance (the engine's r_nocull, for the server's PVS test too). */
+  /** Brush model culling, on by default; off draws every instance (the engine's r_nocull, for the server's PVS and area tests too). */
   cull = true;
+  /** Every area connected to every other, for the world and brush models alike (the server's map_noareas). */
+  noAreas = false;
   private readonly program: WebGLProgram;
   private readonly vao: WebGLVertexArrayObject;
   private readonly indexBuffer: WebGLBuffer;
@@ -186,6 +207,10 @@ export class WorldRenderer {
   /** View-projection of the last rendered frame. */
   viewProj: Float32Array = new Float32Array(16);
   private cluster = Number.NaN;
+  /** Area of the eye the world draw list was built for, -1 with noAreas. */
+  private area = Number.NaN;
+  /** Flood number per area (floodAreas) for the portals open at spawn. */
+  private readonly flood: Int32Array;
   /** Clusters of the fat PVS the brush models were last tested against. */
   private fatKey: string | undefined = "";
   private drawList: DrawList = { indices: new Uint32Array(0), draws: [], visibleFaces: 0, translucent: [], sky: [] };
@@ -206,7 +231,10 @@ export class WorldRenderer {
     textureSource: TextureSource,
     brushModels: readonly BrushModelInstance[] = [],
     lightStyles?: ArrayLike<number>,
+    /** Open area portal numbers (openAreaPortals); the rest are closed. */
+    openPortals: ReadonlySet<number> = new Set(),
   ) {
+    this.flood = floodAreas(bsp, openPortals);
     const atlas = buildLightmapAtlas(bsp, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number, lightStyles);
     this.atlas = atlas;
     this.mesh = buildWorldMesh(bsp, atlas);
@@ -268,6 +296,7 @@ export class WorldRenderer {
         alphaFaces: list.translucent.length,
         box,
         clusters: boxClusters(bsp, box),
+        areas: boxAreas(bsp, linkBox(bsp, inst)),
         inPvs: true,
       });
     }
@@ -360,10 +389,17 @@ export class WorldRenderer {
     const { gl, bsp } = this;
     const leaf = pointLeaf(bsp, view.origin[0], view.origin[1], view.origin[2]);
     const cluster = bsp.leafs.cluster[leaf] ?? -1;
-    const rebuild = cluster !== this.cluster;
+    // A leaf area outside the areas lump (a corrupt map) counts as area 0, so the map still draws.
+    const leafArea = bsp.leafs.area[leaf] ?? 0;
+    const area = leafArea > 0 && leafArea < this.flood.length ? leafArea : 0;
+    // The world's area bits depend on the eye's area alone: portals do not change yet.
+    const worldArea = this.noAreas ? -1 : area;
+    const rebuild = cluster !== this.cluster || worldArea !== this.area;
     if (rebuild) {
       this.cluster = cluster;
-      this.drawList = buildDrawList(this.mesh, visibleFaceMask(bsp, this.mesh, cluster), true);
+      this.area = worldArea;
+      const bits = worldArea > 0 ? areaBits(this.flood, worldArea) : undefined;
+      this.drawList = buildDrawList(this.mesh, visibleFaceMask(bsp, this.mesh, cluster, bits), true);
     }
     const aspect = width / height;
     const fy = fovY(FOV_X, aspect);
@@ -413,10 +449,15 @@ export class WorldRenderer {
     // Where the near plane is inside solid, models and world alike can show a cluster
     // past this, as in the engine.
     const planes = frustumPlanes(this.viewProj);
-    let brushModels = 0, pvsCulled = 0, frustumCulled = 0;
+    let brushModels = 0, areaCulled = 0, pvsCulled = 0, frustumCulled = 0;
+    const eyeArea = this.noAreas ? 0 : area;
     const drawn: InstanceDraws[] = [];
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.brushIndexBuffer);
     for (const inst of this.instances) {
+      if (this.cull && !areasVisible(this.flood, eyeArea, inst.areas)) {
+        areaCulled++;
+        continue;
+      }
       if (this.cull && !inst.inPvs) {
         pvsCulled++;
         continue;
@@ -469,8 +510,10 @@ export class WorldRenderer {
     return {
       leaf,
       cluster,
+      area,
       visibleFaces: this.drawList.visibleFaces,
       brushModels,
+      areaCulled,
       pvsCulled,
       frustumCulled,
       alphaFaces,

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseBsp, parseEntities } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
-import { brushModelInstances, entityAngles, visibleAtSpawn } from "../src/bmodels.js";
+import { brushModelInstances, entityAngles, openAreaPortals, visibleAtSpawn } from "../src/bmodels.js";
 
 const bsp = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
 
@@ -304,5 +304,57 @@ describe("brush model instances", () => {
         { "classname" "turret_breach" "model" "*1" "minyaw" "80" "maxyaw" "100" "team" "d" }
       `).map((y) => Math.round(y * 1e9) / 1e9)).toEqual([80, 80]);
     });
+  });
+});
+
+describe("area portals open at spawn", () => {
+  const portals = `{ "classname" "worldspawn" }
+    { "classname" "func_areaportal" "targetname" "p" "style" "1" }
+    { "classname" "func_areaportal" "targetname" "P" "style" "2" }
+    { "classname" "func_areaportal" "targetname" "q" "style" "3" }`;
+  const open = (doors: string) => [...openAreaPortals(parseEntities(portals + doors))].sort((a, b) => a - b);
+
+  it("start closed (SP_func_areaportal)", () => {
+    expect(open("")).toEqual([]);
+    expect(open(`{ "classname" "func_door" "model" "*1" "target" "q" }`)).toEqual([]);
+  });
+
+  it("a START_OPEN door with no health or targetname opens every portal it targets, matched case insensitively", () => {
+    expect(open(`{ "classname" "func_door" "model" "*1" "target" "p" "spawnflags" "1" }`)).toEqual([1, 2]);
+    expect(open(`{ "classname" "func_door_rotating" "model" "*1" "target" "Q" "spawnflags" "1" }`)).toEqual([3]);
+    expect(open(`{ "classname" "func_door" "model" "*1" "target" "q" "spawnflags" "257" }`)).toEqual([3]);
+  });
+
+  it("a START_OPEN door with health or a targetname waits to be used (Think_CalcMoveSpeed)", () => {
+    expect(open(`{ "classname" "func_door" "target" "q" "spawnflags" "1" "health" "10" }`)).toEqual([]);
+    expect(open(`{ "classname" "func_door" "target" "q" "spawnflags" "1" "targetname" "d" }`)).toEqual([]);
+    expect(open(`{ "classname" "func_door" "target" "q" "spawnflags" "1" "health" "x" }`)).toEqual([3]);
+  });
+
+  it("only doors open portals, and only spawned ones", () => {
+    expect(open(`{ "classname" "func_water" "target" "q" "spawnflags" "1" }`)).toEqual([]);
+    expect(open(`{ "classname" "FUNC_DOOR" "target" "q" "spawnflags" "1" }`)).toEqual([]);
+    expect(open(`{ "classname" "func_door" "target" "q" "spawnflags" "2049" }`)).toEqual([]);
+  });
+
+  it("a team slave does not; its master does if it is a START_OPEN door itself (G_FindTeams)", () => {
+    const team = (masterFlags: string, slaveTarget: string) =>
+      open(`{ "classname" "func_door" "team" "t" "target" "p" "spawnflags" "${masterFlags}" }
+        { "classname" "func_door" "team" "t" "target" "${slaveTarget}" "spawnflags" "1" }`);
+    expect(team("0", "q")).toEqual([]);
+    expect(team("1", "q")).toEqual([1, 2]);
+    // A master freed in deathmatch is not in the team; the next member leads it.
+    expect(
+      open(`{ "classname" "func_door" "team" "t" "spawnflags" "2048" }
+        { "classname" "func_door" "team" "t" "target" "q" "spawnflags" "1" }`),
+    ).toEqual([3]);
+  });
+
+  it("finds portals by classname case insensitively, and not ones freed in deathmatch", () => {
+    const ents = parseEntities(`{ "classname" "worldspawn" }
+      { "classname" "FUNC_AREAPORTAL" "targetname" "p" "style" "4" }
+      { "classname" "func_areaportal" "targetname" "p" "style" "5" "spawnflags" "2048" }
+      { "classname" "func_door" "target" "p" "spawnflags" "1" }`);
+    expect([...openAreaPortals(ents)]).toEqual([4]);
   });
 });

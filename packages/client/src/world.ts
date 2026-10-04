@@ -7,6 +7,7 @@
 // the sky box (sky.ts). DOM-free so it is testable under Node.
 
 import {
+  CONTENTS_SOLID,
   SURF_FLOWING,
   SURF_NODRAW,
   SURF_SKY,
@@ -190,22 +191,30 @@ export interface DrawList {
 /**
  * Faces potentially visible from `cluster`, as world-model face flags. Cluster -1 (the
  * eye is in solid or outside the map) or a map without vis marks every face, as the
- * engine's novis path does.
+ * engine's novis path does. With `areaBits` (areaBits in @quack2/sim), a leaf whose
+ * area bit is clear adds no faces, as R_RecursiveWorldNode skips leafs behind a closed
+ * area portal, on the novis path too (every non-solid leaf then counts as in the PVS).
+ * Pass none for an eye in area 0, whose bits are all set.
  */
-export function visibleFaceMask(bsp: Bsp, mesh: WorldMesh, cluster: number): Uint8Array {
+export function visibleFaceMask(bsp: Bsp, mesh: WorldMesh, cluster: number, areaBits?: Uint8Array): Uint8Array {
   const mask = new Uint8Array(bsp.faces.count);
   const end = mesh.firstFace + mesh.numFaces;
   // A leaf cluster past the vis data (a corrupt map that warns but still draws) has no
   // PVS row; draw everything rather than nothing.
-  if (cluster < 0 || cluster >= bsp.visibility.numClusters) {
+  const novis = cluster < 0 || cluster >= bsp.visibility.numClusters;
+  if (novis && !areaBits) {
     mask.fill(1, mesh.firstFace, end);
     return mask;
   }
-  const pvs = clusterPvs(bsp, cluster);
+  const pvs = novis ? undefined : clusterPvs(bsp, cluster);
   const { leafs, leafFaces } = bsp;
   for (let l = 0; l < leafs.count; l++) {
-    const c = leafs.cluster[l]!;
-    if (c < 0 || !(pvs[c >> 3]! & (1 << (c & 7)))) continue;
+    if (pvs) {
+      const c = leafs.cluster[l]!;
+      if (c < 0 || !(pvs[c >> 3]! & (1 << (c & 7)))) continue;
+    } else if (leafs.contents[l] === CONTENTS_SOLID) continue;
+    const a = leafs.area[l]!;
+    if (areaBits && !((areaBits[a >> 3] ?? 0) & (1 << (a & 7)))) continue;
     const first = leafs.firstLeafFace[l]!;
     for (let k = 0; k < leafs.numLeafFaces[l]!; k++) {
       const f = leafFaces[first + k]!;
