@@ -5,7 +5,8 @@ order (see CLAUDE.md, Orchestration).
 
 ## 1. Game data and renderer completeness
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps sized in float as
-the win32 CalcSurfaceExtents does, with the deathmatch light styles animated at 10 Hz,
+the win32 CalcSurfaceExtents does, with the deathmatch light styles animated at 10 Hz
+and a face's lightmap composed again only as it is drawn, as ref_gl rebuilds it,
 warped surfaces moved per vertex as EmitWaterPolys does, translucent surfaces blended in
 R_DrawAlphaSurfaces' order, no lightmap on sky, warp or translucent faces, the
 worldspawn sky box drawn where the world's sky faces bound it (R_DrawSkyBox, with
@@ -23,11 +24,6 @@ SelectSpawnPoint gives the first deathmatch player, `.wal` textures and `?map=`
 BSPs from mounted pak/zip data (zip64 and self-extractor stubs included), picked
 archives read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- `updateLightmapAtlas` recomposes every face on a changed light style, map-wide;
-  ref_gl rebuilds only surfaces it draws. Measured 2026-10-04 in Node 22 on the fixture,
-  warmed up: 33-34 ns per luxel with one style per face, about 73 with four, so 50k
-  animated luxels cost 2-4 ms per 10 Hz step. Limit it to visible
-  faces if large maps show it.
 - SURF_FLOWING scrolls only warped faces; ref_gl also scrolls unwarped opaque ones
   (DrawGLFlowingPoly, GL_RenderLightmappedPoly), though not unwarped translucent ones
   (R_DrawAlphaSurfaces uses DrawGLPoly).
@@ -70,6 +66,11 @@ Remaining:
   so entities 1-8 land in the body-queue slots G_FreeEdict refuses to free, and stay in
   the game whatever `inGame` says (spawn spots, teams, targets). ED_ParseEdict also ends
   an entity on any key starting with "}", quoted or not; `parseEntities` does not.
+- A light style change scans every face for the styles it uses (`setLightmapStyles`):
+  0.7-0.9 ms per 10 Hz step over 5461 faces, measured 2026-10-04 in Node 22 on a
+  synthetic map where no face uses the changed style. A per-style face list would make it scale with the
+  faces on changed styles. The renderer also composes a drawn brush model's faces that
+  face away, which R_DrawInlineBModel skips; same light, extra cost.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

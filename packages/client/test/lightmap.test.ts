@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DEATHMATCH_LIGHTSTYLES, MAX_LIGHTMAPS, MAX_LIGHTSTYLES, lightStyleValues, parseBsp, type Bsp } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
-import { buildLightmapAtlas, updateLightmapAtlas, type LightmapAtlas } from "../src/lightmap.js";
+import { buildLightmapAtlas, refreshLightmaps, setLightmapStyles, type LightmapAtlas } from "../src/lightmap.js";
 
 const fixture = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
 const FACE = 0;
@@ -89,22 +89,28 @@ describe("lightmap style composition", () => {
   });
 });
 
-describe("updateLightmapAtlas", () => {
+/** A style change with every face drawn: what map-wide composition would do. */
+function update(bsp: Bsp, atlas: LightmapAtlas, styles: ArrayLike<number>): number[] {
+  setLightmapStyles(bsp, atlas, styles);
+  return refreshLightmaps(bsp, atlas, atlas.rects.keys());
+}
+
+describe("setLightmapStyles and refreshLightmaps", () => {
   it("composes again only the faces using a style whose value changed", () => {
     const bsp = styledFixture([0, 2], [[40, 50, 60], [100, 90, 13]]);
     const atlas = buildLightmapAtlas(bsp, 4096, styleValues({ 2: 0 }));
-    expect(updateLightmapAtlas(bsp, atlas, styleValues({ 2: 0 }))).toEqual([]);
+    expect(update(bsp, atlas, styleValues({ 2: 0 }))).toEqual([]);
     // Style 5 is used by no face.
-    expect(updateLightmapAtlas(bsp, atlas, styleValues({ 2: 0, 5: 0 }))).toEqual([]);
-    expect(updateLightmapAtlas(bsp, atlas, styleValues({}))).toEqual([FACE]);
+    expect(update(bsp, atlas, styleValues({ 2: 0, 5: 0 }))).toEqual([]);
+    expect(update(bsp, atlas, styleValues({}))).toEqual([FACE]);
     allEqual(atlas, [140, 140, 73]);
     expect(atlas.styleValues[2]).toBe(1);
     // Plain numbers compare as the floats the atlas stores, so 0.1 twice is no change.
-    expect(updateLightmapAtlas(bsp, atlas, [1, 1, 0.1])).toEqual([FACE]);
-    expect(updateLightmapAtlas(bsp, atlas, [1, 1, 0.1])).toEqual([]);
-    updateLightmapAtlas(bsp, atlas, styleValues({}));
+    expect(update(bsp, atlas, [1, 1, 0.1])).toEqual([FACE]);
+    expect(update(bsp, atlas, [1, 1, 0.1])).toEqual([]);
+    update(bsp, atlas, styleValues({}));
     // Style 0 is on every fixture face.
-    expect(updateLightmapAtlas(bsp, atlas, styleValues({ 0: 0.5 }))).toHaveLength(fixture.faces.count);
+    expect(update(bsp, atlas, styleValues({ 0: 0.5 }))).toHaveLength(fixture.faces.count);
   });
 
   it("matches a fresh build at the same values, over the deathmatch styles' animation", () => {
@@ -112,8 +118,35 @@ describe("updateLightmapAtlas", () => {
     const atlas = buildLightmapAtlas(bsp, 4096, lightStyleValues(DEATHMATCH_LIGHTSTYLES, 0));
     for (const ms of [100, 799, 800, 1700, 3600]) {
       const v = lightStyleValues(DEATHMATCH_LIGHTSTYLES, ms);
-      updateLightmapAtlas(bsp, atlas, v);
+      update(bsp, atlas, v);
       expect(luxels(atlas, FACE)).toEqual(luxels(buildLightmapAtlas(bsp, 4096, v), FACE));
     }
+  });
+
+  it("leaves a stale face's light as it was until the face is drawn", () => {
+    const bsp = styledFixture([0, 2], [[40, 50, 60], [100, 90, 13]]);
+    const atlas = buildLightmapAtlas(bsp, 4096, styleValues({ 2: 0 }));
+    setLightmapStyles(bsp, atlas, styleValues({}));
+    // Faces drawn this frame, FACE not among them.
+    expect(refreshLightmaps(bsp, atlas, [1, 2])).toEqual([]);
+    allEqual(atlas, [40, 50, 60]);
+    // Changed back and on again while out of view: still one composition, at the last values.
+    setLightmapStyles(bsp, atlas, styleValues({ 2: 0 }));
+    setLightmapStyles(bsp, atlas, styleValues({ 2: 0.5 }));
+    expect(refreshLightmaps(bsp, atlas, [1, FACE])).toEqual([FACE]);
+    expect(luxels(atlas, FACE)).toEqual(luxels(buildLightmapAtlas(bsp, 4096, styleValues({ 2: 0.5 })), FACE));
+    expect(refreshLightmaps(bsp, atlas, [FACE])).toEqual([]);
+  });
+
+  it("never marks a face without a lightmap", () => {
+    const lightOfs = Int32Array.from(fixture.faces.lightOfs);
+    lightOfs[1] = -1;
+    const bsp = { ...fixture, faces: { ...fixture.faces, lightOfs } };
+    const atlas = buildLightmapAtlas(bsp);
+    expect(atlas.rects[1]!.lit).toBe(false);
+    setLightmapStyles(bsp, atlas, styleValues({ 0: 0.5 }));
+    expect(atlas.stale[1]).toBe(0);
+    expect(atlas.stale.reduce((n, x) => n + x, 0)).toBe(fixture.faces.count - 1);
+    expect(refreshLightmaps(bsp, atlas, [0, 1])).toEqual([0]);
   });
 });
