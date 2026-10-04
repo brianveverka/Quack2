@@ -3,8 +3,8 @@
 // at their compiled position rotated by the entity's spawn angles and moved by its
 // "origin", then moved as the game moves it during spawn (lowered plats, doors that
 // start open, trains at their first path_corner or the teleport one after it), from the
-// entity string alone. Turrets turning into their pitch/yaw range afterwards are not
-// applied. DOM-free.
+// entity string alone, and turret breaches (with their teams) turned to where they
+// come to rest in their pitch/yaw range. DOM-free.
 
 import { entityVec3, type Bsp, type BspEntity } from "@quack2/sim";
 import { angleVectors } from "./math.js";
@@ -182,6 +182,141 @@ function spawnMove(
   return { origin, angles };
 }
 
+/** g_local.h: seconds per server frame. */
+const FRAMETIME = 0.1;
+/** Classes whose spawn function frees them in deathmatch before G_FindTeams (SP_light, SP_func_explosive). */
+const FREED_IN_DEATHMATCH = new Set(["light", "func_explosive"]);
+/** Frames a turret team is run for at most (1000 s); one that never settles is drawn as it is then. */
+const MAX_SETTLE_FRAMES = 10000;
+/** A turn per frame below this (degrees) counts as settled; a double never quite reaches zero. */
+const SETTLED = 1e-9;
+
+/**
+ * g_turret.c AnglesNormalize on one angle: `while (a > 360) a -= 360; while (a < 0) a += 360;`
+ * in closed form, so a huge angle does not spin here as the game's loop would.
+ */
+function normalizeAngle(a: number): number {
+  if (a > 360) return a - 360 * Math.ceil((a - 360) / 360);
+  if (a < 0) return a + 360 * Math.ceil(-a / 360);
+  return a;
+}
+
+/** The wrap turret_breach_think applies once to each delta. */
+function wrap180(d: number): number {
+  return d < -180 ? d + 360 : d > 180 ? d - 360 : d;
+}
+
+interface Breach {
+  readonly index: number;
+  /** s.angles, turned each frame by the pitch and the team's yaw velocity. */
+  readonly angles: Vec3;
+  /** move_angles: where the breach turns to, clamped into its range each frame. */
+  readonly move: Vec3;
+  readonly pos1: readonly [number, number];
+  readonly pos2: readonly [number, number];
+  readonly speed: number;
+  pitchVel: number;
+}
+
+/** SP_turret_breach's fields: speed default 50, minpitch -30, maxpitch 30, maxyaw 360; a 0 means the default. */
+function breachState(ent: BspEntity, index: number): Breach {
+  const field = (key: string, fallback: number) => atof(ent[key] ?? "0") || fallback;
+  const angles = entityAngles(ent);
+  return {
+    index,
+    angles,
+    move: [0, angles[1], 0],
+    pos1: [-field("minpitch", -30), atof(ent.minyaw ?? "0")],
+    pos2: [-field("maxpitch", 30), field("maxyaw", 360)],
+    speed: field("speed", 50),
+    pitchVel: 0,
+  };
+}
+
+/** turret_breach_think up to its avelocity: the pitch and yaw turned this frame, at most speed * FRAMETIME each. */
+function breachThink(b: Breach): [number, number] {
+  const move = b.move;
+  move[0] = normalizeAngle(move[0]);
+  move[1] = normalizeAngle(move[1]);
+  if (move[0] > 180) move[0] -= 360;
+  if (move[0] > b.pos1[0]) move[0] = b.pos1[0];
+  else if (move[0] < b.pos2[0]) move[0] = b.pos2[0];
+  if (move[1] < b.pos1[1] || move[1] > b.pos2[1]) {
+    // The game takes fabs before wrapping, so the < -180 case never applies.
+    const dmin = wrap180(Math.abs(b.pos1[1] - move[1]));
+    const dmax = wrap180(Math.abs(b.pos2[1] - move[1]));
+    move[1] = Math.abs(dmin) < Math.abs(dmax) ? b.pos1[1] : b.pos2[1];
+  }
+  const step = b.speed * FRAMETIME;
+  const clamp = (d: number) => {
+    if (d > step) d = step;
+    if (d < -step) d = -step;
+    return d;
+  };
+  return [clamp(wrap180(move[0] - normalizeAngle(b.angles[0]))), clamp(wrap180(move[1] - normalizeAngle(b.angles[1])))];
+}
+
+/**
+ * Turret breaches turned to rest, as the game does over the first seconds: each frame
+ * SV_Physics_Pusher turns every member of a team by its avelocity, then runs the
+ * breaches' thinks in team order. A breach's think sets its own pitch velocity and the
+ * yaw velocity of every member of its team (G_FindTeams: the in-game entities with the
+ * same "team", compared case sensitively, in entity order), so the last breach in a team
+ * sets the yaw every member turns by. A breach with no team turns alone here; the stock
+ * game crashes on it (turret_breach_finish_init writes through its NULL teammaster).
+ *
+ * Returns, per entity index, the breach's angles at rest, or for any other team member
+ * the yaw it has turned by. Only teams whose master (first member) is a turret are run:
+ * any other master runs the team under its own movetype, which is not modeled, and its
+ * members keep their spawn angles. So does a team with a non-finite angle or field.
+ */
+function settleTurrets(entities: readonly BspEntity[]): Map<number, { angles?: Vec3; yaw?: number }> {
+  const inGame = (e: BspEntity) =>
+    !(atoi(e.spawnflags ?? "0") & SPAWNFLAG_NOT_DEATHMATCH) && !FREED_IN_DEATHMATCH.has(e.classname ?? "");
+  const groups: number[][] = [];
+  const teams = new Map<string, number[]>();
+  entities.forEach((e, i) => {
+    if (i === 0 || !inGame(e)) return; // edict 0 (worldspawn) is never in a team
+    if (e.team !== undefined) {
+      const members = teams.get(e.team);
+      if (members) members.push(i);
+      else teams.set(e.team, [i]);
+    } else if (e.classname === "turret_breach") groups.push([i]);
+  });
+  for (const members of teams.values()) {
+    const master = entities[members[0]!]!.classname;
+    if (master === "turret_breach" || master === "turret_base") groups.push(members);
+  }
+
+  const result = new Map<number, { angles?: Vec3; yaw?: number }>();
+  for (const members of groups) {
+    const breaches = members.filter((i) => entities[i]!.classname === "turret_breach").map((i) => breachState(entities[i]!, i));
+    if (breaches.length === 0) continue;
+    const values = breaches.flatMap((b) => [...b.angles, ...b.pos1, ...b.pos2, b.speed]);
+    if (!values.every(Number.isFinite)) continue;
+    let yawVel = 0;
+    let turned = 0;
+    for (let frame = 0; frame < MAX_SETTLE_FRAMES; frame++) {
+      for (const b of breaches) {
+        b.angles[0] += b.pitchVel * FRAMETIME;
+        b.angles[1] += yawVel * FRAMETIME;
+      }
+      turned += yawVel * FRAMETIME;
+      for (const b of breaches) {
+        const [pitch, yaw] = breachThink(b);
+        b.pitchVel = pitch / FRAMETIME;
+        yawVel = yaw / FRAMETIME;
+      }
+      // Only the last breach's yaw is kept, so an earlier one may never reach its own.
+      const step = Math.max(Math.abs(yawVel), ...breaches.map((b) => Math.abs(b.pitchVel))) * FRAMETIME;
+      if (step <= SETTLED) break;
+    }
+    for (const i of members) result.set(i, { yaw: turned });
+    for (const b of breaches) result.set(b.index, { angles: b.angles });
+  }
+  return result;
+}
+
 /** An inline model's bounds as the game and renderer use them: spread by a unit (CMod_LoadSubmodels, Mod_LoadSubmodels). */
 export function modelBounds(bsp: Bsp, model: number): { mins: Vec3; maxs: Vec3 } {
   const m = model * 3;
@@ -197,7 +332,7 @@ export interface BrushModelInstance {
   readonly model: number;
   /** World translation of the model's faces: the entity's "origin", default 0 0 0, after any spawn move. */
   readonly origin: readonly [number, number, number];
-  /** Rotation (pitch, yaw, roll) about the model-space origin, applied before `origin`: the spawn angles for classes that keep them, a START_OPEN func_door_rotating's open angles, else 0 0 0. */
+  /** Rotation (pitch, yaw, roll) about the model-space origin, applied before `origin`: the spawn angles for classes that keep them, a START_OPEN func_door_rotating's open angles, else 0 0 0; a turret breach at rest, and the members of its team turned by its yaw. */
   readonly angles: readonly [number, number, number];
   readonly classname: string;
 }
@@ -233,6 +368,7 @@ export function visibleAtSpawn(ent: BspEntity): boolean {
 export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): BrushModelInstances {
   const instances: BrushModelInstance[] = [];
   const errors: string[] = [];
+  const turrets = settleTurrets(entities);
   entities.forEach((ent, i) => {
     const ref = ent.model;
     // Point entities carry model paths ("models/..."); only "*N" is an inline model.
@@ -248,7 +384,9 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
     const { mins, maxs } = modelBounds(bsp, model);
     const spawn = entityVec3(ent, "origin") ?? [0, 0, 0];
     const { origin, angles } = spawnMove(ent, entities, mins, maxs, spawn, KEEPS_ANGLES.has(classname) ? entityAngles(ent) : [0, 0, 0]);
-    instances.push({ model, origin, angles, classname });
+    const turn = turrets.get(i);
+    const turned: Vec3 = turn?.angles ?? (turn?.yaw ? [angles[0], angles[1] + turn.yaw, angles[2]] : angles);
+    instances.push({ model, origin, angles: turned, classname });
   });
   return { instances, errors };
 }
