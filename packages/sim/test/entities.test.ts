@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { describe, expect, it } from "vitest";
-import { EntityParseError, entityVec3, parseBsp, parseEntities } from "../src/index.js";
+import { EntityParseError, asciiLower, entityVec3, parseBsp, parseEntities } from "../src/index.js";
 import { loadFixtureBytes } from "./fixture.js";
 
 describe("test_arena.bsp entities", () => {
@@ -70,6 +70,17 @@ describe("parseEntities", () => {
 
   it("later duplicate keys win", () => {
     expect(parseEntities('{ "a" "1" "a" "2" }')[0]!.a).toBe("2");
+  });
+
+  it("asciiLower folds A-Z only", () => {
+    expect(asciiLower("AZaz@[`{\u00c9\u0130\u212a")).toBe("azaz@[`{\u00c9\u0130\u212a");
+  });
+
+  it("folds key case as Q_stricmp does, and keeps value case", () => {
+    const [ent] = parseEntities('{ "ClassName" "Func_Wall" "ORIGIN" "1 2 3" "Model" "*1" "origin" "4 5 6" "\u00c9X" "y" }');
+    expect(ent).toEqual({ classname: "Func_Wall", model: "*1", origin: "4 5 6", "\u00c9x": "y" });
+    // A repeated key moves to its last assignment.
+    expect(Object.keys(parseEntities('{ "a" "1" "b" "2" "A" "3" }')[0]!)).toEqual(["b", "a"]);
   });
 
   it.each([

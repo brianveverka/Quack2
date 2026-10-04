@@ -7,7 +7,13 @@ export class EntityParseError extends Error {
   override name = "EntityParseError";
 }
 
-/** One entity: key/value pairs in file order. Later duplicates of a key win. */
+/**
+ * One entity: key/value pairs. Keys are folded with `asciiLower`, since the game matches
+ * them to its fields with Q_stricmp (ED_ParseField); values keep their case. A repeated
+ * key (in any case) overwrites the earlier one, and non-numeric keys enumerate in the
+ * order of each key's last assignment, so whichever of two keys came later in the file
+ * is also later here (JS lists array-index keys such as "10" first, in ascending order).
+ */
 export type BspEntity = Readonly<Record<string, string>>;
 
 interface Token {
@@ -49,6 +55,14 @@ function* tokenize(src: string): Generator<Token> {
 
 const isBrace = (t: Token, b: "{" | "}") => !t.quoted && t.text === b;
 
+/**
+ * Case fold for keys and Q_stricmp compares: A-Z only. Q_stricmp is the C library's
+ * strcasecmp/_stricmp, and the game never sets a locale, so other bytes never fold.
+ */
+export function asciiLower(s: string): string {
+  return s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
 export function parseEntities(src: string): BspEntity[] {
   const entities: BspEntity[] = [];
   const tokens = tokenize(src);
@@ -70,7 +84,9 @@ export function parseEntities(src: string): BspEntity[] {
       if (!value.value.quoted && (value.value.text === "{" || value.value.text === "}")) {
         throw new EntityParseError(`key "${key.value.text}" has no value at line ${value.value.line}`);
       }
-      ent[key.value.text] = value.value.text;
+      const name = asciiLower(key.value.text);
+      delete ent[name];
+      ent[name] = value.value.text;
     }
     entities.push(ent);
   }
