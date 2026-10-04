@@ -6,8 +6,9 @@
 // entity string alone, and turret breaches (with their teams) turned to where they
 // come to rest in their pitch/yaw range. Those a killtarget frees in the settle frames
 // are left out, and func_wall and func_object entities a use there shows or hides are
-// drawn or left out to match. Also the movers of doors (linear and rotating) and plats as
-// the settle frames leave them (`brushMovers`), for `BrushMotion` to step. DOM-free.
+// drawn or left out to match. Also the movers of doors (linear and rotating), plats,
+// buttons and trains as the settle frames leave them (`brushMovers`), for
+// `BrushMotion` to step. DOM-free.
 
 import {
   FRAMETIME,
@@ -20,11 +21,14 @@ import {
   levelTimeAt,
   platGoDown,
   buttonFire,
+  stepPusher,
+  trainUse,
   type Bsp,
   type BspEntity,
   type BrushMover,
   type BrushMoverInit,
   type MoveSpeeds,
+  type PathCorner,
 } from "@quack2/sim";
 
 /** game/g_local.h: entities with this flag are freed at spawn in deathmatch. */
@@ -182,7 +186,6 @@ function spawnMove(
   maxs: readonly number[],
   origin: Vec3,
   angles: Vec3,
-  trainAt: Vec3 | undefined,
 ): { origin: Vec3; angles: Vec3 } {
   const flags = atoi(ent.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK;
   const size = [0, 1, 2].map((k) => maxs[k]! - mins[k]!);
@@ -210,11 +213,6 @@ function spawnMove(
       const open: Vec3 = [0, 0, 0];
       open[axis] = flags & DOOR_REVERSE ? -distance : distance;
       return { origin, angles: open };
-    }
-    // Trains: their mins sit on the corner the settle frames left them at (`settleSpawnFrames`).
-    case "func_train": {
-      if (!trainAt) break;
-      return { origin: [0, 1, 2].map((k) => trainAt[k]! - mins[k]!) as Vec3, angles };
     }
   }
   return { origin, angles };
@@ -608,7 +606,7 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
   const instances: BrushModelInstance[] = [];
   const errors: string[] = [];
   const turrets = settleTurrets(entities);
-  const { trains, freed, shown } = settleSpawnFrames(entities);
+  const { trains, freed, shown } = settleSpawnFrames(entities, bsp);
   entities.forEach((ent, i) => {
     const ref = ent.model;
     // Point entities carry model paths ("models/..."); only "*N" is an inline model.
@@ -623,7 +621,10 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
     const { mins, maxs } = modelBounds(bsp, model);
     const spawn = entityVec3(ent, "origin") ?? [0, 0, 0];
     const keep = KEEPS_ANGLES.has(classname) ? entityAngles(ent) : ([0, 0, 0] as Vec3);
-    const { origin, angles } = spawnMove(ent, mins, maxs, spawn, keep, trains.get(i)?.at);
+    const moved = spawnMove(ent, mins, maxs, spawn, keep);
+    // A train is where the settle frames left it: its mins on a corner, or at its spawn origin.
+    const train = trains.get(i);
+    const { origin, angles } = train ? { origin: [...train.origin] as Vec3, angles: moved.angles } : moved;
     const turn = turrets.get(i);
     const turned: Vec3 = turn?.angles ?? (turn?.yaw ? [angles[0], angles[1] + turn.yaw, angles[2]] : angles);
     instances.push({ model, entity: i, origin, angles: turned, classname });
@@ -686,25 +687,13 @@ interface Settle {
   portalCount: Map<number, number>;
   /** gi.SetAreaPortalState writes, last one wins; portals never written stay closed. */
   portals: Map<number, boolean>;
-  /** Every in-game func_train, by entity index. */
-  trains: Map<number, Train>;
+  /** Every in-game func_train's mover, by entity index. */
+  trains: Map<number, BrushMover>;
+  /** The entity whose think is running (level.current_entity), -1 for a DelayedUse. */
+  current: number;
   /** Uses left for the current trigger_always before MAX_USES cuts the walk off. */
   budget: number;
   depth: number;
-}
-
-/** A func_train's fields the settle frames read and change. */
-interface Train {
-  /** self->target: the train's own "target" until func_train_find or train_next steps it on. */
-  target: string | undefined;
-  /** The origin of the corner its mins were last put on (func_train_find, a TELEPORT corner); undefined while at its spawn origin. */
-  at: Vec3 | undefined;
-  startOn: boolean;
-  readonly toggle: boolean;
-  /** Whether train_next set target_ent (it found a corner to move to). */
-  targetEnt: boolean;
-  /** Whether func_train_find left train_next as its think, due in the second frame. */
-  thinking: boolean;
 }
 
 /** g_func.c STATE_TOP (0, also every edict that never sets it), STATE_BOTTOM, STATE_UP, STATE_DOWN. */
@@ -844,7 +833,7 @@ function useOne(s: Settle, index: number): void {
       wallUse(s, index);
       return;
     case "func_train":
-      trainUse(s, index);
+      trainUseIn(s, index);
       return;
     case "func_button": {
       // button_use -> button_fire: returns if up or at the top, else starts up. Its
@@ -875,118 +864,115 @@ function pickTarget(s: Settle, name: string | undefined): number | undefined {
 }
 
 /**
+ * An entity as train_next reads it when a train's "target" names it (`pickTarget`): a
+ * train's live s.origin and target, and its spawnflags bit 1 is TRAIN_START_ON, which
+ * train_next reads as TELEPORT; any other entity's spawn origin, target and spawnflags
+ * (not where its spawn function or later moves put it: BACKLOG.md).
+ */
+function pathCorner(s: Settle, name: string): PathCorner | undefined {
+  const t = pickTarget(s, name);
+  if (t === undefined) return undefined;
+  const ent = s.entities[t]!;
+  const train = s.trains.get(t);
+  // ED_ParseField reads origin and "wait" with sscanf and atof into floats.
+  const origin = train ? train.origin : (entityVec3(ent, "origin") ?? [0, 0, 0]);
+  return {
+    entity: t,
+    origin: [f32(origin[0]), f32(origin[1]), f32(origin[2])],
+    target: train ? train.train!.target : ent.target,
+    wait: f32(atof(ent.wait ?? "0")),
+    teleport: train ? train.train!.startOn : (atoi(ent.spawnflags ?? "0") & PATH_CORNER_TELEPORT) !== 0,
+    pathtarget: ent.pathtarget,
+  };
+}
+
+/**
+ * SP_func_train's mover, at its spawn origin and STATE_TOP (0): "speed" defaults to 100,
+ * and "accel" and "decel" are set to it. Its train_wait fires a corner's "pathtarget"
+ * through G_UseTargets with the corner's own delay and killtarget, in the settle frames
+ * only (`settleSpawnFrames` drops it after).
+ */
+function trainMover(s: Settle, index: number, mins: Vec3): BrushMover {
+  const ent = s.entities[index]!;
+  const flags = atoi(ent.spawnflags ?? "0");
+  const origin = entityVec3(ent, "origin") ?? [0, 0, 0];
+  const speed = f32(atof(ent.speed ?? "0")) || 100;
+  const mover: BrushMover = brushMover({
+    origin,
+    startOrigin: origin,
+    endOrigin: origin,
+    distance: 0,
+    speed,
+    accel: speed,
+    decel: speed,
+    wait: 0,
+    toggle: false,
+    state: "top",
+    train: {
+      mins: [f32(mins[0]), f32(mins[1]), f32(mins[2])],
+      target: ent.target,
+      targetEnt: undefined,
+      startOn: (flags & TRAIN_START_ON) !== 0,
+      toggle: (flags & TRAIN_TOGGLE) !== 0,
+      pick: (name) => pathCorner(s, name),
+      usePathtarget: (corner) => trainPathtarget(s, index, corner),
+    },
+  });
+  return mover;
+}
+
+/**
  * func_train_find, the train's first think (first frame): its mins go to the corner its
  * "target" names, and a train with no "targetname" gets START_ON; with START_ON it
  * thinks train_next in the second frame. One with no "target" never gets this think.
  */
-function trainFind(s: Settle, index: number): Train {
-  const ent = s.entities[index]!;
-  const flags = atoi(ent.spawnflags ?? "0");
-  const train: Train = {
-    target: ent.target,
-    at: undefined,
-    startOn: (flags & TRAIN_START_ON) !== 0,
-    toggle: (flags & TRAIN_TOGGLE) !== 0,
-    targetEnt: false,
-    thinking: false,
-  };
-  const first = pickTarget(s, train.target);
-  if (first === undefined) return train;
-  train.target = s.entities[first]!.target;
-  train.at = entityVec3(s.entities[first]!, "origin") ?? [0, 0, 0];
-  if (ent.targetname === undefined) train.startOn = true;
-  train.thinking = train.startOn;
-  return train;
-}
-
-/**
- * train_next: steps self->target on to the next corner. A TELEPORT corner (spawnflag 1,
- * whatever the class) puts the train's mins on it at once and steps on again; at a
- * second one in a row the train stays put, though self->target has stepped past it.
- * Any other corner starts a Move_Calc, which moves nothing in the settle frames: run
- * from a use in another entity's slot it defers Move_Begin a frame (a use from within
- * the train's own think, by its pathtarget, only matters for maps whose resume loop
- * recurses until the game crashes); run from the train's own think (`think`) it
- * sets a velocity the next frame applies, except that a corner at no distance (with a
- * positive speed) finishes the move at once and runs train_wait.
- */
-function trainNext(s: Settle, index: number, train: Train, think: boolean): void {
-  let first = true;
-  for (;;) {
-    const t = pickTarget(s, train.target);
-    if (t === undefined) return;
-    const ent = s.entities[t]!;
-    train.target = ent.target;
-    const corner = entityVec3(ent, "origin") ?? [0, 0, 0];
-    if (atoi(ent.spawnflags ?? "0") & PATH_CORNER_TELEPORT) {
-      if (!first) return;
-      first = false;
-      train.at = corner;
-      continue;
-    }
-    train.targetEnt = true;
-    // Move_Calc -> Move_Begin -> Move_Final -> Move_Done: the origins compare as floats
-    // (ED_ParseField's sscanf); the train's mins, subtracted from both, are not modeled.
-    const at = train.at;
-    const speed = Math.fround(atof(s.entities[index]!.speed ?? "0")) || 100;
-    if (think && speed > 0 && at && corner.every((c, k) => Math.fround(c) === Math.fround(at[k]!))) trainWait(s, index, train, t);
-    train.startOn = true;
-    return;
+function trainFind(s: Settle, index: number, m: BrushMover): void {
+  const t = m.train!;
+  if (t.target === undefined) return;
+  const corner = t.pick(t.target);
+  if (!corner) return;
+  t.target = corner.target;
+  for (let k = 0; k < 3; k++) m.origin[k] = f32(corner.origin[k]! - t.mins[k]!);
+  if (s.entities[index]!.targetname === undefined) t.startOn = true;
+  if (t.startOn) {
+    m.nextthink = levelTimeAt(2);
+    m.think = "trainNext";
   }
 }
 
 /**
- * train_wait at the corner `t`, from the train's own think: its "pathtarget" fires
- * through G_UseTargets with the corner's own delay and killtarget; then a corner with
- * no "wait" runs train_next again, a negative one on a TOGGLE train runs it and stops
- * the train, and a positive one waits past the settle frames. A loop of coincident
- * corners recurses in the game until it crashes; the use budget and depth cut it off.
+ * train_wait's pathtarget: G_UseTargets from the corner, with the corner's own delay and
+ * killtarget; returns whether the train is still in use. A loop of coincident corners
+ * recurses in the game until it crashes; the use budget and depth cut it off, leaving
+ * the train where it is (as if freed).
  */
-function trainWait(s: Settle, index: number, train: Train, t: number): void {
-  if (s.budget <= 0 || s.depth >= MAX_USE_DEPTH) return;
+function trainPathtarget(s: Settle, index: number, corner: PathCorner): boolean {
+  if (s.budget <= 0 || s.depth >= MAX_USE_DEPTH) return false;
   s.budget--;
   s.depth++;
   try {
-    const corner = s.entities[t]!;
-    if (corner.pathtarget !== undefined) {
-      useTargets(s, {
-        index: t,
-        classname: liveClassname(corner),
-        target: corner.pathtarget,
-        killtarget: corner.killtarget,
-        delay: Math.fround(atof(corner.delay ?? "0")),
-      });
-      if (s.freed.has(index)) return;
-    }
-    const wait = Math.fround(atof(corner.wait ?? "0"));
-    if (wait === 0) {
-      trainNext(s, index, train, true);
-    } else if (wait < 0 && train.toggle) {
-      trainNext(s, index, train, true);
-      train.startOn = false;
-    }
+    const ent = s.entities[corner.entity]!;
+    useTargets(s, {
+      index: corner.entity,
+      classname: liveClassname(ent),
+      target: corner.pathtarget,
+      killtarget: ent.killtarget,
+      delay: f32(atof(ent.delay ?? "0")),
+    });
+    return !s.freed.has(index);
   } finally {
     s.depth--;
   }
 }
 
 /**
- * train_use: a running (START_ON) train ignores it unless TOGGLE, which stops it and
- * drops the train_next think it may still have due; a stopped one resumes towards its
- * target_ent (Move_Calc, nothing moves yet) or, without one, runs train_next.
+ * train_use (`trainUse`). Move_Calc begins the move at once only when the train runs it
+ * from its own think, by a pathtarget of its own; from any other slot (a DelayedUse,
+ * another train's think) it defers Move_Begin a frame.
  */
-function trainUse(s: Settle, index: number): void {
-  const train = s.trains.get(index);
-  if (!train) return;
-  if (train.startOn) {
-    if (!train.toggle) return;
-    train.startOn = false;
-    train.thinking = false;
-  } else if (train.targetEnt) {
-    train.startOn = true;
-  } else {
-    trainNext(s, index, train, false);
-  }
+function trainUseIn(s: Settle, index: number): void {
+  const m = s.trains.get(index);
+  if (m) trainUse(m, levelTimeAt(2), s.current === index);
 }
 
 /**
@@ -1064,22 +1050,33 @@ function doorUse(s: Settle, index: number): void {
  * opens every portal door_use_areaportals finds: in-game entities whose classname is
  * func_areaportal and whose "targetname" is the door's "target", compared case
  * insensitively (G_Find, Q_stricmp). Every train runs func_train_find (`trainFind`).
+ * A train's mins are its inline model's in `bsp`, else 0 0 0 (without `bsp`, or a
+ * train with no inline model).
  *
- * Second frame: edicts run in entity order. A START_ON train runs train_next. Every
+ * Second frame: edicts run in entity order. A train runs its think if due
+ * (SV_Physics_Pusher: train_next for a START_ON one, or what a use earlier in the frame
+ * left it). Every
  * in-game trigger_always fires its targets through a DelayedUse (SP_trigger_always
  * raises "delay" to at least 0.2 s; one above that comes due later and is skipped),
  * which G_Spawn placed right after it: freed slots are refilled by the next spawn, so
  * none lies earlier. G_UseTargets first frees its killtargets, then uses its targets: a
  * func_areaportal toggles, a door goes up with its team (each member at the bottom fires
  * its own targets, except portals, and opens its portals), a func_door_secret at origin
- * 0 0 0 opens its portals, a trigger_relay fires its targets, a train runs train_use,
+ * 0 0 0 opens its portals, a trigger_relay fires its targets, a train runs train_use
+ * (`trainUseIn`),
  * a func_wall or func_object is shown or hidden (`wallUse`); an entity a killtarget
  * freed is not drawn. Other use functions are not modeled, nor are a team slave train's
  * thinks (both func_train_find and train_next) running in its master's slot.
+ *
+ * The trains' movers are left as the second frame leaves them, to go on moving; their
+ * train_wait fires no pathtarget after it.
  */
-function settleSpawnFrames(entities: readonly BspEntity[]): {
+function settleSpawnFrames(
+  entities: readonly BspEntity[],
+  bsp?: Bsp,
+): {
   portals: Set<number>;
-  trains: Map<number, Train>;
+  trains: Map<number, BrushMover>;
   freed: Set<number>;
   shown: Map<number, boolean>;
   moves: readonly { index: number; up: boolean }[];
@@ -1114,12 +1111,17 @@ function settleSpawnFrames(entities: readonly BspEntity[]): {
     portalCount: new Map(),
     portals: new Map(),
     trains: new Map(),
+    current: -1,
     budget: MAX_USES,
     depth: 0,
   };
   entities.forEach((e, i) => {
-    if (e.classname === "func_train" && inGame(e)) s.trains.set(i, trainFind(s, i));
+    if (e.classname !== "func_train" || !inGame(e)) return;
+    const model = bsp && inlineModel(bsp, e.model);
+    const mins: Vec3 = bsp && model !== undefined ? modelBounds(bsp, model).mins : [0, 0, 0];
+    s.trains.set(i, trainMover(s, i, mins));
   });
+  for (const [i, m] of s.trains) trainFind(s, i, m);
   entities.forEach((door, i) => {
     if (door.classname !== "func_door" && door.classname !== "func_door_rotating") return;
     if (!inGame(door) || slaves.has(i)) return;
@@ -1127,12 +1129,14 @@ function settleSpawnFrames(entities: readonly BspEntity[]): {
     if (atoi(door.health ?? "0") || door.targetname !== undefined) return;
     doorUseAreaportals(s, i, true);
   });
+  const second = levelTimeAt(2);
   entities.forEach((e, i) => {
     const train = s.trains.get(i);
-    if (train?.thinking && !s.freed.has(i)) {
-      train.thinking = false;
+    if (train && !s.freed.has(i)) {
       s.budget = MAX_USES;
-      trainNext(s, i, train, true);
+      s.current = i;
+      stepPusher([train], second);
+      s.current = -1;
     }
     if (i === 0 || e.classname !== "trigger_always" || !inGame(e)) return;
     const delay = Math.fround(atof(e.delay ?? "0"));
@@ -1140,6 +1144,7 @@ function settleSpawnFrames(entities: readonly BspEntity[]): {
     s.budget = MAX_USES;
     useTargets(s, { index: -1, classname: "DelayedUse", target: e.target, killtarget: e.killtarget, delay: 0 });
   });
+  for (const m of s.trains.values()) m.train!.usePathtarget = undefined;
   return {
     portals: new Set([...s.portals].filter(([, open]) => open).map(([p]) => p)),
     trains: s.trains,
@@ -1150,18 +1155,21 @@ function settleSpawnFrames(entities: readonly BspEntity[]): {
   };
 }
 
-/** The area portals open after the settle frames (`settleSpawnFrames`). */
-export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
-  return settleSpawnFrames(entities).portals;
+/**
+ * The area portals open after the settle frames (`settleSpawnFrames`). Without `bsp`
+ * every train's mins are 0 0 0, which can change which corners lie at no distance.
+ */
+export function openAreaPortals(entities: readonly BspEntity[], bsp?: Bsp): Set<number> {
+  return settleSpawnFrames(entities, bsp).portals;
 }
 
-/** A door, plat or button, the entity it is, and the area portals its door_hit_bottom closes. */
+/** A door, plat, button or train, the entity it is, and the area portals its door_hit_bottom closes. */
 export interface MovingBrush {
   readonly entity: number;
   readonly mover: BrushMover;
   /**
    * The portals door_use_areaportals finds for a door's "target" (`areaportalsOf`), in
-   * the order it sets them; none for a plat or a button.
+   * the order it sets them; none for a plat, a button or a train.
    */
   readonly portals: readonly number[];
 }
@@ -1273,10 +1281,10 @@ function buttonMover(ent: BspEntity, mins: Vec3, maxs: Vec3, origin: Vec3): Brus
 
 /**
  * The doors (func_door, func_water, which SP_func_water renames func_door, and
- * func_door_rotating) and the plats and buttons that are no team's slave as the two
- * settle frames leave them:
+ * func_door_rotating) and the plats, buttons and trains that are no team's slave as the
+ * two settle frames leave them:
  * teams in master entity order, each team's doors in team order (the master first when
- * it is a door); a door, plat or button with no team is a team of one. SP_func_door and SP_func_water set up each linear door
+ * it is a door); a door, plat, button or train with no team is a team of one. SP_func_door and SP_func_water set up each linear door
  * (`doorPositions`; a door's "speed", default 100, is doubled in deathmatch, and its
  * "accel" and "decel" default to that, "wait" 0 becomes 3; func_water takes "speed",
  * default 25, for all three, and "wait" 0 becomes -1, which makes it DOOR_TOGGLE), and
@@ -1286,20 +1294,22 @@ function buttonMover(ent: BspEntity, mins: Vec3, maxs: Vec3, origin: Vec3): Brus
  * the second the settle frames' uses send doors up or down (`doorUse`), from a
  * DelayedUse's slot, so each starts moving a frame later; a use sends a plat down
  * (Use_Plat, `platMover`) and a button up (button_fire, `buttonMover`) the same way.
+ * A train's mover is the one the settle frames ran (`trainMover`), moving on from where
+ * they left it.
  *
  * Think_CalcMoveSpeed reads every member of the chain: a func_door_rotating's distance
  * is in degrees, and every other class (a func_button, a func_wall) leaves
  * moveinfo.distance 0, which makes the doors' speeds infinite, so a linear door moves
  * all the way in one frame (Move_Final) and a rotating one turns all the way in one
- * (AngleMove_Final). A team keeps only its doors and a plat or button master: the other
- * members, slave plats and buttons included, stay where `brushModelInstances` puts them. A func_door_secret, which SP_func_door_secret also
+ * (AngleMove_Final). A team keeps only its doors and a plat, button or train master: the
+ * other members, slave plats, buttons and trains included, stay where `brushModelInstances` puts them. A func_door_secret, which SP_func_door_secret also
  * renames, is not modeled moving. A team with a door that has no inline model is left
  * out. A team's chain ends at the first member a killtarget freed (G_FreeEdict zeroes
  * its teamchain), and a team whose master was freed never moves again
  * (SV_Physics_Pusher returns for the slaves).
  */
 export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBrush[][] {
-  const { freed, moves, areaportalsOf } = settleSpawnFrames(entities);
+  const { freed, moves, areaportalsOf, trains } = settleSpawnFrames(entities, bsp);
   const turrets = settleTurrets(entities);
   const groups = [...findTeams(entities).values()];
   const teamed = new Set(groups.flat());
@@ -1311,9 +1321,14 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
     if (i === 0 || !inGame(ent)) return;
     const plat = ent.classname === "func_plat" && !slaves.has(i);
     const button = ent.classname === "func_button" && !slaves.has(i);
-    if (!plat && !button && !movingDoor(ent)) return;
+    const train = ent.classname === "func_train" && !slaves.has(i);
+    if (!plat && !button && !train && !movingDoor(ent)) return;
     const model = inlineModel(bsp, ent.model);
     if (model === undefined) return;
+    if (train) {
+      doors.set(i, { entity: i, mover: trains.get(i)!, portals: [] });
+      return;
+    }
     const origin = entityVec3(ent, "origin") ?? [0, 0, 0];
     if (plat) {
       const { mins, maxs } = modelBounds(bsp, model);

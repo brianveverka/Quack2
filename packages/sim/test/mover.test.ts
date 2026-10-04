@@ -10,8 +10,11 @@ import {
   platGoDown,
   platGoUp,
   stepPusher,
+  trainNext,
+  trainUse,
   type BrushMover,
   type BrushMoverInit,
+  type PathCorner,
 } from "../src/mover.js";
 
 // A deathmatch func_door: speed 100 doubled, accel and decel default to it, wait 3.
@@ -474,5 +477,192 @@ describe("calcMoveSpeed", () => {
     calcMoveSpeed([master, slave]);
     expect(master.accel).toBe(Math.fround(100 * Math.fround(master.speed / 200)));
     expect(master.decel).toBe(master.speed);
+  });
+});
+
+describe("train mover", () => {
+  type Corner = [name: string, origin: [number, number, number], target?: string, wait?: number, teleport?: boolean, pathtarget?: string];
+  const f = Math.fround;
+  /**
+   * A func_train as SP_func_train and func_train_find leave it in the first frame: its
+   * mins on the first corner, train_next due in the second frame when START_ON (a train
+   * with no targetname gets it). The values below are a gcc (SSE) build of g_func.c's.
+   */
+  function train(corners: Corner[], opts: { mins?: number[]; speed?: number; startOn?: boolean; toggle?: boolean; fired?: string[]; freedBy?: string } = {}) {
+    const list: PathCorner[] = corners.map(([, o, target, wait = 0, teleport = false, pathtarget], entity) => ({
+      entity,
+      origin: [f(o[0]), f(o[1]), f(o[2])],
+      target,
+      wait: f(wait),
+      teleport,
+      pathtarget,
+    }));
+    const mins = (opts.mins ?? [0, 0, 0]).map(f) as [number, number, number];
+    const first = list[0]!;
+    const origin = [0, 1, 2].map((k) => first.origin[k]! - mins[k]!) as [number, number, number];
+    const speed = opts.speed ?? 100;
+    const m = brushMover({ origin, startOrigin: origin, endOrigin: origin, distance: 0, speed, accel: speed, decel: speed, wait: 0, toggle: false, state: "top",
+      train: {
+        mins,
+        target: first.target,
+        targetEnt: undefined,
+        startOn: opts.startOn ?? true,
+        toggle: opts.toggle ?? false,
+        pick: (name) => list.find((_, i) => corners[i]![0] === name),
+        usePathtarget: (c) => {
+          opts.fired?.push(c.pathtarget!);
+          return c.pathtarget !== opts.freedBy;
+        },
+      },
+    });
+    if (m.train!.startOn) {
+      m.think = "trainNext";
+      m.nextthink = levelTimeAt(2);
+    }
+    return m;
+  }
+  const frames = (m: BrushMover, from: number, to: number) => {
+    const out: [number[], boolean][] = [];
+    for (let fr = from + 1; fr <= to; fr++) {
+      stepPusher([m], levelTimeAt(fr));
+      out[fr] = [[...m.origin], m.teleported];
+    }
+    return out;
+  };
+
+  const LOOP: Corner[] = [
+    ["c1", [0, 0, 0], "c2"],
+    ["c2", [200, 0, 0], "c3"],
+    ["c3", [1000, 1000, 0], "c4", 0, true],
+    ["c4", [1000, 1100, 37.3], "c5", 1.5, false, "pt"],
+    ["c5", [1000, 1100, 37.3], "c1", -1],
+  ];
+
+  it("moves its mins from corner to corner at speed, jumps to a TELEPORT corner, waits and stops (train_next, train_wait)", () => {
+    const fired: string[] = [];
+    const m = train(LOOP, { mins: [-33, -17, -1], fired });
+    const r = frames(m, 1, 80);
+    // train_next in frame 2 heads for c2 less mins, 10 units a frame from frame 3.
+    expect(r[2]).toEqual([[33, 17, 1], false]);
+    expect([3, 4, 21].map((fr) => r[fr]![0][0])).toEqual([43, 53, 223]);
+    expect(m.train!.target).toBe("c1");
+    // Frame 22 arrives (Move_Final had nothing left), train_wait with no wait runs
+    // train_next, which jumps to c3 and heads for c4: EV_OTHER_TELEPORT that frame only.
+    const after = frames(train(LOOP, { mins: [-33, -17, -1] }), 1, 23);
+    expect(after[22]).toEqual([[1033, 1017, 1], true]);
+    expect(after[23]).toEqual([[1033, 1026.375, 4.5], false]);
+    // At c4 (frame 33) its pathtarget fires and train_next is due 1.5 s later; c5 lies at
+    // no distance, so the train finishes there at once and its wait -1 stops it.
+    expect(fired).toEqual(["pt"]);
+    expect(r[35]![0]).toEqual([1033, 1117, 38.375]);
+    expect(r[50]![0]).toEqual([1033, 1117, 38.25]);
+    expect(r[80]![0]).toEqual([1033, 1117, 38.25]);
+    expect([m.nextthink, m.wait, m.train!.startOn, m.train!.targetEnt!.entity]).toEqual([0, -1, true, 4]);
+    // Still START_ON and not TOGGLE: a use does nothing.
+    trainUse(m, levelTimeAt(81), false);
+    expect([m.nextthink, [...m.velocity]]).toEqual([0, [0, 0, 0]]);
+  });
+
+  it("stops a TOGGLE train at a negative wait after train_next, and resumes it on a use", () => {
+    const corners: Corner[] = [
+      ["a", [0, 0, 0], "b"],
+      ["b", [13.1, -50.7, 7.9], "a", -1],
+    ];
+    const m = train(corners, { mins: [-16.5, -3.25, -64.75], speed: f(37.7), toggle: true });
+    const r = frames(m, 1, 39);
+    expect([2, 3, 4].map((fr) => r[fr]![0])).toEqual([
+      [16.5, 3.25, 64.75],
+      [17.375, -0.375, 65.25],
+      [18.25, -4, 65.75],
+    ]);
+    // At b it ran train_next towards a, then stopped: START_ON clear, nothing pending.
+    expect(r[39]![0]).toEqual([28.75, -47.625, 71.75]);
+    expect([m.train!.startOn, m.train!.targetEnt!.entity, m.nextthink, [...m.velocity]]).toEqual([false, 0, 0, [0, 0, 0]]);
+    // A use from another slot in frame 40 resumes towards a: Move_Begin a frame later.
+    trainUse(m, levelTimeAt(40), false);
+    expect([m.train!.startOn, m.think, m.nextthink]).toEqual([true, "moveBegin", levelTimeAt(41)]);
+    const s = frames(m, 39, 60);
+    expect([s[40]![0], s[41]![0], s[42]![0]]).toEqual([
+      [28.75, -47.625, 71.75],
+      [28.75, -47.625, 71.75],
+      [27.875, -44, 71.25],
+    ]);
+    // Back at a (wait 0) in frame 56, on towards b again.
+    expect([s[55]![0], s[56]![0], s[57]![0]]).toEqual([
+      [16.5, 3.125, 64.75],
+      [16.5, 3.125, 64.75],
+      [17.375, -0.5, 65.375],
+    ]);
+    // A TOGGLE train that is running stops on a use, where it is.
+    trainUse(m, levelTimeAt(61), false);
+    expect([m.train!.startOn, m.nextthink, [...m.velocity]]).toEqual([false, 0, [0, 0, 0]]);
+  });
+
+  it("stays at the first of two TELEPORT corners in a row, its target stepped past the second", () => {
+    const m = train([
+      ["c1", [0, 0, 0], "t1"],
+      ["t1", [100, 0, 0], "t2", 0, true],
+      ["t2", [300, 0, 0], "c3", 0, true],
+      ["c3", [400, 0, 0]],
+    ], { mins: [-1, -1, -1] });
+    const r = frames(m, 1, 10);
+    expect(r[2]).toEqual([[101, 1, 1], true]);
+    expect(r[10]).toEqual([[101, 1, 1], false]);
+    expect([m.train!.target, m.train!.targetEnt, m.nextthink]).toEqual(["c3", undefined, 0]);
+  });
+
+  it("waits a positive wait at a corner, then goes on, and ignores a use while START_ON", () => {
+    const m = train([
+      ["a", [0, 0, 0], "b"],
+      ["b", [0.7, 123.45, -9.9], "a", 0.25],
+    ], { mins: [-1, -1, -1], speed: f(300) });
+    trainUse(m, levelTimeAt(5), false);
+    const r = frames(m, 1, 25);
+    // 30 a frame, then the rest of the 123 units in frame 7, where train_wait has
+    // train_next due 0.25 s later (frame 10).
+    expect([2, 3, 6, 7, 9, 10, 14, 15].map((fr) => r[fr]![0])).toEqual([
+      [1, 1, 1],
+      [1.125, 30.875, -1.375],
+      [1.5, 120.5, -8.5],
+      [1.5, 124.375, -8.75],
+      [1.5, 124.375, -8.75],
+      [1.5, 124.375, -8.75],
+      [1, 4.875, 0.75],
+      [1, 1.125, 1],
+    ]);
+    expect(r[16]![0]).toEqual([1.125, 31, -1.375]);
+  });
+
+  it("does nothing past a corner whose pathtarget freed the train", () => {
+    const fired: string[] = [];
+    const m = train([
+      ["a", [0, 0, 0], "b"],
+      ["b", [0, 0, 0], "c", 0, false, "kill"],
+      ["c", [50, 0, 0]],
+    ], { fired, freedBy: "kill" });
+    frames(m, 1, 10);
+    expect(fired).toEqual(["kill"]);
+    expect([[...m.origin], m.train!.targetEnt!.entity, m.nextthink]).toEqual([[0, 0, 0], 1, 0]);
+  });
+
+  it("cuts off a loop of corners at no distance, where the game recurses until it crashes", () => {
+    const m = train([
+      ["a", [0, 0, 0], "a"],
+    ]);
+    expect(() => frames(m, 1, 3)).not.toThrow();
+    expect([[...m.origin], m.nextthink]).toEqual([[0, 0, 0], 0]);
+  });
+
+  it("runs train_next from a use, starting a frame later from another slot, and returns without a target", () => {
+    const m = train([
+      ["a", [0, 0, 0], "b"],
+      ["b", [0, 0, 100]],
+    ], { startOn: false });
+    trainNext(m, levelTimeAt(2), false);
+    expect([m.think, m.nextthink, m.train!.startOn, m.train!.target]).toEqual(["moveBegin", levelTimeAt(3), true, undefined]);
+    const r = frames(m, 2, 14);
+    expect([r[3]![0][2], r[4]![0][2], r[13]![0][2]]).toEqual([0, 10, 100]);
+    // At b with no wait: train_next finds no target and leaves it there.
+    expect([m.nextthink, [...m.velocity]]).toEqual([0, [0, 0, 0]]);
   });
 });

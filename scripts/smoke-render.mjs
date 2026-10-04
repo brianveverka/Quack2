@@ -83,6 +83,18 @@ SYNTHETIC["/data/button.bsp"] = withEntityString(fixtureBsp, `${buttonEntities}{
 for (const z of [6, 46]) {
   SYNTHETIC[`/data/button-at-${z}.bsp`] = withEntityString(fixtureBsp, fixtureEntities.replace('"model" "*1"', `"model" "*1"\n"origin" "0 0 ${z}"`));
 }
+// Train: the func_wall made a func_train (speed 100) whose mins (-385 127 -1) start on
+// c1, so at 0 0 0; it goes up 40 to c2, jumps back through the TELEPORT corner t3 and
+// stops 10 up at c4. The func_wall placed where it is drawn at 250 ms.
+const trainEntities = fixtureEntities.replace('"classname" "func_wall"', '"classname" "func_train"\n"target" "smokec1"');
+const trainCorners = [
+  ["smokec1", "-385 127 -1", '"target" "smokec2"'],
+  ["smokec2", "-385 127 39", '"target" "smoket3"'],
+  ["smoket3", "-385 127 -1", '"target" "smokec4"\n"spawnflags" "1"'],
+  ["smokec4", "-385 127 9", '"wait" "-1"'],
+].map(([name, origin, rest]) => `{\n"classname" "path_corner"\n"targetname" "${name}"\n"origin" "${origin}"\n${rest}\n}\n`);
+SYNTHETIC["/data/train.bsp"] = withEntityString(fixtureBsp, trainEntities + trainCorners.join(""));
+SYNTHETIC["/data/train-at-25.bsp"] = withEntityString(fixtureBsp, fixtureEntities.replace('"model" "*1"', '"model" "*1"\n"origin" "0 0 25"'));
 // Rotating door: the func_wall made a func_door_rotating (90 degrees of yaw at 100 a
 // second about the world origin) that a trigger_always sends round in the second settle
 // frame. The func_wall placed at the angles it is drawn with at 150 ms and at 250 ms.
@@ -540,6 +552,34 @@ try {
   check(buttonFrames.every((d) => !d.moving.error && !d.placed.error && d.moving.stats.brushModels === 1), "the moving button is drawn at every time");
   check(buttonRestTop > 0.02, "the button's frames at rest and at the top differ");
   check(buttonFrames.every((d) => d.diff === 0), "the moving button draws as a func_wall placed where brushOrigins puts it: at rest, z 6 at 250 ms, z 46 at 1300 ms");
+
+  // Train motion: train_next in frame 2 heads up at 10 a frame (z 20 in frame 4, 30 in
+  // frame 5); frame 6 reaches c2 and teleports to t3 (z 0), drawn there unblended for all
+  // of 301 to 400 ms; frame 7 reaches c4 at z 10, where it stays.
+  await page.goto(`${ORIGIN}/?map=data/train.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const trainMotion = await page.evaluate(() => ({
+    brushModels: window.quack.brushModels,
+    origins: [0, 250, 350, 450, 1000].map((ms) => window.quack.brushOrigins(ms)),
+  }));
+  console.log(`  train: ${JSON.stringify(trainMotion)}`);
+  check(
+    JSON.stringify(trainMotion.brushModels) === JSON.stringify(["func_train *1 at 0 0 0"]) &&
+      JSON.stringify(trainMotion.origins) === JSON.stringify([[[0, 0, 0]], [[0, 0, 25]], [[0, 0, 0]], [[0, 0, 5]], [[0, 0, 10]]]),
+    "a train moves in brushOrigins: at c1, z 25 at 250 ms, teleported to z 0 unblended at 350 ms, z 5 at 450 ms, at c4 by 1000 ms",
+  );
+  const trainFrames = [];
+  for (const [ms, ref] of [[0, "maps/test_arena.bsp"], [250, "data/train-at-25.bsp"], [350, "maps/test_arena.bsp"], [1000, "data/door-at-10.bsp"]]) {
+    const [moving, placed] = [await doorFrame("data/train.bsp", ms), await doorFrame(ref, ms)];
+    trainFrames.push({ ms, moving, placed, diff: changed(moving.frame, placed.frame) });
+  }
+  const trainTeleported = changed(trainFrames[1].moving.frame, trainFrames[2].moving.frame);
+  console.log(
+    `  train drawn: ${trainFrames.map((d) => `${d.ms} ms ${d.diff.toFixed(4)} off its placed wall (brush models ${d.moving.stats.brushModels})`).join(", ")}; 250 to 350 ms changes ${trainTeleported.toFixed(3)}`,
+  );
+  check(trainFrames.every((d) => !d.moving.error && !d.placed.error && d.moving.stats.brushModels === 1), "the moving train is drawn at every time");
+  check(trainTeleported > 0.02, "the train's frames before and after its teleport differ");
+  check(trainFrames.every((d) => d.diff === 0), "the moving train draws as a func_wall placed where brushOrigins puts it: z 0, 25, 0 (teleported) and 10");
 
   // Rotating door: brushAngles steps it as AngleMove_Calc does (frame 4 at 10 degrees,
   // frame 5 at 20, sent in 360/256 degree steps: 9.84375 and 19.6875) and blends them;

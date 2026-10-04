@@ -42,7 +42,7 @@ export interface QuackDebug {
   brushModels?: readonly string[];
   /**
    * The origin each brush model instance (in `brushModels` order) has at level time `ms`
-   * (default now) as the client would draw it: the doors, plats and buttons `BrushMotion` steps (at rest
+   * (default now) as the client would draw it: the doors, plats, buttons and trains `BrushMotion` steps (at rest
    * or not, at the network's 1/8 unit), the rest where `brushModels` says. Each frame is
    * drawn with these at its level time.
    */
@@ -181,7 +181,7 @@ async function main(): Promise<void> {
   // Light styles and warps animate on level time, which starts with the map here.
   const levelStart = performance.now();
   let levelTime: number | undefined;
-  const openPortals = openAreaPortals(entities);
+  const openPortals = openAreaPortals(entities, bsp);
   debug.openPortals = [...openPortals].sort((a, b) => a - b);
   const motion = new BrushMotion(() => brushMovers(bsp, entities), openPortals);
   const now = (ms: number | undefined) => ms ?? levelTime ?? performance.now() - levelStart;

@@ -2,7 +2,8 @@
 // Brush movers stepped at the game's 10 Hz frame, ported from id's game source:
 // Move_Calc and its thinks, the accelerative move (Think_AccelMove and the plat_
 // functions it calls), AngleMove_Calc and its thinks for a func_door_rotating, the
-// func_door, func_plat and func_button state functions and Think_CalcMoveSpeed (game/g_func.c), and the move and
+// func_door, func_plat and func_button state functions, a func_train's train_next,
+// train_wait, train_resume and train_use, and Think_CalcMoveSpeed (game/g_func.c), and the move and
 // think order of SV_Physics_Pusher and SV_RunThink (game/g_phys.c). Shared so the
 // server and the client step movers the same way.
 //
@@ -29,10 +30,47 @@ export type MoverThink =
   | "doorGoDown"
   | "platGoDown"
   | "buttonReturn"
+  | "trainNext"
   | "thinkAccelMove"
   | "angleMoveBegin"
   | "angleMoveFinal"
   | "angleMoveDone";
+
+/** A path_corner (or any entity a train's "target" names) as train_next reads it. */
+export interface PathCorner {
+  /** The entity it is. */
+  readonly entity: number;
+  /** s.origin, as floats. */
+  readonly origin: Vec3f;
+  /** Its "target": the corner after it. */
+  readonly target: string | undefined;
+  /** Its "wait", a float: seconds a train waits there, negative to stop. */
+  readonly wait: number;
+  /** spawnflags & 1, TELEPORT: train_next puts the train there at once. */
+  readonly teleport: boolean;
+  readonly pathtarget: string | undefined;
+}
+
+/** A func_train's fields beyond moveinfo. */
+export interface TrainInfo {
+  /** self->mins: train_next moves the train's mins to a corner, so its origin to the corner less mins. */
+  readonly mins: Vec3f;
+  /** self->target: the next corner's name, stepped on by train_next. */
+  target: string | undefined;
+  /** self->target_ent: the corner train_next last sent it towards. */
+  targetEnt: PathCorner | undefined;
+  /** spawnflags TRAIN_START_ON (1). */
+  startOn: boolean;
+  /** spawnflags TRAIN_TOGGLE (2). */
+  readonly toggle: boolean;
+  /** G_PickTarget on "targetname"; undefined when nothing has that name. */
+  readonly pick: (name: string) => PathCorner | undefined;
+  /**
+   * train_wait's G_UseTargets of a corner's "pathtarget"; returns whether the train is
+   * still in use after it (a killtarget may free it). Without it a pathtarget fires nothing.
+   */
+  usePathtarget: ((corner: PathCorner) => boolean) | undefined;
+}
 
 export interface BrushMover {
   /**
@@ -75,11 +113,21 @@ export interface BrushMover {
   moveSpeed: number;
   nextSpeed: number;
   decelDistance: number;
-  /** moveinfo.endfunc: the door, plat or button function Move_Done calls. */
-  endfunc: "doorHitTop" | "doorHitBottom" | "platHitTop" | "platHitBottom" | "buttonWait" | "buttonDone" | undefined;
+  /** moveinfo.endfunc: the door, plat, button or train function Move_Done calls. */
+  endfunc: "doorHitTop" | "doorHitBottom" | "platHitTop" | "platHitBottom" | "buttonWait" | "buttonDone" | "trainWait" | undefined;
   think: MoverThink | undefined;
   /** 0 when no think is pending. */
   nextthink: number;
+  /**
+   * s.event is EV_OTHER_TELEPORT: train_next put it on a TELEPORT corner this frame, so
+   * a client does not blend its pose from the frame before (CL_DeltaEntity). Cleared as
+   * its team's next frame starts (`stepPusher`); SV_PrepWorldFrame clears every event
+   * before any slot runs, so a teleport from a use in an earlier slot of the same frame
+   * is wiped here and kept in the game.
+   */
+  teleported: boolean;
+  /** A func_train's fields; undefined for every other mover. */
+  readonly train: TrainInfo | undefined;
 }
 
 export interface BrushMoverInit {
@@ -99,6 +147,8 @@ export interface BrushMoverInit {
   readonly wait: number;
   readonly toggle: boolean;
   readonly state: MoverState;
+  /** A func_train's fields (`trainInit`). */
+  readonly train?: TrainInfo;
 }
 
 const f3 = (v: readonly [number, number, number]): Vec3f => [Math.fround(v[0]), Math.fround(v[1]), Math.fround(v[2])];
@@ -130,6 +180,8 @@ export function brushMover(init: BrushMoverInit): BrushMover {
     endfunc: undefined,
     think: undefined,
     nextthink: 0,
+    teleported: false,
+    train: init.train,
   };
 }
 
@@ -293,6 +345,8 @@ function endfunc(m: BrushMover, levelTime: number): void {
     case "buttonDone":
       m.state = "bottom";
       return;
+    case "trainWait":
+      return trainWait(m, levelTime);
   }
 }
 
@@ -484,6 +538,7 @@ function vectorScale(v: Vec3f, scale: number, out: Vec3f): void {
  * AngleMove_Done are the only ways there after spawn, and the endfunc stays set.
  */
 export function stepPusher(team: readonly BrushMover[], levelTime: number): BrushMover[] {
+  for (const m of team) m.teleported = false;
   for (const m of team) {
     const v = m.velocity;
     const av = m.avelocity;
@@ -538,5 +593,127 @@ function runThink(m: BrushMover, levelTime: number): void {
     case "buttonReturn":
       // From the button's own think, current as for doorGoDown.
       return buttonReturn(m, levelTime);
+    case "trainNext":
+      // From the train's own think, current as for doorGoDown.
+      return trainNext(m, levelTime, true);
+  }
+}
+
+/**
+ * How deeply train_wait may run train_next, which may finish its move at once and run
+ * train_wait again: a loop of corners at no distance from each other with no "wait"
+ * recurses in the game until it crashes. Past this the train stays where it is.
+ */
+const MAX_TRAIN_WAIT_DEPTH = 256;
+let trainWaitDepth = 0;
+
+function trainOf(m: BrushMover): TrainInfo {
+  if (!m.train) throw new Error("not a func_train");
+  return m.train;
+}
+
+/**
+ * train_next: picks the corner self->target names and steps self->target on to that
+ * corner's "target". A TELEPORT corner puts the train there at once (its mins on the
+ * corner, s.event EV_OTHER_TELEPORT) and steps on again; a second one in a row stops it
+ * there. Any other corner becomes target_ent, its "wait" moveinfo.wait, and the train
+ * moves to it (Move_Calc, train_wait at the end) with START_ON set. Without a target or
+ * a corner it returns. `current` as for `doorGoUp`.
+ */
+export function trainNext(m: BrushMover, levelTime: number, current: boolean): void {
+  const t = trainOf(m);
+  let first = true;
+  for (;;) {
+    if (t.target === undefined) return;
+    const corner = t.pick(t.target);
+    if (!corner) return;
+    t.target = corner.target;
+    if (corner.teleport) {
+      if (!first) return;
+      first = false;
+      cornerLessMins(corner, t, m.origin);
+      m.teleported = true;
+      continue;
+    }
+    m.wait = corner.wait;
+    t.targetEnt = corner;
+    trainMoveTo(m, t, corner, levelTime, current);
+    return;
+  }
+}
+
+/** train_resume: moves on towards target_ent, which train_next set; `current` as for `doorGoUp`. */
+export function trainResume(m: BrushMover, levelTime: number, current: boolean): void {
+  const t = trainOf(m);
+  if (!t.targetEnt) throw new Error("train_resume without a target_ent");
+  trainMoveTo(m, t, t.targetEnt, levelTime, current);
+}
+
+/**
+ * train_use: a START_ON train ignores it unless TOGGLE, which stops it where it is
+ * (START_ON cleared, velocity and the pending think dropped); a stopped one resumes
+ * towards target_ent, or without one runs train_next. `current` as for `doorGoUp`.
+ */
+export function trainUse(m: BrushMover, levelTime: number, current: boolean): void {
+  const t = trainOf(m);
+  if (t.startOn) {
+    if (!t.toggle) return;
+    t.startOn = false;
+    m.velocity.fill(0);
+    m.nextthink = 0;
+  } else if (t.targetEnt) {
+    trainResume(m, levelTime, current);
+  } else {
+    trainNext(m, levelTime, current);
+  }
+}
+
+/** VectorSubtract (corner origin, self->mins, out), in float. */
+function cornerLessMins(corner: PathCorner, t: TrainInfo, out: Vec3f): void {
+  for (let i = 0; i < 3; i++) out[i] = Math.fround(corner.origin[i]! - t.mins[i]!);
+}
+
+/** The end of train_next and train_resume: STATE_TOP, from where it is to the corner, then train_wait. */
+function trainMoveTo(m: BrushMover, t: TrainInfo, corner: PathCorner, levelTime: number, current: boolean): void {
+  const dest: Vec3f = [0, 0, 0];
+  cornerLessMins(corner, t, dest);
+  m.state = "top";
+  for (let i = 0; i < 3; i++) {
+    m.startOrigin[i] = m.origin[i]!;
+    m.endOrigin[i] = dest[i]!;
+  }
+  moveCalc(m, dest, "trainWait", levelTime, current);
+  t.startOn = true;
+}
+
+/**
+ * train_wait, at target_ent: fires its "pathtarget" (`usePathtarget`) and returns if
+ * that freed the train. Then a positive wait has train_next due after it; a negative one
+ * stops the train there, except that a TOGGLE train runs train_next first and stops at
+ * once (START_ON cleared, velocity and the pending think dropped); no wait runs train_next.
+ */
+function trainWait(m: BrushMover, levelTime: number): void {
+  const t = trainOf(m);
+  const corner = t.targetEnt!;
+  if (trainWaitDepth >= MAX_TRAIN_WAIT_DEPTH) return;
+  trainWaitDepth++;
+  try {
+    if (corner.pathtarget !== undefined && t.usePathtarget && !t.usePathtarget(corner)) return;
+    if (m.wait) {
+      if (m.wait > 0) {
+        m.nextthink = Math.fround(levelTime + m.wait);
+        m.think = "trainNext";
+      } else if (t.toggle) {
+        // Run from Move_Done, inside the train's own think.
+        trainNext(m, levelTime, true);
+        t.startOn = false;
+        m.velocity.fill(0);
+        m.nextthink = 0;
+      }
+    } else {
+      trainNext(m, levelTime, true);
+    }
+  } finally {
+    trainWaitDepth--;
   }
 }
