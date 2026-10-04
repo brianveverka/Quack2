@@ -23,7 +23,7 @@ import {
   pvsUnion,
   type Box,
 } from "./cull.js";
-import { buildLightmapAtlas, updateLightmapAtlas, type LightmapAtlas } from "./lightmap.js";
+import { buildLightmapAtlas, refreshLightmaps, setLightmapStyles, type LightmapAtlas } from "./lightmap.js";
 import { fovY, modelMatrix, multiply, perspective, viewMatrix, type Mat4 } from "./math.js";
 import { addSkyPolygon, clearSkyBounds, newSkyBounds, skyBoxQuads, skyMatrix, type SkySettings } from "./sky.js";
 import { notexture } from "./skyimage.js";
@@ -165,6 +165,8 @@ export interface FrameStats {
   /** Sky box sides drawn. */
   readonly skySides: number;
   readonly draws: number;
+  /** Faces whose lightmap was composed again and uploaded: drawn faces on a style that changed since they were last drawn. */
+  readonly lightmapUploads: number;
 }
 
 interface InstanceDraws {
@@ -175,6 +177,8 @@ interface InstanceDraws {
   /** Translucent faces' ranges in the brush model index buffer, in alpha pass order. */
   readonly alphaDraws: readonly DrawRange[];
   readonly alphaFaces: number;
+  /** The model's faces, for refreshing their lightmaps when it is drawn. */
+  readonly faces: readonly number[];
   /** World box enclosing the instance. */
   readonly box: Box;
   /** Distinct non-solid clusters the box touches. Computed once: models do not move yet; a mover must recompute this and `box`. */
@@ -289,13 +293,16 @@ export class WorldRenderer {
 
     // Each model's lists are built once and shared by every instance of it: its opaque
     // faces, then its translucent ones in alpha pass order.
-    const lists = new Map<number, { base: number; list: DrawList; alpha: ReturnType<typeof buildOrderedDraws> }>();
+    const lists = new Map<number, { base: number; list: DrawList; alpha: ReturnType<typeof buildOrderedDraws>; faces: number[] }>();
     let total = 0;
     for (const inst of brushModels) {
       if (lists.has(inst.model)) continue;
-      const list = buildDrawList(this.mesh, modelFaceMask(bsp, inst.model));
+      const mask = modelFaceMask(bsp, inst.model);
+      const list = buildDrawList(this.mesh, mask);
       const alpha = buildOrderedDraws(this.mesh, brushModelAlphaOrder(list.translucent));
-      lists.set(inst.model, { base: total, list, alpha });
+      const faces: number[] = [];
+      mask.forEach((m, f) => m && faces.push(f));
+      lists.set(inst.model, { base: total, list, alpha, faces });
       total += list.indices.length + alpha.indices.length;
     }
     const brushIndices = new Uint32Array(total);
@@ -304,7 +311,7 @@ export class WorldRenderer {
       brushIndices.set(alpha.indices, base + list.indices.length);
     }
     for (const inst of brushModels) {
-      const { base, list, alpha } = lists.get(inst.model)!;
+      const { base, list, alpha, faces } = lists.get(inst.model)!;
       if (list.draws.length === 0 && alpha.draws.length === 0) continue;
       const box = instanceBox(bsp, inst);
       const alphaBase = base + list.indices.length;
@@ -313,6 +320,7 @@ export class WorldRenderer {
         draws: list.draws.map((d) => ({ ...d, first: d.first + base })),
         alphaDraws: alpha.draws.map((d) => ({ ...d, first: d.first + alphaBase })),
         alphaFaces: list.translucent.length,
+        faces,
         box,
         clusters: boxClusters(bsp, box),
         areas: boxAreas(bsp, linkBox(bsp, inst)),
@@ -375,17 +383,23 @@ export class WorldRenderer {
   }
 
   /**
-   * Set the brightness of each light style (lightStyleValues) and upload the lightmap of
-   * every face whose composed light changed. Returns how many faces were uploaded.
+   * Set the brightness of each light style (lightStyleValues). Faces on a changed style
+   * are composed again and uploaded when next drawn (render).
    */
-  setLightStyles(values: ArrayLike<number>): number {
-    const faces = updateLightmapAtlas(this.bsp, this.atlas, values);
-    if (faces.length === 0) return 0;
+  setLightStyles(values: ArrayLike<number>): void {
+    setLightmapStyles(this.bsp, this.atlas, values);
+  }
+
+  /** Compose and upload the stale lightmaps among `faces`; returns how many. */
+  private refreshLightmaps(faces: Iterable<number>): number {
+    const stale = refreshLightmaps(this.bsp, this.atlas, faces);
+    if (stale.length === 0) return 0;
     const { gl, atlas } = this;
+    gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.lightmap);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, atlas.width);
-    for (const f of faces) {
+    for (const f of stale) {
       const r = atlas.rects[f]!;
       gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, r.x);
       gl.pixelStorei(gl.UNPACK_SKIP_ROWS, r.y);
@@ -395,7 +409,8 @@ export class WorldRenderer {
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
     gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
     gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
-    return faces.length;
+    gl.activeTexture(gl.TEXTURE0);
+    return stale.length;
   }
 
   /** Set the level time in milliseconds that warps move with. */
@@ -443,6 +458,33 @@ export class WorldRenderer {
       for (const inst of this.instances) inst.inPvs = !pvs || clustersVisible(inst.clusters, pvs);
     }
 
+    // Any model point on screen is seen along a ray from a point of the near plane, which
+    // is inside the fat PVS box, and the model's box touches the leaf the point is in.
+    // Where the near plane is inside solid, models and world alike can show a cluster
+    // past this, as in the engine.
+    let areaCulled = 0, pvsCulled = 0, frustumCulled = 0;
+    const eyeArea = this.noAreas ? 0 : area;
+    const drawn: InstanceDraws[] = [];
+    for (const inst of this.instances) {
+      if (this.cull && !areasVisible(this.flood, eyeArea, inst.areas)) {
+        areaCulled++;
+        continue;
+      }
+      if (this.cull && !inst.inPvs) {
+        pvsCulled++;
+        continue;
+      }
+      if (this.cull && boxOutsideFrustum(planes, inst.box)) {
+        frustumCulled++;
+        continue;
+      }
+      drawn.push(inst);
+    }
+    // ref_gl rebuilds a surface's lightmap as it draws it, so a face out of view keeps
+    // its old light until it is drawn again.
+    let lightmapUploads = this.refreshLightmaps(faces);
+    for (const inst of drawn) lightmapUploads += this.refreshLightmaps(inst.faces);
+
     gl.viewport(0, 0, width, height);
     gl.clearColor(CLEAR_COLOR[0] / 255, CLEAR_COLOR[1] / 255, CLEAR_COLOR[2] / 255, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -472,32 +514,11 @@ export class WorldRenderer {
     draws += sky.sides;
     gl.useProgram(this.program);
     gl.bindVertexArray(this.vao);
-    // Any model point on screen is seen along a ray from a point of the near plane, which
-    // is inside the fat PVS box, and the model's box touches the leaf the point is in.
-    // Where the near plane is inside solid, models and world alike can show a cluster
-    // past this, as in the engine.
-    let brushModels = 0, areaCulled = 0, pvsCulled = 0, frustumCulled = 0;
-    const eyeArea = this.noAreas ? 0 : area;
-    const drawn: InstanceDraws[] = [];
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.brushIndexBuffer);
-    for (const inst of this.instances) {
-      if (this.cull && !areasVisible(this.flood, eyeArea, inst.areas)) {
-        areaCulled++;
-        continue;
-      }
-      if (this.cull && !inst.inPvs) {
-        pvsCulled++;
-        continue;
-      }
-      if (this.cull && boxOutsideFrustum(planes, inst.box)) {
-        frustumCulled++;
-        continue;
-      }
+    for (const inst of drawn) {
       gl.uniformMatrix4fv(this.uModel, false, inst.model);
       this.drawRanges(inst.draws);
       draws += inst.draws.length;
-      brushModels++;
-      drawn.push(inst);
     }
 
     // Alpha pass (R_DrawAlphaSurfaces): blended, depth tested and written as ref_gl
@@ -541,7 +562,7 @@ export class WorldRenderer {
       area,
       visibleFaces: this.visibleFaces,
       drawnFaces: faces.length,
-      brushModels,
+      brushModels: drawn.length,
       areaCulled,
       pvsCulled,
       frustumCulled,
@@ -549,6 +570,7 @@ export class WorldRenderer {
       skyPolygons: sky.polygons,
       skySides: sky.sides,
       draws,
+      lightmapUploads,
     };
   }
 

@@ -2,7 +2,8 @@
 // Packs every face's lightmap into one RGBA atlas. A face stores one map per light style
 // (up to four); its atlas block holds their sum, each map scaled by its style's current
 // brightness, composed on the CPU as ref_gl's R_BuildLightMap does. When style values
-// change, only the faces using a changed style are composed again. Sky, warp and
+// change, the faces using a changed style are marked stale and composed again only when
+// drawn, as ref_gl rebuilds a surface's lightmap only as it draws it. Sky, warp and
 // translucent faces get no lightmap, as in Mod_LoadFaces, and draw at full brightness.
 
 import {
@@ -37,8 +38,10 @@ export interface LightmapAtlas {
   readonly data: Uint8Array;
   /** Per face; faces without a lightmap point at the fullbright block. */
   readonly rects: readonly LightmapRect[];
-  /** Style brightnesses the lit faces were last composed with, per light style. */
+  /** Current brightness per light style; a lit face not marked stale was composed with these. */
   readonly styleValues: Float32Array;
+  /** Per face, 1 when a style it uses changed since it was last composed. */
+  readonly stale: Uint8Array;
 }
 
 /**
@@ -81,7 +84,7 @@ export function buildLightmapAtlas(bsp: Bsp, maxSize = 4096, styles: ArrayLike<n
     }
     const styleValues = Float32Array.from(STYLES_NORMAL);
     for (let s = 0; s < Math.min(styles.length, MAX_LIGHTSTYLES); s++) styleValues[s] = styles[s]!;
-    const atlas = { width: size, height: size, data, rects, styleValues };
+    const atlas = { width: size, height: size, data, rects, styleValues, stale: new Uint8Array(n) };
     for (const f of lit) composeFace(bsp, atlas, f);
     return atlas;
   }
@@ -89,11 +92,10 @@ export function buildLightmapAtlas(bsp: Bsp, maxSize = 4096, styles: ArrayLike<n
 }
 
 /**
- * Set new style brightnesses and compose again every lit face that uses a style whose
- * value changed, as ref_gl does for a surface whose cached_light no longer matches.
- * Returns those faces, for the caller to upload their rects.
+ * Set new style brightnesses and mark stale every lit face that uses a style whose value
+ * changed. Nothing is composed until refreshLightmaps is given the face.
  */
-export function updateLightmapAtlas(bsp: Bsp, atlas: LightmapAtlas, styles: ArrayLike<number>): number[] {
+export function setLightmapStyles(bsp: Bsp, atlas: LightmapAtlas, styles: ArrayLike<number>): void {
   const changed = new Uint8Array(MAX_LIGHTSTYLES);
   let any = false;
   for (let s = 0; s < Math.min(styles.length, MAX_LIGHTSTYLES); s++) {
@@ -103,19 +105,32 @@ export function updateLightmapAtlas(bsp: Bsp, atlas: LightmapAtlas, styles: Arra
     changed[s] = 1;
     any = true;
   }
-  const faces: number[] = [];
-  if (!any) return faces;
+  if (!any) return;
   for (let f = 0; f < atlas.rects.length; f++) {
-    if (!atlas.rects[f]!.lit) continue;
+    if (atlas.stale[f] || !atlas.rects[f]!.lit) continue;
     const n = faceStyleCount(bsp, f);
     for (let k = 0; k < n; k++) {
       if (!changed[bsp.faces.styles[f * MAX_LIGHTMAPS + k]!]) continue;
-      composeFace(bsp, atlas, f);
-      faces.push(f);
+      atlas.stale[f] = 1;
       break;
     }
   }
-  return faces;
+}
+
+/**
+ * Compose again each stale face among `faces`, the faces about to be drawn, as ref_gl's
+ * surface drawing does for one whose cached_light no longer matches its styles. Returns
+ * those faces, for the caller to upload their rects.
+ */
+export function refreshLightmaps(bsp: Bsp, atlas: LightmapAtlas, faces: Iterable<number>): number[] {
+  const out: number[] = [];
+  for (const f of faces) {
+    if (!atlas.stale[f]) continue;
+    atlas.stale[f] = 0;
+    composeFace(bsp, atlas, f);
+    out.push(f);
+  }
+  return out;
 }
 
 /**

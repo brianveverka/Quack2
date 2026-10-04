@@ -247,9 +247,10 @@ async function main(): Promise<void> {
     resize();
     const time = levelTime ?? performance.now() - levelStart;
     lightStyleValues(DEATHMATCH_LIGHTSTYLES, time, styleValues);
-    debug.lightmapUploads = renderer.setLightStyles(styleValues);
+    renderer.setLightStyles(styleValues);
     renderer.setTime(time);
     debug.stats = renderer.render(camera, canvas.width, canvas.height);
+    debug.lightmapUploads = debug.stats.lightmapUploads;
     debug.frames++;
   };
   debug.view = () => ({ origin: [...camera.origin], pitch: camera.pitch, yaw: camera.yaw });

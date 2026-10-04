@@ -5,7 +5,8 @@ order (see CLAUDE.md, Orchestration).
 
 ## 1. Game data and renderer completeness
 The WebGL2 world renderer is in `packages/client` (faces, lightmaps sized in float as
-the win32 CalcSurfaceExtents does, with the deathmatch light styles animated at 10 Hz,
+the win32 CalcSurfaceExtents does, with the deathmatch light styles animated at 10 Hz
+and a face's lightmap composed again only as it is drawn, as ref_gl rebuilds it,
 warped surfaces moved per vertex as EmitWaterPolys does, translucent surfaces blended in
 R_DrawAlphaSurfaces' order, no lightmap on sky, warp or translucent faces, the
 worldspawn sky box drawn where the world's sky faces bound it (R_DrawSkyBox, with
@@ -23,11 +24,6 @@ SelectSpawnPoint gives the first deathmatch player, `.wal` textures and `?map=`
 BSPs from mounted pak/zip data (zip64 and self-extractor stubs included), picked
 archives read by range, checker fallback, `pnpm smoke`).
 Remaining:
-- `updateLightmapAtlas` recomposes every face on a changed light style, map-wide;
-  ref_gl rebuilds only surfaces it draws. Measured 2026-10-04 in Node 22 on the fixture,
-  warmed up: 33-34 ns per luxel with one style per face, about 73 with four, so 50k
-  animated luxels cost 2-4 ms per 10 Hz step. Limit it to visible
-  faces if large maps show it.
 - SURF_FLOWING scrolls only warped faces; ref_gl also scrolls unwarped opaque ones
   (DrawGLFlowingPoly, GL_RenderLightmappedPoly), though not unwarped translucent ones
   (R_DrawAlphaSurfaces uses DrawGLPoly).

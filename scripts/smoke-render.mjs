@@ -429,34 +429,47 @@ try {
 
   // Light styles: the world goes black with style 2 at 'a', brighter than style 0's
   // normal light at 'z', and back at 'm' renders byte for byte as the unstyled map, so
-  // every face's lightmap was uploaded to its own rect; each change uploads every face.
-  const lightFrame = (ms) =>
-    page.evaluate((ms) => {
-      window.quack.setView({ origin: [-448, 0, 46], pitch: 0, yaw: 0 });
-      window.quack.setLevelTime(ms);
-      const { data } = window.quack.readPixels();
-      const uploads = window.quack.lightmapUploads;
-      // A second frame at the same time uploads nothing.
-      window.quack.readPixels();
-      let sum = 0, clear = 0;
-      for (let i = 0; i < data.length; i += 4) {
-        if (data[i] === 64 && data[i + 1] === 0 && data[i + 2] === 64) clear++;
-        else sum += data[i] + data[i + 1] + data[i + 2];
-      }
-      return { uploads, again: window.quack.lightmapUploads, mean: sum / (data.length / 4), clear, data: Array.from(data) };
-    }, ms);
+  // every drawn face's lightmap was uploaded to its own rect. A change uploads only the
+  // faces drawn; one lightTurned away from is composed when it comes into view.
+  const lightAhead = { origin: [-448, 0, 46], pitch: 0, yaw: 0 };
+  const lightBehind = { origin: [448, 0, 46], pitch: 0, yaw: 180 };
+  const lightFrame = (ms, view = lightAhead) =>
+    page.evaluate(
+      ([ms, view]) => {
+        window.quack.setView(view);
+        window.quack.setLevelTime(ms);
+        const { data } = window.quack.readPixels();
+        const uploads = window.quack.lightmapUploads;
+        // A second frame at the same time uploads nothing.
+        window.quack.readPixels();
+        let sum = 0, clear = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i] === 64 && data[i + 1] === 0 && data[i + 2] === 64) clear++;
+          else sum += data[i] + data[i + 1] + data[i + 2];
+        }
+        return { uploads, again: window.quack.lightmapUploads, mean: sum / (data.length / 4), clear, data: Array.from(data) };
+      },
+      [ms, view],
+    );
   await page.goto(`${ORIGIN}/`);
   await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
   const normal = await lightFrame(0);
+  const normalBehind = await lightFrame(0, lightBehind);
   await page.goto(`${ORIGIN}/?map=data/styled.bsp`);
   await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
   const styledError = await page.evaluate(() => window.quack.error);
   const off = await lightFrame(0);
   const doubled = await lightFrame(2500);
   const back = await lightFrame(1200);
+  // From the far side at the same time: faces never drawn from the first view, last composed at load.
+  const lightTurned = await lightFrame(1200, lightBehind);
+  const lightReturned = await lightFrame(1200);
   const differ = back.data.reduce((n, b, i) => n + (b !== normal.data[i] ? 1 : 0), 0);
+  const differBehind = lightTurned.data.reduce((n, b, i) => n + (b !== normalBehind.data[i] ? 1 : 0), 0);
   const brief = ({ data, ...r }) => JSON.stringify(r);
-  console.log(`  light styles: normal ${brief(normal)}, a ${brief(off)}, z ${brief(doubled)}, m ${brief(back)}, ${differ} bytes differ at m`);
+  console.log(
+    `  light styles: normal ${brief(normal)}, a ${brief(off)}, z ${brief(doubled)}, m ${brief(back)}, turned ${brief(lightTurned)}, returned ${brief(lightReturned)}, ${differ} bytes differ at m, ${differBehind} turned`,
+  );
   check(!styledError && off.clear === 0 && off.mean === 0, "faces on a light style at 'a' draw black");
   check(doubled.mean > normal.mean * 1.3, "faces on a light style at 'z' draw brighter than normal light");
   check(
@@ -464,8 +477,12 @@ try {
     "faces on a light style at 'm' draw exactly as unstyled faces, after style changes",
   );
   check(
-    doubled.uploads === FIXTURE_FACES && back.uploads === FIXTURE_FACES && doubled.again === 0 && back.again === 0,
-    `a style change uploads every face on it once (${FIXTURE_FACES}), an unchanged frame none`,
+    doubled.uploads > 0 && doubled.uploads < FIXTURE_FACES && back.uploads === doubled.uploads && doubled.again === 0 && back.again === 0,
+    `a style change uploads only the faces drawn (${doubled.uploads} of ${FIXTURE_FACES}), once; an unchanged frame none`,
+  );
+  check(
+    lightTurned.uploads > 0 && lightReturned.uploads === 0 && lightTurned.data.length === normalBehind.data.length && differBehind === 0,
+    "faces coming into view after a style change are composed then, and draw as unstyled faces at 'm'",
   );
 
   // Warps: the floor moves with level time and has no lightmap, so the pillar's shadow
