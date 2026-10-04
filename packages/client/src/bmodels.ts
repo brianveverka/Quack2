@@ -409,7 +409,13 @@ const DOOR_TOGGLE = 32;
  * stored as a float) plus 0.001, in double.
  */
 const SECOND_FRAME_DUE = Math.fround(2 * FRAMETIME) + 0.001;
-/** Use chains nested deeper than this are cut off; a trigger_relay loop recurses until the game crashes. */
+/**
+ * Uses run in the settle frames at most, and how deeply they may nest; the rest are
+ * dropped. A trigger_relay loop recurses until the game crashes, and three relays that
+ * each target all of them branch at every level, so the depth limit alone would not end
+ * the walk.
+ */
+const MAX_USES = 10000;
 const MAX_USE_DEPTH = 64;
 
 /** What fires targets: a map entity, or a DelayedUse (index -1) carrying a trigger's target and killtarget. */
@@ -429,21 +435,48 @@ interface Settle {
   /** Team members, master first, by master index. */
   teams: Map<number, number[]>;
   slaves: Set<number>;
-  /** Doors used so far: "up" (STATE_UP) or "down" (STATE_DOWN); absent is STATE_BOTTOM. */
-  doorState: Map<number, "up" | "down">;
+  /** moveinfo.state of the entities used so far; the rest are at `spawnState`. */
+  moveState: Map<number, MoveState>;
   /** Use_Areaportal's per-entity toggle (ent->count). */
   portalCount: Map<number, number>;
   /** gi.SetAreaPortalState writes, last one wins; portals never written stay closed. */
   portals: Map<number, boolean>;
+  /** Uses left before MAX_USES cuts the walk off. */
+  budget: number;
   depth: number;
 }
 
-/** The classname an entity has after its spawn function ran: SP_func_water renames itself func_door. */
-function liveClassname(ent: BspEntity): string {
-  return ent.classname === "func_water" ? "func_door" : (ent.classname ?? "");
+/** g_func.c STATE_TOP (0, also every edict that never sets it), STATE_BOTTOM, STATE_UP, STATE_DOWN. */
+type MoveState = "top" | "bottom" | "up" | "down";
+
+/**
+ * moveinfo.state after spawn: doors, func_water and func_button start at STATE_BOTTOM, a
+ * func_plat at STATE_BOTTOM unless it has a "targetname" (STATE_UP); every other class
+ * leaves it 0, STATE_TOP.
+ */
+function spawnState(ent: BspEntity): MoveState {
+  switch (ent.classname) {
+    case "func_door":
+    case "func_door_rotating":
+    case "func_water":
+    case "func_button":
+      return "bottom";
+    case "func_plat":
+      return ent.targetname === undefined ? "bottom" : "up";
+  }
+  return "top";
 }
 
-/** G_Find on "targetname": in-game entities not freed, matched case insensitively, in entity order. */
+function moveState(s: Settle, index: number): MoveState {
+  return s.moveState.get(index) ?? spawnState(s.entities[index]!);
+}
+
+/** The classname an entity has after its spawn function ran: SP_func_water and SP_func_door_secret rename themselves func_door. */
+function liveClassname(ent: BspEntity): string {
+  return ent.classname === "func_water" || ent.classname === "func_door_secret" ? "func_door" : (ent.classname ?? "");
+}
+
+/** G_Find on "targetname": in-game entities not freed, matched case insensitively, in entity order (worldspawn included). */
 function* findTargets(s: Settle, name: string): Generator<number> {
   for (let i = 0; i < s.entities.length; i++) {
     const t = s.entities[i]!;
@@ -468,31 +501,29 @@ function doorUseAreaportals(s: Settle, index: number, open: boolean): void {
 }
 
 /**
- * G_UseTargets within the settle frames. A user with a "delay" queues a DelayedUse that
- * comes due after them (any nonzero delay here: the second frame's thinks have run by
- * then), so it fires nothing yet. Messages and sounds do not change the map.
+ * G_UseTargets within the settle frames. A user with a nonzero "delay" queues a
+ * DelayedUse and fires nothing here. One due by the second frame's level.time + 0.001 (a
+ * delay under about 0.001, or negative) still runs in that frame in the game if G_Spawn
+ * places it after the edict being run; that is not modeled. Messages and sounds do not
+ * change the map.
  */
 function useTargets(s: Settle, user: User): void {
-  if (user.delay !== 0 || s.depth >= MAX_USE_DEPTH) return;
-  s.depth++;
-  try {
-    const gone = () => user.index >= 0 && s.freed.has(user.index);
-    if (user.killtarget !== undefined) {
-      for (const t of findTargets(s, user.killtarget)) {
-        s.freed.add(t);
-        if (gone()) return;
-      }
-    }
-    if (user.target === undefined) return;
-    const isDoor = stricmpEqual(user.classname, "func_door") || stricmpEqual(user.classname, "func_door_rotating");
-    for (const t of findTargets(s, user.target)) {
-      // Doors set their portals in door_use_areaportals instead.
-      if (isDoor && stricmpEqual(s.entities[t]!.classname ?? "", "func_areaportal")) continue;
-      if (t !== user.index) use(s, t);
+  if (user.delay !== 0) return;
+  const gone = () => user.index >= 0 && s.freed.has(user.index);
+  if (user.killtarget !== undefined) {
+    for (const t of findTargets(s, user.killtarget)) {
+      // G_FreeEdict refuses worldspawn (and the client and body queue edicts before the map's).
+      if (t !== 0) s.freed.add(t);
       if (gone()) return;
     }
-  } finally {
-    s.depth--;
+  }
+  if (user.target === undefined) return;
+  const isDoor = stricmpEqual(user.classname, "func_door") || stricmpEqual(user.classname, "func_door_rotating");
+  for (const t of findTargets(s, user.target)) {
+    // Doors set their portals in door_use_areaportals instead.
+    if (isDoor && stricmpEqual(s.entities[t]!.classname ?? "", "func_areaportal")) continue;
+    if (t !== user.index) use(s, t);
+    if (gone()) return;
   }
 }
 
@@ -501,6 +532,17 @@ function useTargets(s: Settle, user: User): void {
  * (trains, plats, buttons, func_wall and others) are not modeled and do nothing here.
  */
 function use(s: Settle, index: number): void {
+  if (s.budget <= 0 || s.depth >= MAX_USE_DEPTH) return;
+  s.budget--;
+  s.depth++;
+  try {
+    useOne(s, index);
+  } finally {
+    s.depth--;
+  }
+}
+
+function useOne(s: Settle, index: number): void {
   const ent = s.entities[index]!;
   switch (ent.classname) {
     case "func_areaportal": {
@@ -534,28 +576,28 @@ function doorToggles(ent: BspEntity): boolean {
 }
 
 /**
- * door_use: a team slave ignores it; otherwise every member of the team goes up
- * (door_go_up), or, for a DOOR_TOGGLE master already up or going up, down. Team members
- * that are not doors are skipped: their moveinfo.state comes from their own spawn function.
- * A member freed by a killtarget ends the walk.
+ * door_use: a team slave ignores it; otherwise every member of the team, whatever its
+ * class, goes up (door_go_up), or, for a DOOR_TOGGLE master already up or going up, down.
+ * door_go_up returns for a member up, going up or at STATE_TOP (`spawnState`). A member
+ * freed by a killtarget ends the walk.
  */
 function doorUse(s: Settle, index: number): void {
   if (s.slaves.has(index)) return;
   const members = s.teams.get(index) ?? [index];
-  const down = doorToggles(s.entities[index]!) && s.doorState.get(index) === "up";
+  const state = moveState(s, index);
+  const down = doorToggles(s.entities[index]!) && (state === "up" || state === "top");
   for (const m of members) {
     // A freed member is a zeroed edict: door_go_up returns at once (STATE_TOP) and its
     // teamchain, which door_use follows next, is null.
     if (s.freed.has(m)) break;
-    const cls = liveClassname(s.entities[m]!);
-    if (cls !== "func_door" && cls !== "func_door_rotating") continue;
     if (down) {
       // door_go_down writes no portal until the door reaches the bottom, after the settle frames.
-      s.doorState.set(m, "down");
+      s.moveState.set(m, "down");
       continue;
     }
-    if (s.doorState.get(m) === "up") continue;
-    s.doorState.set(m, "up");
+    const ms = moveState(s, m);
+    if (ms === "up" || ms === "top") continue;
+    s.moveState.set(m, "up");
     useTargets(s, userOf(s, m));
     // A door its own killtarget freed has no "target" left to find portals by.
     if (s.freed.has(m)) break;
@@ -577,9 +619,10 @@ function doorUse(s: Settle, index: number): void {
  * Second frame: every in-game trigger_always, in entity order, fires its targets through
  * a DelayedUse (SP_trigger_always raises "delay" to at least 0.2 s; one above that comes
  * due later and is skipped). G_UseTargets first frees its killtargets, then uses its
- * targets: a func_areaportal toggles, a door goes up with its team, fires its own targets
- * (except portals) and opens its portals, a func_door_secret at origin 0 0 0 opens its
- * portals, a trigger_relay fires its targets. Other use functions are not modeled.
+ * targets: a func_areaportal toggles, a door goes up with its team (each member at the
+ * bottom fires its own targets, except portals, and opens its portals), a
+ * func_door_secret at origin 0 0 0 opens its portals, a trigger_relay fires its targets.
+ * Other use functions are not modeled.
  */
 export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
   const teams = new Map<number, number[]>();
@@ -588,7 +631,7 @@ export function openAreaPortals(entities: readonly BspEntity[]): Set<number> {
     teams.set(members[0]!, members);
     members.slice(1).forEach((i) => slaves.add(i));
   }
-  const s: Settle = { entities, freed: new Set(), teams, slaves, doorState: new Map(), portalCount: new Map(), portals: new Map(), depth: 0 };
+  const s: Settle = { entities, freed: new Set(), teams, slaves, moveState: new Map(), portalCount: new Map(), portals: new Map(), budget: MAX_USES, depth: 0 };
   entities.forEach((door, i) => {
     if (door.classname !== "func_door" && door.classname !== "func_door_rotating") return;
     if (!inGame(door) || slaves.has(i)) return;

@@ -442,6 +442,36 @@ describe("area portals open at spawn", () => {
       expect(open(`{ "classname" "trigger_always" "target" "r" } { "classname" "trigger_relay" "targetname" "r" "target" "r" }`)).toEqual([]);
     });
 
+    it("sends every team member at the bottom up, whatever its class (door_go_up)", () => {
+      const member = (m: string) =>
+        open(`{ "classname" "trigger_always" "target" "d" }
+          { "classname" "func_door" "targetname" "d" "team" "t" }
+          { ${m} "team" "t" "target" "q" }`);
+      expect(member(`"classname" "func_button"`)).toEqual([3]);
+      expect(member(`"classname" "func_plat"`)).toEqual([3]);
+      // A targeted plat starts at STATE_UP, a func_wall at STATE_TOP: door_go_up returns.
+      expect(member(`"classname" "func_plat" "targetname" "x"`)).toEqual([]);
+      expect(member(`"classname" "func_wall"`)).toEqual([]);
+      expect(member(`"classname" "func_door_secret"`)).toEqual([]);
+    });
+
+    it("a member sent down by a DOOR_TOGGLE master goes up on the next use, from any state", () => {
+      // func_door_secret starts at STATE_TOP; the second use sends it down, the third up as a func_door.
+      const uses = (n: number) =>
+        open(`${`{ "classname" "trigger_always" "target" "d" } `.repeat(n)}
+          { "classname" "func_door" "targetname" "d" "team" "t" "spawnflags" "32" }
+          { "classname" "func_door_secret" "team" "t" "target" "q" }`);
+      expect(uses(2)).toEqual([]);
+      expect(uses(3)).toEqual([3]);
+    });
+
+    it("ends a trigger_relay loop that branches, as a total use budget", () => {
+      const relays = `{ "classname" "trigger_relay" "targetname" "r" "target" "r" } `.repeat(3);
+      const start = performance.now();
+      expect(open(`{ "classname" "trigger_always" "target" "r" } ${relays}`)).toEqual([]);
+      expect(performance.now() - start).toBeLessThan(2000);
+    });
+
     it("frees killtargets before using targets", () => {
       expect(open(`{ "classname" "trigger_always" "target" "q" "killtarget" "q" }`)).toEqual([]);
       expect(
@@ -460,6 +490,11 @@ describe("area portals open at spawn", () => {
           { "classname" "func_door" "targetname" "d" "team" "t" "target" "q" "killtarget" "m" }
           { "classname" "func_door" "targetname" "m" "team" "t" "target" "p" }`),
       ).toEqual([3]);
+      // G_FreeEdict refuses worldspawn.
+      const world = parseEntities(`{ "classname" "worldspawn" "targetname" "w" }
+        { "classname" "func_areaportal" "targetname" "p" "style" "1" }
+        { "classname" "trigger_always" "target" "p" "killtarget" "w" }`);
+      expect([...openAreaPortals(world)]).toEqual([1]);
     });
   });
 });

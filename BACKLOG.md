@@ -69,9 +69,10 @@ Remaining:
   the walked face set changes. Measured 2026-10-04 in Node 22 on the fixture (25 nodes,
   111 faces), turning so every frame rebuilds: 11.4 us per frame. Measure on a large map.
 - The second settle frame's use chains change only area portals here. A brush entity a
-  killtarget frees is still drawn, and a door they send up is drawn closed although it
-  is moving when clients connect. Only func_areaportal, doors, func_door_secret and
-  trigger_relay uses are modeled; a team member that is not a door is skipped.
+  killtarget frees is still drawn, and a door they send up is drawn at rest although it
+  starts moving the next frame. Only func_areaportal, doors, func_door_secret and
+  trigger_relay uses are modeled, and a door's or relay's own "delay" always defers its
+  targets (a tiny or negative one can come due within the second frame in the game).
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
