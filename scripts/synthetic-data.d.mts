@@ -2,7 +2,13 @@
 export function writePak(files: Record<string, Uint8Array>): Uint8Array;
 export function writeZip(
   files: Record<string, Uint8Array>,
-  options?: { deflate?: boolean | ReadonlySet<string>; comment?: string },
+  options?: {
+    deflate?: boolean | ReadonlySet<string>;
+    comment?: string;
+    prefix?: Uint8Array;
+    adjustOffsets?: boolean;
+    zip64?: boolean;
+  },
 ): Uint8Array;
 export function writeWal(name: string, width: number, height: number, pixel: (x: number, y: number) => number): Uint8Array;
 export function writePalettePcx(palette: Uint8Array): Uint8Array;

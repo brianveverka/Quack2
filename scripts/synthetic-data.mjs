@@ -42,8 +42,23 @@ function crc32(bytes) {
 /**
  * Zip with each file stored or deflated (`deflate` true, or a set of names to deflate).
  * `comment` is appended to the end record, which moves it off the file's last 22 bytes.
+ * `prefix` bytes (a self-extractor stub) go before the first local header. Stored offsets
+ * ignore the prefix unless `adjustOffsets` is set: unset gives what `cat stub zip`
+ * produces, set gives what `zip -A` produces, with offsets from the true file start.
+ * `zip64` sets version 45 and moves every size and offset into zip64 fields: local headers
+ * as Info-ZIP `zip -fz` writes them (both sizes 0xffffffff, extra 0x0001 with uncompressed
+ * then compressed size); central entries with both sizes and the local offset 0xffffffff
+ * and all three in extra 0x0001; then a zip64 end record and locator ahead of an end
+ * record whose counts, size and offset are all set to their 0xff markers.
  */
-export function writeZip(files, { deflate = true, comment = "" } = {}) {
+export function writeZip(
+  files,
+  { deflate = true, comment = "", prefix = new Uint8Array(0), adjustOffsets = false, zip64 = false } = {},
+) {
+  const base = adjustOffsets ? prefix.length : 0;
+  const version = zip64 ? 45 : 20;
+  const localExtra = zip64 ? 20 : 0;
+  const centralExtra = zip64 ? 28 : 0;
   const locals = [];
   const centrals = [];
   let offset = 0;
@@ -51,47 +66,82 @@ export function writeZip(files, { deflate = true, comment = "" } = {}) {
     const packed = deflate === true || (deflate instanceof Set && deflate.has(name));
     const body = packed ? new Uint8Array(deflateRawSync(data)) : data;
     const n = ascii(name);
-    const local = new Uint8Array(30 + n.length + body.length);
+    const local = new Uint8Array(30 + n.length + localExtra + body.length);
     const lv = new DataView(local.buffer);
     lv.setUint32(0, 0x04034b50, true);
-    lv.setUint16(4, 20, true);
+    lv.setUint16(4, version, true);
     lv.setUint16(8, packed ? 8 : 0, true);
     lv.setUint32(14, crc32(data), true);
-    lv.setUint32(18, body.length, true);
-    lv.setUint32(22, data.length, true);
+    lv.setUint32(18, zip64 ? 0xffffffff : body.length, true);
+    lv.setUint32(22, zip64 ? 0xffffffff : data.length, true);
     lv.setUint16(26, n.length, true);
+    lv.setUint16(28, localExtra, true);
     local.set(n, 30);
-    local.set(body, 30 + n.length);
-    const central = new Uint8Array(46 + n.length);
+    if (zip64) {
+      const x = 30 + n.length;
+      lv.setUint16(x, 0x0001, true);
+      lv.setUint16(x + 2, 16, true);
+      lv.setBigUint64(x + 4, BigInt(data.length), true);
+      lv.setBigUint64(x + 12, BigInt(body.length), true);
+    }
+    local.set(body, 30 + n.length + localExtra);
+    const central = new Uint8Array(46 + n.length + centralExtra);
     const cv = new DataView(central.buffer);
     cv.setUint32(0, 0x02014b50, true);
-    cv.setUint16(4, 20, true);
-    cv.setUint16(6, 20, true);
+    cv.setUint16(4, version, true);
+    cv.setUint16(6, version, true);
     cv.setUint16(10, packed ? 8 : 0, true);
     cv.setUint32(16, crc32(data), true);
-    cv.setUint32(20, body.length, true);
-    cv.setUint32(24, data.length, true);
+    cv.setUint32(20, zip64 ? 0xffffffff : body.length, true);
+    cv.setUint32(24, zip64 ? 0xffffffff : data.length, true);
     cv.setUint16(28, n.length, true);
-    cv.setUint32(42, offset, true);
+    cv.setUint16(30, centralExtra, true);
+    cv.setUint32(42, zip64 ? 0xffffffff : base + offset, true);
     central.set(n, 46);
+    if (zip64) {
+      const x = 46 + n.length;
+      cv.setUint16(x, 0x0001, true);
+      cv.setUint16(x + 2, 24, true);
+      cv.setBigUint64(x + 4, BigInt(data.length), true);
+      cv.setBigUint64(x + 12, BigInt(body.length), true);
+      cv.setBigUint64(x + 20, BigInt(base + offset), true);
+    }
     locals.push(local);
     centrals.push(central);
     offset += local.length;
   }
   const c = ascii(comment);
   const cdSize = centrals.reduce((a, b) => a + b.length, 0);
-  const out = new Uint8Array(offset + cdSize + 22 + c.length);
-  let pos = 0;
+  const zip64Tail = zip64 ? 56 + 20 : 0;
+  const out = new Uint8Array(prefix.length + offset + cdSize + zip64Tail + 22 + c.length);
+  out.set(prefix, 0);
+  let pos = prefix.length;
   for (const part of [...locals, ...centrals]) {
     out.set(part, pos);
     pos += part.length;
   }
+  if (zip64) {
+    // Zip64 end record (56 bytes) then its locator (20 bytes).
+    const zv = new DataView(out.buffer, pos, zip64Tail);
+    zv.setUint32(0, 0x06064b50, true);
+    zv.setBigUint64(4, 44n, true);
+    zv.setUint16(12, 45, true);
+    zv.setUint16(14, 45, true);
+    zv.setBigUint64(24, BigInt(centrals.length), true);
+    zv.setBigUint64(32, BigInt(centrals.length), true);
+    zv.setBigUint64(40, BigInt(cdSize), true);
+    zv.setBigUint64(48, BigInt(base + offset), true);
+    zv.setUint32(56, 0x07064b50, true);
+    zv.setBigUint64(64, BigInt(base + offset + cdSize), true);
+    zv.setUint32(72, 1, true);
+    pos += zip64Tail;
+  }
   const ev = new DataView(out.buffer, pos);
   ev.setUint32(0, 0x06054b50, true);
-  ev.setUint16(8, centrals.length, true);
-  ev.setUint16(10, centrals.length, true);
-  ev.setUint32(12, cdSize, true);
-  ev.setUint32(16, offset, true);
+  ev.setUint16(8, zip64 ? 0xffff : centrals.length, true);
+  ev.setUint16(10, zip64 ? 0xffff : centrals.length, true);
+  ev.setUint32(12, zip64 ? 0xffffffff : cdSize, true);
+  ev.setUint32(16, zip64 ? 0xffffffff : base + offset, true);
   ev.setUint16(20, c.length, true);
   out.set(c, pos + 22);
   return out;

@@ -134,6 +134,112 @@ describe("zip", () => {
     await expect(parseZip(bytes("PK"), inflate)).rejects.toThrow(/no end of central directory/);
   });
 
+  const stub = new Uint8Array(3000).fill(0x4d); // stands in for a self-extractor's code
+
+  it("opens a zip behind a stub, whether or not its offsets were adjusted", async () => {
+    for (const adjustOffsets of [false, true]) {
+      const zip = writeZip(files, { deflate: new Set(["textures/a.wal"]), prefix: stub, adjustOffsets });
+      const a = await openArchive(zip, inflate); // no "PK" at the start
+      expect(a.paths).toEqual(["textures/a.wal", "pics/colormap.pcx"]);
+      expect(await a.read("textures/a.wal")).toEqual(BIG);
+      expect(text(await a.read("pics/colormap.pcx"))).toBe("stored");
+    }
+  });
+
+  it("reads zip64 archives, plain, behind an unadjusted stub, and with a comment", async () => {
+    for (const opts of [{}, { prefix: stub }, { prefix: stub, adjustOffsets: true }, { comment: "zip64" }]) {
+      const zip = writeZip(files, { deflate: new Set(["textures/a.wal"]), zip64: true, ...opts });
+      const a = await openArchive(zip, inflate);
+      expect(a.paths).toEqual(["textures/a.wal", "pics/colormap.pcx"]);
+      expect(await a.read("textures/a.wal")).toEqual(BIG);
+      expect(text(await a.read("pics/colormap.pcx"))).toBe("stored");
+    }
+  });
+
+  it("takes only the marked fields from the zip64 extra field, as Info-ZIP -fz marks them", async () => {
+    // -fz marks only the central size; splice that shape into a one-entry zip.
+    const plain = writeZip({ "a.wal": BIG });
+    const pv = new DataView(plain.buffer);
+    const cd = pv.getUint32(plain.length - 22 + 16, true);
+    const nameEnd = cd + 46 + 5;
+    const extra = new Uint8Array(12);
+    const xv = new DataView(extra.buffer);
+    xv.setUint16(0, 0x0001, true);
+    xv.setUint16(2, 8, true);
+    xv.setBigUint64(4, BigInt(BIG.length), true);
+    const zip = new Uint8Array(plain.length + extra.length);
+    zip.set(plain.subarray(0, nameEnd));
+    zip.set(extra, nameEnd);
+    zip.set(plain.subarray(nameEnd), nameEnd + extra.length);
+    const v = new DataView(zip.buffer);
+    v.setUint32(cd + 24, 0xffffffff, true);
+    v.setUint16(cd + 30, extra.length, true);
+    v.setUint32(zip.length - 22 + 12, pv.getUint32(plain.length - 22 + 12, true) + extra.length, true);
+    expect(await (await parseZip(zip, inflate)).read("a.wal")).toEqual(BIG);
+  });
+
+  it("opens an adjusted self-extractor whose stub was stripped again", async () => {
+    const zip = writeZip(files, { prefix: stub, adjustOffsets: true }).subarray(stub.length);
+    expect(await (await parseZip(zip, inflate)).read("textures/a.wal")).toEqual(BIG);
+  });
+
+  it("uses the stored offset when bytes between the directory and end record are not a stub", async () => {
+    const plain = writeZip(files);
+    const eocd = plain.length - 22;
+    const zip = new Uint8Array(plain.length + 100);
+    zip.set(plain.subarray(0, eocd));
+    zip.set(plain.subarray(eocd), eocd + 100);
+    const a = await parseZip(zip, inflate);
+    expect(a.paths).toEqual(["textures/a.wal", "pics/colormap.pcx"]);
+    expect(await a.read("textures/a.wal")).toEqual(BIG);
+  });
+
+  it("falls back to the stored offset when a gap shifts the directory onto a later entry", async () => {
+    const plain = writeZip(files);
+    const eocd = plain.length - 22;
+    const gap = 46 + "textures/a.wal".length; // the first central entry's length
+    const zip = new Uint8Array(plain.length + gap);
+    zip.set(plain.subarray(0, eocd));
+    zip.set(plain.subarray(eocd), eocd + gap);
+    expect((await parseZip(zip, inflate)).paths).toEqual(["textures/a.wal", "pics/colormap.pcx"]);
+  });
+
+  it("walks the directory by its size, not an entry count that disagrees", async () => {
+    const zip = writeZip(files);
+    const v = new DataView(zip.buffer);
+    v.setUint16(zip.length - 22 + 8, 0xffff, true);
+    v.setUint16(zip.length - 22 + 10, 0xffff, true);
+    expect((await parseZip(zip, inflate)).paths).toEqual(["textures/a.wal", "pics/colormap.pcx"]);
+  });
+
+  /** Offset of the zip64 end record in a writeZip({ zip64: true }) archive with no comment. */
+  const record64 = (zip: Uint8Array) => zip.length - 22 - 20 - 56;
+
+  it("rejects an entry whose zip64 extra field is missing, per entry", async () => {
+    const zip = writeZip({ "a.txt": bytes("a"), "b.txt": bytes("b") }, { deflate: false, zip64: true });
+    const v = new DataView(zip.buffer);
+    const cd = Number(v.getBigUint64(record64(zip) + 48, true));
+    v.setUint16(cd + 46 + 5, 0x7075, true); // a.txt's extra block is no longer the zip64 one
+    const a = await parseZip(zip, inflate);
+    await expect(a.read("a.txt")).rejects.toThrow(/a.txt: zip64 extra field is missing/);
+    expect(text(await a.read("b.txt"))).toBe("b");
+  });
+
+  it("rejects broken zip64 end records", async () => {
+    const zip64 = writeZip({ "a.txt": bytes("a") }, { zip64: true });
+    const corrupt = (edit: (v: DataView, z: Uint8Array) => void) => {
+      const z = zip64.slice();
+      edit(new DataView(z.buffer), z);
+      return parseZip(z, inflate);
+    };
+    const locator = zip64.length - 22 - 20;
+    await expect(corrupt((v) => v.setUint32(locator, 0, true))).rejects.toThrow(/zip64 record that is not there/);
+    await expect(corrupt((v) => v.setUint32(locator + 16, 2, true))).rejects.toThrow(/multi-disk/);
+    await expect(corrupt((v) => v.setBigUint64(locator + 8, 1n << 40n, true))).rejects.toThrow(/locator is corrupt/);
+    await expect(corrupt((v, z) => v.setUint32(record64(z), 0, true))).rejects.toThrow(/record not found/);
+    await expect(corrupt((v, z) => v.setBigUint64(record64(z) + 40, 1n, true))).rejects.toThrow(/record is corrupt/);
+  });
+
   it("crc32 matches the standard check value", () => {
     expect(crc32(bytes("123456789"))).toBe(0xcbf43926);
   });
@@ -177,13 +283,21 @@ describe("range reads", () => {
     expect(reads).toEqual([[local, local + 30], [data, data + deflateRawSync(BIG).length]]);
   });
 
-  it("zip: reads only the directory's claimed size, not a gap before the end record", async () => {
+  it("zip: reads only the directory's claimed size, not the stub before it", async () => {
     const empty = writeZip({});
     const zip = new Uint8Array(100_000 + empty.length);
     zip.set(empty, 100_000); // the end record still says the directory is at offset 0
     const { source, reads } = spySource(zip);
     expect((await parseZip(source, inflate)).paths).toEqual([]);
-    expect(reads).toEqual([[zip.length - 22 - 0xffff, zip.length], [0, 0]]);
+    expect(reads).toEqual([[zip.length - 22 - 0xffff, zip.length], [100_000, 100_000]]);
+  });
+
+  it("zip64: opening still reads only the tail and the directory", async () => {
+    const zip = writeZip(files, { zip64: true });
+    const { source, reads } = spySource(zip);
+    await parseZip(source, inflate);
+    const cd = Number(new DataView(zip.buffer).getBigUint64(zip.length - 22 - 20 - 56 + 48, true));
+    expect(reads).toEqual([[0, zip.length], [cd, zip.length - 22 - 20 - 56]]);
   });
 
   it("reads a Blob by range", async () => {
