@@ -21,9 +21,6 @@ free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data (zip
 self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- The world's PVS is the eye's own cluster; brush models use a fat PVS reaching past
-  the near plane. An eye within a few units of a thin wall can show world faces of a
-  cluster the eye's one does not see. Use the same fat PVS for the world.
 - `lightmapExtents` computes in double, the engine in float; may differ by a luxel on
   non-axial texinfo. Check against a map with rotated or scaled textures.
 - A targeted func_train that a trigger_always fires (DelayedUse at 0.2 s, the second
