@@ -64,7 +64,7 @@ export class BrushMotion {
 
   /** The drawn origin of every moving entity at `ms`, by entity index; the arrays are the caller's. */
   originsAt(ms: number): Map<number, Vec3> {
-    // Stepping to an infinite time never ends.
+    // Steps one game frame per 100 ms: an infinite time never ends (a huge one takes as long).
     if (!Number.isFinite(ms)) throw new RangeError(`level time ${ms} ms is not finite`);
     const time = Math.max(0, Math.floor(ms));
     const serverframe = Math.ceil(time / 100);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { parseBsp, parseEntities } from "@quack2/sim";
+import { levelTimeAt, parseBsp, parseEntities, stepPusher } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
 import { doorMovers } from "../src/bmodels.js";
 import { BrushMotion, networkCoord } from "../src/movers.js";
@@ -95,21 +95,20 @@ describe("door movers", () => {
   it("records a door's move before the targets it fires: a toggle door its own targets use again goes up, then down", () => {
     // door_go_up's Move_Calc runs before G_UseTargets, whose relay uses the door again:
     // DOOR_TOGGLE at STATE_UP then sends it down, from where it already is.
-    const m = motion(`
+    const src = `
       { "classname" "worldspawn" }
       { "classname" "trigger_always" "target" "d" }
       { "classname" "func_door" "model" "*1" "targetname" "d" "target" "r" "angle" "-1" "spawnflags" "32" }
       { "classname" "trigger_relay" "targetname" "r" "target" "d" }
-    `);
+    `;
+    const m = motion(src);
     expect(at(m, 0)).toEqual({ 2: [0, 0, 0] });
     expect(at(m, 5000)).toEqual({ 2: [0, 0, 0] });
-    const [door] = doorMovers(bsp, parseEntities(`
-      { "classname" "worldspawn" }
-      { "classname" "trigger_always" "target" "d" }
-      { "classname" "func_door" "model" "*1" "targetname" "d" "target" "r" "angle" "-1" "spawnflags" "32" }
-      { "classname" "trigger_relay" "targetname" "r" "target" "d" }
-    `))[0]!;
+    const [door] = doorMovers(bsp, parseEntities(src))[0]!;
     expect(door!.mover.state).toBe("down");
+    // Frame 3: Move_Begin finds no distance left and door_hit_bottom runs.
+    stepPusher([door!.mover], levelTimeAt(3));
+    expect(door!.mover.state).toBe("bottom");
   });
 
   it("refuses a level time that is not finite, and hands out its own arrays", () => {
