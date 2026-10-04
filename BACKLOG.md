@@ -49,7 +49,7 @@ Remaining:
   linear doors' speeds go -Infinity and `stepPusher` sends their moving axis to
   -Infinity and the others to NaN. `linkedOrigins` hands those to the renderer's
   re-link; the drawn origins come out 0 0 0 through `networkCoord`. The same team with
-  a door whose "accel" is 0 or negative gives it accel -Infinity, so Think_AccelMove sets
+  a door whose "accel" or "decel" is negative gives it -Infinity there, so Think_AccelMove sets
   a NaN velocity: `stepPusher` reads NaN as at rest and leaves the door where it is, while
   SV_Push's velocity test reads NaN as moving and (int) of NaN gives INT_MIN on x86. The
   C is undefined in both ((int) of NaN or Inf in SV_Push); decide on a guard.
