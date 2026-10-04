@@ -101,12 +101,16 @@ Remaining:
   the game it moves out and back (door_secret_move1..6) and door_secret_done closes
   them (door_use_areaportals false) unless its "wait" is -1, about 5 s after by default.
 - A func_plat or func_button that is a team slave is left out of `brushMovers` and
-  drawn where it spawned. A door master's door_use runs door_go_up on it, which fires
-  its targets but moves only func_door and func_door_rotating: the member is left at
-  STATE_UP, so a button ignores every later button_fire. Under a door master
-  Think_CalcMoveSpeed gives it NaN speeds (its moveinfo.distance 0 makes the team's
-  time 0). A move its own Use_Plat or button_fire starts runs its thinks in its
-  master's slot (SV_Physics_Pusher). Model these with the train movers.
+  drawn where it spawned. A door master's door_use runs door_go_up on it, which moves
+  only func_door and func_door_rotating: a member at STATE_BOTTOM is set to STATE_UP
+  unmoved and fires its targets, so a button ignores button_fire until a DOOR_TOGGLE
+  master's next door_use runs door_go_down (STATE_DOWN, again unmoved); a targeted plat
+  starts at STATE_UP, so door_go_up returns at once and fires nothing; a button in its
+  wait (STATE_TOP) has button_return put off by its "wait". Under a door master
+  Think_CalcMoveSpeed gives it NaN speed, accel and decel (its moveinfo.distance 0
+  makes the team's time 0), so a move its own Use_Plat or button_fire starts goes
+  through Think_AccelMove with NaN. Any such move runs its thinks in its master's slot
+  (SV_Physics_Pusher). Model these with the train movers.
 - button_wait fires the button's targets (G_UseTargets) when it reaches the top, after
   the settle frames: nothing models uses after them, so a door, plat or portal a fired
   button targets stays as the settle frames left it.

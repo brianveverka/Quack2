@@ -570,8 +570,8 @@ describe("button movers", () => {
   `;
 
   it("reads a button's \"lip\" as an int", () => {
-    const [b] = brushMovers(bsp, parseEntities(`{ "classname" "worldspawn" }{ "classname" "func_button" "model" "*1" "angle" "-1" "lip" "4.9" }`));
-    expect(b![0]!.mover.endOrigin[2]).toBe(46);
+    const [b] = brushMovers(bsp, parseEntities(`{ "classname" "worldspawn" }{ "classname" "func_button" "model" "*1" "angle" "-1" "lip" "5.9" }`));
+    expect(b![0]!.mover.endOrigin[2]).toBe(45);
   });
 
   it("sets up a button as SP_func_button does, START_OPEN or not", () => {
