@@ -21,6 +21,7 @@ import {
   type Bsp,
   type BspEntity,
   type LinearMover,
+  type MoveSpeeds,
 } from "@quack2/sim";
 
 /** game/g_local.h: entities with this flag are freed at spawn in deathmatch. */
@@ -1132,6 +1133,23 @@ export interface MovingDoor {
   readonly mover: LinearMover;
 }
 
+function linearDoor(ent: BspEntity): boolean {
+  return ent.classname === "func_door" || ent.classname === "func_water";
+}
+
+/**
+ * The moveinfo Think_CalcMoveSpeed reads from a team member that is not a linear door:
+ * SP_func_door_rotating's ("distance", an int, default 90, and "speed", default 100 and
+ * not doubled, with accel and decel defaulting to it); every other spawn function leaves
+ * moveinfo.distance 0, and only a master's speed is read, which only a door's think runs.
+ */
+function teamSpeeds(ent: BspEntity): MoveSpeeds {
+  if (ent.classname !== "func_door_rotating") return { distance: 0, speed: 0, accel: 0, decel: 0 };
+  const field = (key: string) => f32(atof(ent[key] ?? "0"));
+  const speed = field("speed") || 100;
+  return { distance: f32(atoi(ent.distance ?? "0") || 90), speed, accel: field("accel") || speed, decel: field("decel") || speed };
+}
+
 /**
  * The linear doors (func_door, and func_water, which SP_func_water renames func_door) as
  * the two settle frames leave them, by team in master entity order, master first; a
@@ -1144,16 +1162,24 @@ export interface MovingDoor {
  * second the settle frames' uses send doors up or down (`doorUse`), from a DelayedUse's
  * slot, so each starts moving a frame later.
  *
- * A team with a member that is not a linear door (or has no inline model) is left out:
- * it is drawn where `brushModelInstances` puts it. A team's chain ends at the first
- * member a killtarget freed (G_FreeEdict zeroes its teamchain), and a team whose master
- * was freed never moves again (SV_Physics_Pusher returns for the slaves).
+ * Think_CalcMoveSpeed also runs for a func_door_rotating master, and reads every member
+ * of the chain (`teamSpeeds`): a func_door_rotating's distance is its "distance" in
+ * degrees, and every other class (a func_button, a func_wall) leaves moveinfo.distance
+ * 0, which makes the linear doors' speeds infinite, so they move all the way in one
+ * frame (Move_Final). A team keeps only its linear doors: the other members stay where
+ * `brushModelInstances` puts them. door_go_up moves no class but a func_door (by
+ * classname after spawn) and a func_door_rotating, whose AngleMove_Calc is not ported;
+ * a func_door_secret, which SP_func_door_secret also renames, is not modeled moving. A
+ * team with a linear door that has no inline model is left out. A team's
+ * chain ends at the first member a killtarget freed (G_FreeEdict zeroes its teamchain),
+ * and a team whose master was freed never moves again (SV_Physics_Pusher returns for the
+ * slaves).
  */
 export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor[][] {
   const { freed, doorMoves } = settleSpawnFrames(entities);
   const doors = new Map<number, MovingDoor>();
   entities.forEach((ent, i) => {
-    if (i === 0 || !inGame(ent) || (ent.classname !== "func_door" && ent.classname !== "func_water")) return;
+    if (i === 0 || !inGame(ent) || !linearDoor(ent)) return;
     const model = inlineModel(bsp, ent.model);
     if (model === undefined) return;
     const { mins, maxs } = modelBounds(bsp, model);
@@ -1191,11 +1217,13 @@ export function doorMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingDoor
   const teams: MovingDoor[][] = [];
   const moving = new Map<number, LinearMover>();
   for (const members of groups) {
-    const team = members.map((i) => doors.get(i));
-    if (!team.every((d) => d !== undefined)) continue;
-    if (entities[members[0]!]!.classname === "func_door") calcMoveSpeed(team.map((d) => d.mover));
-    const cut = team.findIndex((d) => freed.has(d.entity));
-    const live = cut < 0 ? team : team.slice(0, cut);
+    if (members.some((i) => linearDoor(entities[i]!) && !doors.has(i))) continue;
+    const master = entities[members[0]!]!.classname;
+    if (master === "func_door" || master === "func_door_rotating") {
+      calcMoveSpeed(members.map((i) => doors.get(i)?.mover ?? teamSpeeds(entities[i]!)));
+    }
+    const cut = members.findIndex((i) => freed.has(i));
+    const live = (cut < 0 ? members : members.slice(0, cut)).flatMap((i) => doors.get(i) ?? []);
     if (live.length === 0) continue;
     teams.push(live);
     for (const d of live) moving.set(d.entity, d.mover);

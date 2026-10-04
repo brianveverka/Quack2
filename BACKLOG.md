@@ -24,20 +24,20 @@ so the sky box is bounded by the sky faces in view), inline brush models where t
 has them after spawn (untargeted plats lowered, START_OPEN doors open, trains at their
 first path_corner or a teleport one after it, also when a trigger_always uses them,
 turrets turned to rest in their pitch/yaw range with their teams under a MOVETYPE_PUSH
-or STOP master), the linear doors the settle frames send moving drawn moving
-(`doorMovers`, stepped at the 10 Hz game frame by `BrushMotion` and blended as
+or STOP master), the linear doors the settle frames send moving drawn moving, also in
+teams with other members (`doorMovers`, stepped at the 10 Hz game frame by `BrushMotion` and blended as
 CL_AddPacketEntities does, re-linked each frame they move), culled by area, PVS and
 frustum, free-fly camera at the spawn spot and yaw SelectSpawnPoint gives the first
 deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (zip64
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- `doorMovers` leaves out a door team with a member that is not a linear door (a
-  func_door_rotating, a button): Think_CalcMoveSpeed would mix that member's
-  moveinfo.distance into the team's speeds, and its own move is not ported.
 - The mover lacks Think_AccelMove (an accel or decel unlike speed leaves it in place),
   AngleMove_Calc (func_door_rotating), the plat, train and button endfuncs, door_hit_bottom
-  closing portals, and blocked pushes (needs the box trace).
+  closing portals, and blocked pushes (needs the box trace). A func_door_rotating in a
+  team the settle frames send moving stays at its rest angles while its linear
+  teammates move; drawing it turning needs angles in `moveInstance` (cull.ts), which
+  moves origins only.
 - Only func_areaportal, doors, func_door_secret, trigger_relay, func_train, func_wall and
   func_object uses are modeled in the settle frames (and a train's pathtarget at a
   corner it reaches at once), and a door's or relay's own "delay" always defers its
