@@ -4,8 +4,8 @@ Milestones in order; each bullet is roughly one session. Chain sessions take the
 order (see CLAUDE.md, Orchestration).
 
 ## 1. Game data and renderer completeness
-The WebGL2 world renderer is in `packages/client` (faces, lightmaps with the deathmatch
-light styles animated at 10 Hz, warped surfaces moved per vertex as EmitWaterPolys does,
+The WebGL2 world renderer is in `packages/client` (faces, lightmaps sized in float as
+the win32 CalcSurfaceExtents does, with the deathmatch light styles animated at 10 Hz, warped surfaces moved per vertex as EmitWaterPolys does,
 translucent surfaces blended in R_DrawAlphaSurfaces' order, no lightmap on sky, warp or
 translucent faces, the worldspawn sky box drawn where the world's sky faces bound it
 (R_DrawSkyBox, with skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS
@@ -21,8 +21,6 @@ free-fly camera, `.wal` textures and `?map=` BSPs from mounted pak/zip data (zip
 self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- `lightmapExtents` computes in double, the engine in float; may differ by a luxel on
-  non-axial texinfo. Check against a map with rotated or scaled textures.
 - A targeted func_train that a trigger_always fires (DelayedUse at 0.2 s, the second
   settle frame) also runs train_next before clients see it, so it too jumps on to a
   TELEPORT path_corner after its first; only untargeted and START_ON trains do here.

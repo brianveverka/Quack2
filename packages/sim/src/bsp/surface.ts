@@ -44,24 +44,32 @@ export interface LightmapExtents {
 }
 
 /**
- * Lightmap placement of a face, derived from the texture-space bounds of its corners.
- * Computed in double precision; the reference engine accumulates in float, which can
- * only differ when a bound lands within float error of a multiple of 16. The fixture only
- * has axis-aligned, unscaled texinfo, so it cannot show such a mismatch.
+ * Lightmap placement of a face, derived from the texture-space bounds of its corners, as
+ * CalcSurfaceExtents computes it. The win32 engine sets x87 precision to 24 bits
+ * (`_controlfp(_PC_24)` before every frame, map loads included), so each product and sum
+ * rounds to float; Math.fround reproduces that, in the engine's left-to-right order. On
+ * rotated or scaled texinfo this can move a bound across a multiple of 16 and change the
+ * size by a luxel. ericw-tools light accumulates in long double and rounds once, so in that
+ * case the compiler's lightmap size differs too; the engine's is the one that reads it.
+ * The 999999 / -99999 starting bounds are the engine's.
  */
 export function lightmapExtents(bsp: Bsp, face: number): LightmapExtents {
-  const ti = bsp.faces.texinfo[face]!;
+  const f = Math.fround;
+  const v = bsp.texinfo.vecs;
+  const o = bsp.faces.texinfo[face]! * 8;
   const p = bsp.vertexes.position;
-  let minS = Infinity, minT = Infinity, maxS = -Infinity, maxT = -Infinity;
+  const mins = [999999, 999999], maxs = [-99999, -99999];
   for (const vi of faceVertexIndices(bsp, face)) {
-    const [s, t] = texCoord(bsp, ti, p[vi * 3]!, p[vi * 3 + 1]!, p[vi * 3 + 2]!);
-    minS = Math.min(minS, s);
-    maxS = Math.max(maxS, s);
-    minT = Math.min(minT, t);
-    maxT = Math.max(maxT, t);
+    const x = p[vi * 3]!, y = p[vi * 3 + 1]!, z = p[vi * 3 + 2]!;
+    for (let j = 0; j < 2; j++) {
+      const k = o + j * 4;
+      const val = f(f(f(f(x * v[k]!) + f(y * v[k + 1]!)) + f(z * v[k + 2]!)) + v[k + 3]!);
+      if (val < mins[j]!) mins[j] = val;
+      if (val > maxs[j]!) maxs[j] = val;
+    }
   }
-  const bminS = Math.floor(minS / LIGHTMAP_SCALE), bmaxS = Math.ceil(maxS / LIGHTMAP_SCALE);
-  const bminT = Math.floor(minT / LIGHTMAP_SCALE), bmaxT = Math.ceil(maxT / LIGHTMAP_SCALE);
+  const bminS = Math.floor(mins[0]! / LIGHTMAP_SCALE), bmaxS = Math.ceil(maxs[0]! / LIGHTMAP_SCALE);
+  const bminT = Math.floor(mins[1]! / LIGHTMAP_SCALE), bmaxT = Math.ceil(maxs[1]! / LIGHTMAP_SCALE);
   return {
     textureMinS: bminS * LIGHTMAP_SCALE,
     textureMinT: bminT * LIGHTMAP_SCALE,

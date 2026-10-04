@@ -95,6 +95,20 @@ describe("lightmap extents", () => {
     expect(lightmapExtents(shifted, 2)).toEqual({ textureMinS: 224, textureMinT: -256, width: 2, height: 16 });
   });
 
+  it("rounds each step to float, as the engine does, on rotated and scaled texinfo", () => {
+    // Face 2's corners are (232, 256, 0), (232, 32, 0), (224, 32, 0). This s axis is
+    // rotated about 127 degrees and scaled by 1.31; (232, 256, 0) lands at s = 48 in
+    // double (and in ericw-tools' long double), but at 48.0000038 when each product and
+    // sum rounds to float, so the engine's ceil takes one more luxel column.
+    const rotated = parseBsp(bytes);
+    const o = rotated.faces.texinfo[2]! * 8;
+    rotated.texinfo.vecs.set([-0.4723064601421356, 0.6223167777061462, 0, -1.7379963397979736], o);
+    const v = rotated.texinfo.vecs;
+    const exactMax = 232 * v[o]! + 256 * v[o + 1]! + v[o + 3]!;
+    expect(exactMax).toBe(48);
+    expect(lightmapExtents(rotated, 2)).toMatchObject({ textureMinS: -96, width: 11 });
+  });
+
   it("integrity check flags a lightmap that runs past the lighting lump", () => {
     const broken = parseBsp(bytes);
     const f = bsp.faces.lightOfs.findIndex((o) => o !== -1);
