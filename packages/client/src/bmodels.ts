@@ -377,20 +377,117 @@ function freedAtSpawn(e: BspEntity): boolean {
   return false;
 }
 
-/** Whether an entity is still in the game after spawning in deathmatch. */
+/** Whether an entity is still in the game after spawning in deathmatch, where G_FreeEdict lets it go (`spawnEntities`). */
 function inGame(e: BspEntity): boolean {
   return !(atoi(e.spawnflags ?? "0") & SPAWNFLAG_NOT_DEATHMATCH) && !freedAtSpawn(e);
 }
 
 /**
- * G_FindTeams: the in-game entities with the same "team", compared case sensitively, by
- * entity index in entity order; the first of each is its master, the rest are
- * FL_TEAMSLAVE. Edict 0 (worldspawn) is never in a team.
+ * g_local.h BODY_QUEUE_SIZE: G_FreeEdict refuses edict 0, the clients and the 8 edicts
+ * after them, which are the first that G_Spawn hands out.
  */
-function findTeams(entities: readonly BspEntity[]): Map<string, number[]> {
+const BODY_QUEUE_SIZE = 8;
+
+/**
+ * What SpawnEntities leaves of a map entity: "spawned" (its spawn function ran and kept
+ * it), "free" (its edict was freed for the next G_Spawn), or "raw": in use but inert,
+ * as G_FreeEdict refused to free it (`spawnEntities`). A raw entity has its parsed keys
+ * (classname, targetname, team, origin, style, spawnflags) but no think, use, model or
+ * movetype, and its moveinfo is zero, so G_Find and G_FindTeams still find it.
+ */
+type SpawnStatus = "spawned" | "raw" | "free";
+
+/** The edicts after SpawnEntities (`spawnEntities`). */
+interface Edicts {
+  /** G_RunFrame's walk: edict 0, then edict maxclients + p at slot p (the clients run nothing here). */
+  slots: Slot[];
+  /** Each spawned or raw entity's index in `slots`. */
+  slotOf: Map<number, number>;
+  /** By entity index. Entity 0 is edict 0, "spawned" as `inGame` says, else "free" (BACKLOG.md). */
+  status: SpawnStatus[];
+}
+
+/**
+ * SpawnEntities in deathmatch. Entity 0 fills edict 0 and every later one takes G_Spawn's
+ * edict: the lowest free one above the clients (one freed at level.time 0 is always
+ * reusable), else a new one at the end. Spawn functions G_Spawn too: SP_worldspawn's
+ * InitBodyQue (8 edicts), SP_func_plat's and SP_misc_teleporter's triggers, and
+ * SP_trigger_always's DelayedUse (G_UseTargets, as SP_trigger_always raises "delay" to at
+ * least 0.2 s). An entity with no key at all is zeroed by ED_ParseEdict, which frees its
+ * edict whatever its number. One a NOT_DEATHMATCH spawnflag inhibits, or whose spawn
+ * function frees it (`freedAtSpawn`; every such function frees before it sets anything),
+ * is freed unless its edict is one G_FreeEdict refuses: with entity 0 a worldspawn the
+ * body queue holds those, otherwise the first entities and their spawned edicts do, and
+ * such an entity stays raw. A later worldspawn entity's InitBodyQue is modeled here only
+ * for the edicts it takes (BACKLOG.md).
+ */
+function spawnEntities(entities: readonly BspEntity[]): Edicts {
+  const slots: Slot[] = [0];
+  const slotOf = new Map<number, number>([[0, 0]]);
+  const status: SpawnStatus[] = [];
+  const spawn = (slot: Slot): number => {
+    const free = slots.indexOf(null, 1);
+    if (free >= 0) {
+      slots[free] = slot;
+      return free;
+    }
+    return slots.push(slot) - 1;
+  };
+  const initBodyQue = () => {
+    for (let k = 0; k < BODY_QUEUE_SIZE; k++) spawn("inert");
+  };
+  entities.forEach((e, i) => {
+    if (i === 0) {
+      status.push(inGame(e) ? "spawned" : "free");
+      // ED_CallSpawn matches classnames case sensitively.
+      if (e.classname === "worldspawn") initBodyQue();
+      return;
+    }
+    const p = spawn(i);
+    if (Object.keys(e).length === 0) {
+      slots[p] = null;
+      status.push("free");
+      return;
+    }
+    if (!inGame(e)) {
+      if (p <= BODY_QUEUE_SIZE) {
+        slotOf.set(i, p);
+        status.push("raw");
+      } else {
+        slots[p] = null;
+        status.push("free");
+      }
+      return;
+    }
+    slotOf.set(i, p);
+    status.push("spawned");
+    switch (e.classname) {
+      case "worldspawn":
+        initBodyQue();
+        break;
+      case "func_plat":
+      case "misc_teleporter":
+        spawn("inert");
+        break;
+      case "trigger_always": {
+        const delay = Math.fround(atof(e.delay ?? "0"));
+        spawn({ nextthink: Math.max(delay, Math.fround(0.2)), inFrame: false, target: e.target, killtarget: e.killtarget });
+        break;
+      }
+    }
+  });
+  return { slots, slotOf, status };
+}
+
+/**
+ * G_FindTeams: the spawned and raw entities with the same "team", compared case
+ * sensitively, by entity index in entity order; the first of each is its master, the
+ * rest are FL_TEAMSLAVE. Edict 0 (worldspawn) is never in a team.
+ */
+function findTeams(entities: readonly BspEntity[], status: readonly SpawnStatus[]): Map<string, number[]> {
   const teams = new Map<string, number[]>();
   entities.forEach((e, i) => {
-    if (i === 0 || !inGame(e) || e.team === undefined) return;
+    if (i === 0 || status[i] === "free" || e.team === undefined) return;
     const members = teams.get(e.team);
     if (members) members.push(i);
     else teams.set(e.team, [i]);
@@ -480,8 +577,7 @@ function breachThink(b: Breach): [number, number] | undefined {
  * the master's slot, SV_Physics_Pusher turns every member on the master's teamchain by its
  * avelocity (`turretPush`), then runs the members' thinks in team order. A breach's think
  * (`turretThink`) sets its own pitch velocity and the yaw velocity of every member of its
- * team (G_FindTeams: the in-game entities with the same "team", compared case sensitively,
- * in entity order), so the last breach in a team sets the yaw every member turns by. A
+ * team (`findTeams`), so the last breach in a team sets the yaw every member turns by. A
  * breach with no team turns alone here; the stock game crashes on it
  * (turret_breach_finish_init writes through its NULL teammaster).
  *
@@ -522,22 +618,24 @@ interface TurretTeam {
 
 /**
  * The turret teams, by master (a breach with no team is its own): the teams with a
- * turret_breach under a PUSHER_CLASSES master. A team is not run from the first think
+ * spawned turret_breach under a spawned PUSHER_CLASSES master (a raw one is MOVETYPE_NONE,
+ * and a raw breach never thinks). A team is not run from the first think
  * that meets a breach angle of NORMALIZE_LIMIT or more, or one not finite, where the
  * game's AnglesNormalize loops for 370000 steps or more, or forever (NaN cannot come
  * from `atof`).
  */
-function turretTeams(entities: readonly BspEntity[]): Map<number, TurretTeam> {
+function turretTeams(entities: readonly BspEntity[], status: readonly SpawnStatus[]): Map<number, TurretTeam> {
   const groups: number[][] = [];
+  const breach = (i: number) => status[i] === "spawned" && entities[i]!.classname === "turret_breach";
   entities.forEach((e, i) => {
-    if (i > 0 && inGame(e) && e.team === undefined && e.classname === "turret_breach") groups.push([i]);
+    if (i > 0 && breach(i) && e.team === undefined) groups.push([i]);
   });
-  for (const members of findTeams(entities).values()) {
-    if (PUSHER_CLASSES.has(entities[members[0]!]!.classname ?? "")) groups.push(members);
+  for (const members of findTeams(entities, status).values()) {
+    if (status[members[0]!] === "spawned" && PUSHER_CLASSES.has(entities[members[0]!]!.classname ?? "")) groups.push(members);
   }
   const teams = new Map<number, TurretTeam>();
   for (const members of groups) {
-    const breachAt = members.map((i) => (entities[i]!.classname === "turret_breach" ? breachState(entities[i]!, i) : undefined));
+    const breachAt = members.map((i) => (breach(i) ? breachState(entities[i]!, i) : undefined));
     if (breachAt.every((b) => b === undefined)) continue;
     const master = entities[members[0]!]!;
     const released = master.classname === "func_object" && (atoi(master.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK) === 0;
@@ -697,14 +795,17 @@ export interface BrushModelInstances {
  * info_player_deathmatch, else the first info_player_start without a "targetname" (a map
  * loaded directly has no game.spawnpoint), else the first info_player_start. G_Find
  * matches classnames case insensitively and skips freed entities, and the first entity
- * (edict 0) too unless SP_worldspawn marked it in use. With no player in the
+ * (edict 0) too unless SP_worldspawn marked it in use; it finds raw ones (`spawnEntities`),
+ * whose origin and angles are as parsed. With no player in the
  * game yet, SelectFarthestDeathmatchSpawnPoint takes the first deathmatch spot, and
  * SelectRandomDeathmatchSpawnPoint draws among the first count - 2 (all of them when
  * there are two or fewer), so the first is the one spot both dmflags modes can give.
  * PutClientInServer then faces the player along the spot's yaw (`entityAngles`), level.
  */
 export function playerSpawnSpot(entities: readonly BspEntity[]): BspEntity | undefined {
-  const spots = (classname: string) => entities.filter((e, i) => i > 0 && inGame(e) && stricmpEqual(e.classname ?? "", classname));
+  const { status } = spawnEntities(entities);
+  const spots = (classname: string) =>
+    entities.filter((e, i) => i > 0 && status[i] !== "free" && stricmpEqual(e.classname ?? "", classname));
   const starts = spots("info_player_start");
   return spots("info_player_deathmatch")[0] ?? starts.find((e) => e.targetname === undefined) ?? starts[0];
 }
@@ -818,10 +919,12 @@ interface DelayedUse {
 }
 
 /**
- * An edict slot in the settle frames: a map entity by index, a DelayedUse, a door's
- * trigger (Think_SpawnDoorTrigger's, which never thinks), or free (null).
+ * An edict slot in the settle frames: a map entity by index, a DelayedUse, an edict that
+ * never thinks and has no "targetname" (a body queue edict, a func_plat's,
+ * misc_teleporter's or door's trigger, a DelayedUse that ran where G_FreeEdict refused
+ * to free it), or free (null).
  */
-type Slot = number | DelayedUse | "doorTrigger" | null;
+type Slot = number | DelayedUse | "inert" | null;
 
 /** Game state the settle frames' use chains read and change. */
 interface Settle {
@@ -830,9 +933,11 @@ interface Settle {
   byTargetname: Map<string, number[]>;
   /** Entities a killtarget freed. */
   freed: Set<number>;
+  /** Raw entities (`spawnEntities`): found, but with no use or think. */
+  raw: ReadonlySet<number>;
   /** The edicts G_RunFrame walks in both frames, in slot order (`settleSpawnFrames`). */
   slots: Slot[];
-  /** Each in-game entity's index in `slots`. */
+  /** Each spawned or raw entity's index in `slots`. */
   slotOf: Map<number, number>;
   /** Edicts appended to `slots` so far (MAX_SPAWNED). */
   spawned: number;
@@ -874,9 +979,9 @@ interface Settle {
   portalCount: Map<number, number>;
   /** gi.SetAreaPortalState writes, last one wins; portals never written stay closed. */
   portals: Map<number, boolean>;
-  /** Every in-game func_train's mover, by entity index. */
+  /** Every spawned func_train's mover, by entity index. */
   trains: Map<number, BrushMover>;
-  /** The mover of every in-game func_rotating that is no team's slave and on no turret_breach's team, by entity index. */
+  /** The mover of every spawned func_rotating that is no team's slave and on no turret_breach's team, by entity index. */
   rotating: Map<number, BrushMover>;
   /** The func_train (movetarget) of each trigger_elevator whose trigger_elevator_init gave it its use. */
   elevators: Map<number, number>;
@@ -917,8 +1022,9 @@ function spawnState(ent: BspEntity): MoveState {
   return "top";
 }
 
+/** An entity's moveinfo.state: a raw one's is 0, STATE_TOP. */
 function moveState(s: Settle, index: number): MoveState {
-  return s.moveState.get(index) ?? spawnState(s.entities[index]!);
+  return s.moveState.get(index) ?? (s.raw.has(index) ? "top" : spawnState(s.entities[index]!));
 }
 
 /**
@@ -932,7 +1038,7 @@ function liveClassname(ent: BspEntity): string {
   return ent.classname === "func_water" || ent.classname === "func_door_secret" ? "func_door" : (ent.classname ?? "");
 }
 
-/** G_Find on "targetname": in-game entities not freed, matched case insensitively, in entity order (worldspawn included). */
+/** G_Find on "targetname": spawned and raw entities not freed, matched case insensitively, in entity order (worldspawn included). */
 function* findTargets(s: Settle, name: string): Generator<number> {
   for (const i of s.byTargetname.get(asciiLower(name)) ?? []) {
     // Checked as the scan reaches each entity, so a killtarget freeing one ahead skips it.
@@ -961,17 +1067,22 @@ function doorUseAreaportals(s: Settle, index: number, open: boolean): void {
   for (const p of areaportalsOf(s, index)) s.portals.set(p, open);
 }
 
-/** G_FreeEdict on a map entity: freed, and its slot free for G_Spawn (freetime < 2). */
+/**
+ * G_FreeEdict on a map entity: freed, and its slot free for G_Spawn (freetime < 2),
+ * unless it is in edict 0 or a body queue edict (BODY_QUEUE_SIZE), which it refuses.
+ */
 function freeEdict(s: Settle, index: number): void {
+  const slot = s.slotOf.get(index)!;
+  if (slot <= BODY_QUEUE_SIZE) return;
   s.freed.add(index);
-  s.slots[s.slotOf.get(index)!] = null;
+  s.slots[slot] = null;
 }
 
 /**
  * G_Spawn in the settle frames: the first free slot (every slot freed so far is reusable,
  * as freetime < 2), else a new one at the end, which G_RunFrame still reaches this frame.
  */
-function spawnEdict(s: Settle, d: DelayedUse | "doorTrigger"): void {
+function spawnEdict(s: Settle, d: DelayedUse | "inert"): void {
   const free = s.slots.indexOf(null);
   if (free >= 0) s.slots[free] = d;
   else if (s.spawned < MAX_SPAWNED) {
@@ -994,8 +1105,7 @@ function useTargets(s: Settle, user: User): void {
   const gone = () => user.index >= 0 && s.freed.has(user.index);
   if (user.killtarget !== undefined) {
     for (const t of findTargets(s, user.killtarget)) {
-      // G_FreeEdict refuses worldspawn (and the client and body queue edicts before the map's).
-      if (t !== 0) freeEdict(s, t);
+      freeEdict(s, t);
       if (gone()) return;
     }
   }
@@ -1016,7 +1126,8 @@ function useTargets(s: Settle, user: User): void {
  * moveinfo.state door_go_up reads. The rest are not modeled and do nothing here.
  */
 function use(s: Settle, index: number, other: number): void {
-  if (s.budget <= 0 || s.depth >= MAX_USE_DEPTH) return;
+  // G_UseTargets calls only a set use, and a raw entity's spawn function never set one.
+  if (s.raw.has(index) || s.budget <= 0 || s.depth >= MAX_USE_DEPTH) return;
   s.budget--;
   s.depth++;
   try {
@@ -1065,8 +1176,8 @@ function useOne(s: Settle, index: number, other: number): void {
       return;
     }
     case "target_crosslevel_trigger":
-      // trigger_crosslevel_trigger_use sets serverflags and frees itself (G_FreeEdict refuses worldspawn).
-      if (index !== 0) freeEdict(s, index);
+      // trigger_crosslevel_trigger_use sets serverflags and frees itself.
+      freeEdict(s, index);
       return;
     case "func_wall":
     case "func_object":
@@ -1379,12 +1490,14 @@ function elevatorInit(s: Settle, index: number): void {
  * else that entity becomes the train's target_ent and the train resumes towards it
  * (train_resume), its move begun at once as `trainCurrent` says. A train freed since
  * init is left alone: the game moves its freed edict, or returns on the nextthink of a
- * DelayedUse G_Spawn put there; neither is drawn or opens a portal.
+ * DelayedUse G_Spawn put there; neither is drawn or opens a portal. So is a raw train,
+ * which train_resume sends on with zero moveinfo (BACKLOG.md).
  */
 function elevatorUse(s: Settle, index: number, other: number): void {
   const train = s.elevators.get(index);
   if (train === undefined || s.freed.has(train)) return;
-  const m = s.trains.get(train)!;
+  const m = s.trains.get(train);
+  if (!m) return;
   if (m.nextthink !== 0) return;
   const pathtarget = other >= 0 ? s.entities[other]!.pathtarget : undefined;
   const corner = pathtarget === undefined ? undefined : pathCorner(s, pathtarget);
@@ -1425,8 +1538,11 @@ function doorToggles(ent: BspEntity): boolean {
 /**
  * door_use: a team slave ignores it; otherwise every member of the team, whatever its
  * class, goes up (door_go_up), or, for a DOOR_TOGGLE master already up or going up, down.
- * door_go_up returns for a member up, going up or at STATE_TOP (`spawnState`). A member
- * freed by a killtarget ends the walk.
+ * door_go_up returns for a member up, going up or at STATE_TOP (`moveState`); at the top
+ * it sets nextthink to level.time + wait, which for a raw member (wait 0, no think) makes
+ * the server error in its next SV_RunThink, not modeled. door_go_down on a raw member runs
+ * Move_Calc on zero moveinfo, not modeled beyond the state (BACKLOG.md). A member freed
+ * by a killtarget ends the walk.
  */
 function doorUse(s: Settle, index: number): void {
   if (s.slaves.has(index)) return;
@@ -1457,19 +1573,20 @@ function doorUse(s: Settle, index: number): void {
 
 /**
  * The two frames SV_SpawnServer runs to settle the map before any client is sent an
- * entity: the area portals left open, where every in-game func_train is, the entities
+ * entity: the area portals left open, where every spawned func_train is, the entities
  * a killtarget freed, and the func_wall and func_object entities a use showed or hid.
  *
  * Area portals start closed (CM_SetAreaPortalState; SP_func_areaportal leaves them so;
  * a portal is its entity's "style").
  *
- * Edict slots: SpawnEntities refills a slot an entity freed at spawn with the next one, so
- * the in-game entities lie in entity order, each trigger_always's DelayedUse right after
- * it. Both frames run them in slot order, skipping slots freed earlier in the frame.
+ * Edict slots are as SpawnEntities leaves them (`spawnEntities`). Both frames run them in
+ * slot order, skipping slots freed earlier in the frame. A raw entity does nothing in
+ * either: it is MOVETYPE_NONE with no think, and found (G_Find, G_FindTeams) but not used.
+ * G_FreeEdict refuses the slots up to BODY_QUEUE_SIZE (`freeEdict`).
  *
  * First frame: a func_door or func_door_rotating with no "health" and no "targetname"
  * that is no team slave runs Think_SpawnDoorTrigger: it G_Spawns its trigger (`spawnEdict`)
- * and, if START_OPEN, opens every portal door_use_areaportals finds: in-game entities
+ * and, if START_OPEN, opens every portal door_use_areaportals finds: spawned and raw entities
  * whose classname is func_areaportal and whose "targetname" is the door's "target",
  * compared case insensitively (G_Find, Q_stricmp). Every train not yet freed runs
  * func_train_find (`trainFind`) at its own slot, except a team slave: SV_Physics_Pusher
@@ -1491,12 +1608,11 @@ function doorUse(s: Settle, index: number): void {
  * Second frame: a train runs its think if due, at its own slot or a slave's in its
  * master's walk, after every member on the chain is pushed (SV_Physics_Pusher:
  * train_next for a START_ON one, or what a use earlier in the frame left it). Every
- * in-game trigger_always fires its targets through a DelayedUse (SP_trigger_always
- * raises "delay" to at least 0.2 s; one above that comes due later and is skipped),
- * which G_Spawn placed right after it: freed slots are refilled by the next spawn, so
- * none lies earlier. A use with a "delay" spawns a DelayedUse into the first slot freed
- * so far in this frame (a killtarget's, or a DelayedUse's that ran), else after every
- * slot; it fires in this frame if it is due and its slot lies ahead (`useTargets`).
+ * spawned trigger_always fires its targets through the DelayedUse it spawned (one due
+ * after 0.2 s is skipped). A use with a "delay" spawns a DelayedUse into the first free
+ * slot (one a killtarget freed, or a DelayedUse that ran, in this frame, or one left
+ * free at spawn), else after every slot; it fires in this frame if it is due and its
+ * slot lies ahead (`useTargets`).
  * Likewise a think due in this frame (`runThink`: multi_wait, func_timer_think,
  * target_explosion_explode) runs at the entity's slot, and earlier at a PUSHER_CLASSES
  * master's along its teamchain, after the master's turret team is pushed (`turretPush`)
@@ -1539,10 +1655,12 @@ function settleSpawnFrames(
   /** `areaportalsOf` as the settle frames leave the map: nothing is freed after them. */
   areaportalsOf: (index: number) => number[];
 } {
+  const { slots, slotOf, status } = spawnEntities(entities);
+  const spawned = (i: number) => status[i] === "spawned";
   const teams = new Map<number, number[]>();
   const slaves = new Set<number>();
   const teammaster = new Map<number, number>();
-  for (const members of findTeams(entities).values()) {
+  for (const members of findTeams(entities, status).values()) {
     teams.set(members[0]!, members);
     for (const i of members.slice(1)) {
       slaves.add(i);
@@ -1551,27 +1669,17 @@ function settleSpawnFrames(
   }
   const byTargetname = new Map<string, number[]>();
   entities.forEach((e, i) => {
-    if (e.targetname === undefined || !inGame(e)) return;
+    if (e.targetname === undefined || status[i] === "free") return;
     const key = asciiLower(e.targetname);
     const list = byTargetname.get(key);
     if (list) list.push(i);
     else byTargetname.set(key, [i]);
   });
-  // SP_trigger_always raises "delay" to at least 0.2 s, at level.time 0.
-  const slots: Slot[] = [];
-  const slotOf = new Map<number, number>();
-  entities.forEach((e, i) => {
-    if (i !== 0 && !inGame(e)) return;
-    slotOf.set(i, slots.length);
-    slots.push(i);
-    if (i === 0 || e.classname !== "trigger_always") return;
-    const delay = Math.fround(atof(e.delay ?? "0"));
-    slots.push({ nextthink: Math.max(delay, Math.fround(0.2)), inFrame: false, target: e.target, killtarget: e.killtarget });
-  });
   const s: Settle = {
     entities,
     byTargetname,
     freed: new Set(),
+    raw: new Set(entities.flatMap((_, i) => (status[i] === "raw" ? [i] : []))),
     slots,
     slotOf,
     spawned: 0,
@@ -1598,22 +1706,22 @@ function settleSpawnFrames(
     depth: 0,
   };
   entities.forEach((e, i) => {
-    if (e.classname !== "func_train" || !inGame(e)) return;
+    if (e.classname !== "func_train" || !spawned(i)) return;
     const model = bsp && inlineModel(bsp, e.model);
     const mins: Vec3 = bsp && model !== undefined ? modelBounds(bsp, model).mins : [0, 0, 0];
     s.trains.set(i, trainMover(s, i, mins));
   });
   const breachTeams = new Set(
-    [...teams.values()].filter((m) => m.some((i) => entities[i]!.classname === "turret_breach")).flat(),
+    [...teams.values()].filter((m) => m.some((i) => spawned(i) && entities[i]!.classname === "turret_breach")).flat(),
   );
   entities.forEach((e, i) => {
-    if (e.classname !== "func_rotating" || !inGame(e) || slaves.has(i) || breachTeams.has(i)) return;
+    if (e.classname !== "func_rotating" || !spawned(i) || slaves.has(i) || breachTeams.has(i)) return;
     const m = brushMover(rotatingMover(e));
     if (atoi(e.spawnflags ?? "0") & ROTATING_START_ON) rotatingUse(m);
     s.rotating.set(i, m);
   });
   entities.forEach((e, i) => {
-    if (!inGame(e)) return;
+    if (!spawned(i)) return;
     if (e.classname === "func_timer") {
       const think = timerSpawnThink(e);
       if (think !== 0) s.nextthink.set(i, think);
@@ -1621,11 +1729,12 @@ function settleSpawnFrames(
     // SP_trigger_elevator thinks trigger_elevator_init at level.time + FRAMETIME.
     if (e.classname === "trigger_elevator") s.nextthink.set(i, f32(FRAMETIME));
   });
-  const turrets = turretTeams(entities);
-  // The first frame, in slot order (a slot freed earlier in it is skipped).
+  const turrets = turretTeams(entities, status);
+  // The first frame, in slot order (a slot freed earlier in it is skipped). A raw entity
+  // is MOVETYPE_NONE with no think: SV_Physics_None does nothing for it.
   const first = levelTimeAt(1);
   for (const slot of [...s.slots]) {
-    if (typeof slot !== "number" || s.freed.has(slot)) continue;
+    if (typeof slot !== "number" || s.freed.has(slot) || s.raw.has(slot)) continue;
     const ent = entities[slot]!;
     // Nothing turns yet: turret_breach_finish_init sets the first velocities below.
     const turret = turrets.get(slot);
@@ -1644,7 +1753,7 @@ function settleSpawnFrames(
       ent.targetname === undefined
     ) {
       // Think_SpawnDoorTrigger: G_Spawn the door's trigger, then open its portals if START_OPEN.
-      spawnEdict(s, "doorTrigger");
+      spawnEdict(s, "inert");
       if (atoi(ent.spawnflags ?? "0") & DOOR_START_OPEN) doorUseAreaportals(s, slot, true);
     }
     // A door master's think (Think_CalcMoveSpeed, or Think_SpawnDoorTrigger, which ends in
@@ -1673,7 +1782,7 @@ function settleSpawnFrames(
       const slaveTrain = p > 0 ? s.trains.get(m) : undefined;
       if (slaveTrain) trainFind(s, m, slaveTrain);
       if (s.freed.has(m)) break;
-      if (entities[m]!.classname !== "turret_breach") continue;
+      if (!spawned(m) || entities[m]!.classname !== "turret_breach") continue;
       const t = pickTarget(s, entities[m]!.target);
       if (t !== undefined && t !== 0) freeEdict(s, t);
       if (s.freed.has(m)) break;
@@ -1686,6 +1795,7 @@ function settleSpawnFrames(
     const slot = s.slots[p]!;
     s.budget = MAX_USES;
     if (typeof slot === "number") {
+      if (s.raw.has(slot)) continue;
       const members = teams.get(slot);
       const walk = members && PUSHER_CLASSES.has(entities[slot]!.classname ?? "") ? members : undefined;
       // SV_Physics_Pusher pushes every member on a PUSH or STOP master's teamchain (up to
@@ -1728,20 +1838,21 @@ function settleSpawnFrames(
           if (slaveTrain) trainThink(slaveTrain);
           if (s.freed.has(m)) break;
           if (turret) turretThink(turret, p);
-          if (ITEM_CLASSES.has(entities[m]!.classname ?? "")) {
+          if (spawned(m) && ITEM_CLASSES.has(entities[m]!.classname ?? "")) {
             if (turret) turret.chain = p + 1;
             break;
           }
         }
       } else if (turret) turretThink(turret, 0);
-    } else if (slot !== null && slot !== "doorTrigger" && slot.nextthink > 0 && slot.nextthink <= SECOND_FRAME_DUE) {
-      // SV_RunThink: a nextthink at or below 0 never runs. Think_Delay frees the slot after its uses.
+    } else if (slot !== null && slot !== "inert" && slot.nextthink > 0 && slot.nextthink <= SECOND_FRAME_DUE) {
+      // SV_RunThink: a nextthink at or below 0 never runs. Think_Delay frees the slot after
+      // its uses, if G_FreeEdict lets it; SV_RunThink zeroed its nextthink either way.
       if (slot.inFrame) s.budget = s.spawnedBudget;
       s.current = p;
       useTargets(s, { index: -1, classname: "DelayedUse", target: slot.target, killtarget: slot.killtarget, delay: 0 });
       s.current = -1;
       if (slot.inFrame) s.spawnedBudget = s.budget;
-      s.slots[p] = null;
+      s.slots[p] = p <= BODY_QUEUE_SIZE ? "inert" : null;
     }
   }
   for (const m of s.trains.values()) m.train!.usePathtarget = undefined;
@@ -1950,14 +2061,15 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
   const frames = settleSpawnFrames(entities, bsp);
   const { freed, moves, areaportalsOf, trains, rotating } = frames;
   const turrets = settleTurrets(frames.turrets, freed);
-  const groups = [...findTeams(entities).values()];
+  const { status } = spawnEntities(entities);
+  const groups = [...findTeams(entities, status).values()];
   const teamed = new Set(groups.flat());
   // A team's master, a team of one included, is not a FL_TEAMSLAVE: Use_Plat or
   // button_use moves it.
   const slaves = new Set(groups.flatMap((g) => g.slice(1)));
   const doors = new Map<number, MovingBrush>();
   entities.forEach((ent, i) => {
-    if (i === 0 || !inGame(ent)) return;
+    if (i === 0 || status[i] !== "spawned") return;
     const plat = ent.classname === "func_plat" && !slaves.has(i);
     const button = ent.classname === "func_button" && !slaves.has(i);
     const train = ent.classname === "func_train" && !slaves.has(i);
@@ -2024,7 +2136,7 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
   const teams: MovingBrush[][] = [];
   const moving = new Map<number, BrushMover>();
   for (const members of groups) {
-    if (members.some((i) => movingDoor(entities[i]!) && !doors.has(i))) continue;
+    if (members.some((i) => status[i] === "spawned" && movingDoor(entities[i]!) && !doors.has(i))) continue;
     const master = entities[members[0]!]!.classname;
     if (master === "func_door" || master === "func_door_rotating") {
       calcMoveSpeed(members.map((i) => doors.get(i)?.mover ?? NO_MOVE));

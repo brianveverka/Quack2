@@ -293,7 +293,7 @@ describe("brush model instances", () => {
     });
 
     it("moves a func_train's mins to the first entity its target names", () => {
-      expect(place(`
+      expect(place(`{ "classname" "worldspawn" }
         { "classname" "func_train" "model" "*1" "origin" "5 5 5" "target" "T1" }
         { "classname" "path_corner" "targetname" "t1" "origin" "1 1 1" "spawnflags" "2048" }
         { "classname" "path_corner" "targetname" "t1" "origin" "100 200 300" }
@@ -794,7 +794,7 @@ describe("brush model instances", () => {
       // Kept: a func_wall leads, and turns the team.
       expect(team(`{ "classname" "func_wall" "model" "*1" "team" "a" }`)).toEqual([80, 90, 80]);
       // A train skips a freed monster with its corner's targetname.
-      expect(place(`
+      expect(place(`{ "classname" "worldspawn" }
         { "classname" "func_train" "model" "*1" "target" "c" }
         { "classname" "monster_tank_commander" "targetname" "c" "origin" "1 1 1" }
         { "classname" "path_corner" "targetname" "c" "origin" "100 200 300" }
@@ -1313,5 +1313,170 @@ describe("area portals open at spawn", () => {
           { "classname" "func_door" "targetname" "m" "team" "t" "target" "p" }`),
       ).toEqual([3]);
     });
+  });
+});
+
+describe("edicts G_FreeEdict refuses (BODY_QUEUE_SIZE)", () => {
+  // With no worldspawn first, InitBodyQue never runs, and the first 8 edicts G_Spawn hands
+  // out (slots 1 to 8 here) go to map entities and the edicts their spawn functions spawn.
+  const notnull = (n: number) => `{ "classname" "info_notnull" } `.repeat(n);
+  const portal = (extra = "") => `{ "classname" "func_areaportal" "targetname" "p" "style" "3" ${extra} }`;
+  const open = (src: string) => [...openAreaPortals(parseEntities(src))];
+
+  it("a killtarget cannot free an entity in one", () => {
+    const drawn = (src: string) => brushModelInstances(bsp, parseEntities(src)).instances.map((b) => b.entity);
+    const wall = `{ "classname" "func_wall" "model" "*1" "targetname" "w" }`;
+    const always = `{ "classname" "trigger_always" "killtarget" "w" }`;
+    // The trigger_always takes slot 1 and its DelayedUse 2.
+    expect(drawn(`{ "classname" "info_null" } ${always} ${notnull(5)} ${wall}`)).toEqual([7]);
+    expect(drawn(`{ "classname" "info_null" } ${always} ${notnull(6)} ${wall}`)).toEqual([]);
+    expect(drawn(`{ "classname" "worldspawn" } ${always} ${wall}`)).toEqual([]);
+  });
+
+  it("an entity inhibited or freed at spawn in one stays in use, and G_Find finds it", () => {
+    // The train takes slot 1 and goes to the first corner G_Find gives: x 1 if that one is in use.
+    const x = (src: string, first = `{ "classname" "info_null" }`) =>
+      brushModelInstances(
+        bsp,
+        parseEntities(`${first} { "classname" "func_train" "model" "*1" "target" "c" } ${src}
+          { "classname" "path_corner" "targetname" "c" "origin" "1 0 0" "spawnflags" "2048" }
+          { "classname" "path_corner" "targetname" "c" "origin" "2 0 0" }`),
+      ).instances.map((b) => b.origin[0] - 385);
+    expect(x(notnull(6))).toEqual([1]);
+    expect(x(notnull(7))).toEqual([2]);
+    expect(x(notnull(6), `{ "classname" "worldspawn" }`)).toEqual([2]);
+    expect(x(notnull(6), `{ }`)).toEqual([1]);
+    // ED_ParseEdict zeroes an entity with no key, freeing its edict.
+    expect(x(`{ } `.repeat(7) + notnull(6))).toEqual([1]);
+    expect(x(`{ "_c" "" } ` + notnull(6))).toEqual([2]);
+    // Spawned edicts: func_plat's and misc_teleporter's triggers, trigger_always's DelayedUse.
+    expect(x(`{ "classname" "func_plat" } `.repeat(3))).toEqual([1]);
+    expect(x(`{ "classname" "func_plat" } `.repeat(4))).toEqual([2]);
+    expect(x(`{ "classname" "misc_teleporter" "target" "n" } `.repeat(4))).toEqual([2]);
+    expect(x(`{ "classname" "misc_teleporter" } `.repeat(6))).toEqual([1]); // freed, so raw
+    expect(x(`{ "classname" "trigger_always" } `.repeat(4))).toEqual([2]);
+    expect(x(`{ "classname" "monster_soldier" } `.repeat(6))).toEqual([1]);
+    expect(x(`{ "classname" "info_notnull" "spawnflags" "2048" } `.repeat(6))).toEqual([1]);
+    // A later worldspawn's InitBodyQue takes 8.
+    expect(x(`{ "classname" "worldspawn" }`)).toEqual([2]);
+    expect(x(`{ "classname" "Worldspawn" }`)).toEqual([1]);
+  });
+
+  it("a raw entity has no use, but door_use_areaportals and G_FindTeams find it", () => {
+    const always = `{ "classname" "trigger_always" "target" "p" }`;
+    expect(open(`{ "classname" "info_null" } ${always} ${portal(`"spawnflags" "2048"`)}`)).toEqual([]);
+    expect(open(`{ "classname" "info_null" } ${always} ${portal()}`)).toEqual([3]);
+    const door = `{ "classname" "func_door" "target" "p" "spawnflags" "1" }`;
+    expect(open(`{ "classname" "info_null" } ${door} ${portal(`"spawnflags" "2048"`)}`)).toEqual([3]);
+    expect(open(`{ "classname" "worldspawn" } ${door} ${portal(`"spawnflags" "2048"`)}`)).toEqual([]);
+    // A raw master keeps the START_OPEN door a slave.
+    const team = (first: string) =>
+      open(`${first} { "classname" "func_door" "team" "t" "spawnflags" "2048" }
+        { "classname" "func_door" "team" "t" "target" "p" "spawnflags" "1" } ${portal()}`);
+    expect(team(`{ "classname" "info_null" }`)).toEqual([]);
+    expect(team(`{ "classname" "worldspawn" }`)).toEqual([3]);
+  });
+
+  it("door_go_up leaves a raw team member at STATE_TOP", () => {
+    const team = (flags: string) =>
+      open(`{ "classname" "info_null" } { "classname" "trigger_always" "target" "d" }
+        { "classname" "func_door" "targetname" "d" "team" "t" }
+        { "classname" "func_door" "team" "t" "target" "p" "spawnflags" "${flags}" } ${portal()}`);
+    expect(team("0")).toEqual([3]);
+    expect(team("2048")).toEqual([]);
+    // Its team still moves.
+    const movers = brushMovers(
+      bsp,
+      parseEntities(`{ "classname" "info_null" } { "classname" "trigger_always" "target" "d" }
+        { "classname" "func_door" "model" "*1" "targetname" "d" "team" "t" }
+        { "classname" "func_door" "model" "*1" "team" "t" "spawnflags" "2048" }`),
+    );
+    expect(movers.map((t) => t.map((d) => d.entity))).toEqual([[2]]);
+  });
+
+  it("a raw entity never thinks", () => {
+    // A raw START_OPEN door spawns no trigger and opens nothing.
+    expect(open(`{ "classname" "info_null" } { "classname" "func_door" "target" "p" "spawnflags" "2049" } ${portal()}`)).toEqual([]);
+    // A raw door master is MOVETYPE_NONE: its slave train never runs func_train_find.
+    const train = (flags: string) =>
+      brushModelInstances(
+        bsp,
+        parseEntities(`{ "classname" "info_null" } { "classname" "func_door" "team" "t" "spawnflags" "${flags}" }
+          { "classname" "func_train" "model" "*1" "team" "t" "target" "c" }
+          { "classname" "path_corner" "targetname" "c" "origin" "1 0 0" }`),
+      ).instances.map((b) => b.origin[0]);
+    expect(train("0")).toEqual([386]);
+    expect(train("2048")).toEqual([0]);
+    // A raw turret_breach neither turns its team nor frees its target.
+    const turret = (flags: string) =>
+      brushModelInstances(
+        bsp,
+        parseEntities(`{ "classname" "info_null" } { "classname" "func_wall" "model" "*1" "team" "a" }
+          { "classname" "turret_breach" "model" "*1" "minyaw" "80" "maxyaw" "100" "team" "a" "target" "w" "spawnflags" "${flags}" }
+          ${notnull(6)} { "classname" "func_wall" "model" "*1" "targetname" "w" }`),
+      ).instances.map((b) => [b.entity, Math.round(b.angles[1])]);
+    expect(turret("0")).toEqual([
+      [1, 80],
+      [2, 80],
+    ]);
+    expect(turret("2048")).toEqual([
+      [1, 0],
+      [9, 0],
+    ]);
+  });
+
+  it("a raw team master or member does nothing in a teamchain walk", () => {
+    const yaws = (src: string) =>
+      brushModelInstances(bsp, parseEntities(`{ "classname" "info_null" } ${src}`)).instances.map((b) => Math.round(b.angles[1]));
+    const breach = (flags = "0") =>
+      `{ "classname" "turret_breach" "model" "*1" "minyaw" "80" "maxyaw" "100" "team" "a" "spawnflags" "${flags}" }`;
+    // A raw pusher master never runs SV_Physics_Pusher, so its breach never thinks.
+    expect(yaws(`{ "classname" "func_wall" "model" "*1" "team" "a" } ${breach()}`)).toEqual([80, 80]);
+    expect(yaws(`{ "classname" "func_wall" "model" "*1" "team" "a" "spawnflags" "2048" } ${breach()}`)).toEqual([0]);
+    // A raw item has no droptofloor to end the chain.
+    const item = (flags: string) =>
+      yaws(`{ "classname" "func_wall" "model" "*1" "team" "a" } { "classname" "weapon_shotgun" "team" "a" "spawnflags" "${flags}" } ${breach()}`);
+    expect(item("2048")).toEqual([80, 80]);
+    expect(item("0")).not.toEqual([80, 80]);
+    // A raw breach leaves a func_rotating master turning.
+    const rotor = `{ "classname" "func_rotating" "model" "*1" "team" "a" "spawnflags" "1" "speed" "100" }`;
+    expect(yaws(rotor + breach("2048"))).toEqual(yaws(rotor));
+    expect(yaws(rotor)).not.toEqual([0]);
+    // A raw pusher master's slot runs no member's think: multi_wait stays due at the
+    // trigger_multiple's own slot, after b's use, which it then ignores.
+    const multi = (flags: string) =>
+      open(`{ "classname" "info_null" } { "classname" "trigger_always" "target" "m" }
+        { "classname" "func_wall" "team" "a" "spawnflags" "${flags}" } { "classname" "trigger_always" "target" "m" }
+        { "classname" "trigger_multiple" "targetname" "m" "team" "a" "target" "p" "wait" "0.0001" } ${portal()}`);
+    expect(multi("2048")).toEqual([3]);
+    expect(multi("0")).toEqual([]);
+  });
+
+  it("a trigger_elevator's raw func_train does not move", () => {
+    expect(
+      open(`{ "classname" "info_null" } { "classname" "trigger_elevator" "targetname" "e" "target" "tr" }
+        { "classname" "func_train" "targetname" "tr" "spawnflags" "2048" }
+        { "classname" "trigger_always" "target" "e" } ${portal()}`),
+    ).toEqual([]);
+  });
+
+  it("a DelayedUse that ran in one stays in use", () => {
+    // DelayedUse a (slot 2) runs first; b's relay then spawns one due this frame, which
+    // reuses a's slot, behind, unless a's is still in use.
+    const src = (first: string) =>
+      open(`${first} { "classname" "trigger_always" "target" "none" } { "classname" "trigger_always" "target" "r" }
+        { "classname" "trigger_relay" "targetname" "r" "target" "p" "delay" "0.0001" } ${portal()}`);
+    expect(src(`{ "classname" "info_null" }`)).toEqual([3]);
+    expect(src(`{ "classname" "worldspawn" }`)).toEqual([]);
+  });
+
+  it("G_Find finds a raw spawn spot", () => {
+    const spot = (first: string) =>
+      playerSpawnSpot(
+        parseEntities(`${first} { "classname" "info_player_deathmatch" "origin" "1 0 0" "spawnflags" "2048" }
+          { "classname" "info_player_deathmatch" "origin" "2 0 0" }`),
+      )?.origin;
+    expect(spot(`{ "classname" "info_null" }`)).toBe("1 0 0");
+    expect(spot(`{ "classname" "worldspawn" }`)).toBe("2 0 0");
   });
 });
