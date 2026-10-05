@@ -639,6 +639,8 @@ const DOOR_TOGGLE = 32;
  * stored as a float) plus 0.001, in double.
  */
 const SECOND_FRAME_DUE = Math.fround(2 * FRAMETIME) + 0.001;
+/** The same in the first settle frame, at level.time FRAMETIME. */
+const FIRST_FRAME_DUE = Math.fround(FRAMETIME) + 0.001;
 /**
  * Edicts G_Spawn may append in the settle frames (door triggers, DelayedUses); the rest are
  * dropped, which ends a chain of tiny delays that spawns faster than it frees. The game errors
@@ -712,10 +714,13 @@ interface Settle {
   /** Plats Use_Plat sent down: Move_Calc gave them a think, so later uses return. */
   platsMoving: Set<number>;
   /**
-   * nextthink multi_trigger gave a trigger_once, trigger_multiple or trigger_counter: while
-   * nonzero its later uses return. multi_wait zeroes it when due (`settleSpawnFrames`).
+   * nextthink of the entities whose think the walk models (`runThink`): a trigger_once,
+   * trigger_multiple or trigger_counter's from multi_trigger (while nonzero its later uses
+   * return), a func_timer's and a target_explosion's.
    */
-  multiThink: Map<number, number>;
+  nextthink: Map<number, number>;
+  /** target_explosion entities in target_explosion_explode, whose "delay" it has cleared. */
+  exploding: Set<number>;
   /** trigger_counter_use's count, by entity, once a use changed it. */
   counterCount: Map<number, number>;
   /** TRIGGERED trigger_once and trigger_multiple entities trigger_enable gave Use_Multi. */
@@ -926,6 +931,16 @@ function useOne(s: Settle, index: number): void {
       }
       return;
     }
+    case "func_timer":
+      timerUse(s, index);
+      return;
+    case "target_explosion": {
+      // use_target_explosion explodes now without a "delay", else thinks it at level.time + delay.
+      const delay = s.exploding.has(index) ? 0 : f32(atof(ent.delay ?? "0"));
+      if (delay === 0) explode(s, index);
+      else s.nextthink.set(index, f32(levelTimeAt(2) + delay));
+      return;
+    }
     case "func_plat":
       // Use_Plat returns once Move_Calc has given the plat a think, else plat_go_down.
       if (!s.platsMoving.has(index)) {
@@ -953,11 +968,105 @@ function multiTriggered(ent: BspEntity): boolean {
  * no positive wait it thinks G_FreeEdict a frame later, after the settle frames.
  */
 function multiTrigger(s: Settle, index: number): void {
-  if ((s.multiThink.get(index) ?? 0) !== 0) return;
+  if ((s.nextthink.get(index) ?? 0) !== 0) return;
   useTargets(s, userOf(s, index));
   const ent = s.entities[index]!;
   const wait = ent.classname === "trigger_multiple" ? Math.fround(atof(ent.wait ?? "0")) || Math.fround(0.2) : -1;
-  s.multiThink.set(index, f32(levelTimeAt(2) + (wait > 0 ? wait : FRAMETIME)));
+  s.nextthink.set(index, f32(levelTimeAt(2) + (wait > 0 ? wait : FRAMETIME)));
+}
+
+/** A func_timer's "wait" as SP_func_timer leaves it: 1 if unset or 0. */
+function timerWait(ent: BspEntity): number {
+  const wait = f32(atof(ent.wait ?? "0"));
+  return wait === 0 ? 1 : wait;
+}
+
+/**
+ * crandom() * random for a func_timer, taking crandom() as 0 where the game draws it in
+ * [-1, 1], never exactly 0 (`pickTarget` likewise takes the first match). SP_func_timer
+ * lowers a random at or above wait to wait - FRAMETIME. One still infinite gives an
+ * infinite product of either sign in the game, taken as +Infinity; with another infinite
+ * summand the game's nextthink is then infinite or NaN by the draw, and this picks one.
+ */
+function timerJitter(ent: BspEntity, wait: number): number {
+  const r = f32(atof(ent.random ?? "0"));
+  const random = r >= wait ? f32(wait - FRAMETIME) : r;
+  return random === Infinity || random === -Infinity ? Infinity : 0 * random;
+}
+
+/**
+ * A START_ON func_timer's nextthink after SP_func_timer, at level.time 0:
+ * 1.0 + pausetime + delay + wait + crandom() * random, summed in double and stored as a
+ * float. 0 for one not START_ON.
+ */
+function timerSpawnThink(ent: BspEntity): number {
+  if ((atoi(ent.spawnflags ?? "0") & 1) === 0) return 0;
+  const wait = timerWait(ent);
+  return f32(1.0 + f32(atof(ent.pausetime ?? "0")) + f32(atof(ent.delay ?? "0")) + wait + timerJitter(ent, wait));
+}
+
+/**
+ * func_timer_think at level.time `time`: fire its targets (through a DelayedUse if it has
+ * a "delay"), then think again at level.time + wait + crandom() * random. Uses run only
+ * in the second frame: one due in the first fires nothing here (BACKLOG.md).
+ */
+function timerThink(s: Settle, index: number, time: number): void {
+  if (time === levelTimeAt(2)) useTargets(s, userOf(s, index));
+  const ent = s.entities[index]!;
+  const wait = timerWait(ent);
+  s.nextthink.set(index, f32(f32(time + wait) + timerJitter(ent, wait)));
+}
+
+/**
+ * func_timer_use: a timer that has a nextthink is turned off; else it thinks at
+ * level.time + delay with a "delay", or at once without.
+ */
+function timerUse(s: Settle, index: number): void {
+  if ((s.nextthink.get(index) ?? 0) !== 0) {
+    s.nextthink.set(index, 0);
+    return;
+  }
+  const delay = f32(atof(s.entities[index]!.delay ?? "0"));
+  if (delay !== 0) s.nextthink.set(index, f32(levelTimeAt(2) + delay));
+  else timerThink(s, index, levelTimeAt(2));
+}
+
+/**
+ * target_explosion_explode: fires its targets with its "delay" cleared, so a use that
+ * reaches it meanwhile explodes it again at once. Its T_RadiusDamage (a "dmg" above 0)
+ * needs the entities' bounds and is not modeled.
+ */
+function explode(s: Settle, index: number): void {
+  // A nested explode saves and restores the cleared 0: the delay stays cleared until the outer one returns.
+  const outer = s.exploding.has(index);
+  s.exploding.add(index);
+  try {
+    useTargets(s, { ...userOf(s, index), delay: 0 });
+  } finally {
+    if (!outer) s.exploding.delete(index);
+  }
+}
+
+/**
+ * SV_RunThink in a settle frame for an entity whose think the walk models: none at or
+ * below 0 or past level.time + 0.001 (compared as the C does, so a NaN runs), and
+ * nextthink is zeroed before the think. multi_wait does nothing more.
+ */
+function runThink(s: Settle, index: number, frame: 1 | 2): void {
+  const think = s.nextthink.get(index) ?? 0;
+  if (think <= 0 || think > (frame === 1 ? FIRST_FRAME_DUE : SECOND_FRAME_DUE)) return;
+  s.nextthink.set(index, 0);
+  const current = s.current;
+  s.current = index;
+  switch (s.entities[index]!.classname) {
+    case "func_timer":
+      timerThink(s, index, levelTimeAt(frame));
+      break;
+    case "target_explosion":
+      explode(s, index);
+      break;
+  }
+  s.current = current;
 }
 
 /** G_PickTarget, taking the first of several matches where the game picks one at random. */
@@ -1161,7 +1270,8 @@ function doorUse(s: Settle, index: number): void {
  * func_train_find (`trainFind`) at its own slot, a team slave's included (BACKLOG.md). A train's mins are its inline model's in `bsp`, else 0 0 0 (without
  * `bsp`, or a train with no inline model). A breach on a team whose master is in
  * PUSHER_CLASSES runs turret_breach_finish_init in the master's slot, along the
- * teamchain up to a freed member, freeing its target.
+ * teamchain up to a freed member, freeing its target. A START_ON func_timer due by then
+ * thinks again at level.time + wait, its targets unfired (uses here are not modeled).
  *
  * Second frame: a train runs its think if due
  * (SV_Physics_Pusher: train_next for a START_ON one, or what a use earlier in the frame
@@ -1172,6 +1282,9 @@ function doorUse(s: Settle, index: number): void {
  * none lies earlier. A use with a "delay" spawns a DelayedUse into the first slot freed
  * so far in this frame (a killtarget's, or a DelayedUse's that ran), else after every
  * slot; it fires in this frame if it is due and its slot lies ahead (`useTargets`).
+ * Likewise a think due in this frame (`runThink`: multi_wait, func_timer_think,
+ * target_explosion_explode) runs at the entity's slot, and earlier at a PUSHER_CLASSES
+ * master's along its teamchain.
  * Slots droptofloor frees (a start-solid item, in the second frame) need the trace and
  * are not modeled, nor is a target_crosslevel_target with a "delay" up to about 0.2
  * firing and freeing itself in either frame. G_UseTargets first frees its killtargets, then uses its targets: a
@@ -1180,7 +1293,8 @@ function doorUse(s: Settle, index: number): void {
  * 0 0 0 opens its portals, a trigger_relay fires its targets, a trigger_once,
  * trigger_multiple or trigger_counter passes it on as multi_trigger does (`multiTrigger`;
  * a TRIGGERED one is armed by its first, a counter fires as its count runs out), a train runs train_use
- * (`trainUseIn`),
+ * (`trainUseIn`), a func_timer is turned off, or on (`timerUse`), a target_explosion fires
+ * its targets or thinks them at level.time + delay (its radius damage is not modeled),
  * a func_wall or func_object is shown or hidden (`wallUse`); an entity a killtarget
  * freed is not drawn. Other use functions are not modeled, nor are a team slave train's
  * thinks (both func_train_find and train_next) running in its master's slot.
@@ -1239,7 +1353,8 @@ function settleSpawnFrames(
     moveState: new Map(),
     moves: [],
     platsMoving: new Set(),
-    multiThink: new Map(),
+    nextthink: new Map(),
+    exploding: new Set(),
     counterCount: new Map(),
     multiEnabled: new Set(),
     portalCount: new Map(),
@@ -1256,12 +1371,18 @@ function settleSpawnFrames(
     const mins: Vec3 = bsp && model !== undefined ? modelBounds(bsp, model).mins : [0, 0, 0];
     s.trains.set(i, trainMover(s, i, mins));
   });
+  entities.forEach((e, i) => {
+    if (e.classname !== "func_timer" || !inGame(e)) return;
+    const think = timerSpawnThink(e);
+    if (think !== 0) s.nextthink.set(i, think);
+  });
   // The first frame, in slot order (a slot freed earlier in it is skipped).
   for (const slot of [...s.slots]) {
     if (typeof slot !== "number" || s.freed.has(slot)) continue;
     const ent = entities[slot]!;
     const train = s.trains.get(slot);
     if (train) trainFind(s, slot, train);
+    runThink(s, slot, 1);
     if (
       (ent.classname === "func_door" || ent.classname === "func_door_rotating") &&
       !slaves.has(slot) &&
@@ -1273,11 +1394,13 @@ function settleSpawnFrames(
       if (atoi(ent.spawnflags ?? "0") & DOOR_START_OPEN) doorUseAreaportals(s, slot, true);
     }
     // SV_Physics_Pusher runs a PUSH or STOP master's team thinks along its teamchain, which
-    // ends at a freed member. turret_breach_finish_init frees the breach's target
-    // (G_PickTarget; the game crashes on a target that names nothing).
+    // ends at a freed member (G_FreeEdict clears its teamchain). turret_breach_finish_init
+    // frees the breach's target (G_PickTarget; the game crashes on a target that names nothing).
     const members = teams.get(slot);
     if (!members || !PUSHER_CLASSES.has(ent.classname ?? "")) continue;
     for (const m of members) {
+      if (s.freed.has(m)) break;
+      runThink(s, m, 1);
       if (s.freed.has(m)) break;
       if (entities[m]!.classname !== "turret_breach") continue;
       const t = pickTarget(s, entities[m]!.target);
@@ -1290,14 +1413,10 @@ function settleSpawnFrames(
     const slot = s.slots[p]!;
     s.budget = MAX_USES;
     if (typeof slot === "number") {
-      // multi_wait, if a use earlier in this frame set a wait due in it: in the trigger's own
-      // slot, and also in a PUSH or STOP master's slot (earlier) for each teamchain member,
-      // after the master's push and own think (SV_Physics_Pusher).
-      const multiWait = (i: number) => {
-        const think = s.multiThink.get(i) ?? 0;
-        if (think > 0 && think <= SECOND_FRAME_DUE) s.multiThink.set(i, 0);
-      };
-      multiWait(slot);
+      // A modeled think due in this frame (`runThink`): in the entity's own slot, and also
+      // in a PUSH or STOP master's slot (earlier) for each teamchain member, after the
+      // master's push and own think (SV_Physics_Pusher).
+      runThink(s, slot, 2);
       const train = s.trains.get(slot);
       if (train) {
         s.current = slot;
@@ -1308,7 +1427,8 @@ function settleSpawnFrames(
       if (members && PUSHER_CLASSES.has(entities[slot]!.classname ?? "")) {
         for (const m of members) {
           if (s.freed.has(m)) break;
-          multiWait(m);
+          runThink(s, m, 2);
+          if (s.freed.has(m)) break;
         }
       }
     } else if (slot !== null && slot !== "doorTrigger" && slot.nextthink > 0 && slot.nextthink <= SECOND_FRAME_DUE) {
