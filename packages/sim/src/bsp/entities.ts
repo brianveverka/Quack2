@@ -4,7 +4,7 @@
 // word (COM_Parse splits only on whitespace). Compiler output parses identically.
 // Braces are tested as SpawnEntities and ED_ParseEdict test them, by a token's first
 // character, quoted or not: a "{..." token opens an entity, a "}..." key closes it, a
-// "}..." value is an error, and a key "{" is an ordinary key.
+// "}..." value is an error, and a "{..." key or value is ordinary text.
 
 export class EntityParseError extends Error {
   override name = "EntityParseError";

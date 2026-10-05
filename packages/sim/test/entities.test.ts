@@ -100,8 +100,9 @@ describe("parseEntities", () => {
     // A "{..." token opens an entity and a "}..." key closes it.
     expect(parseEntities('"{x" "a" "1" "}" "{" "b" "2" "}y"')).toEqual([{ a: "1" }, { b: "2" }]);
     expect(parseEntities('{ "a" "1" }')).toEqual([{ a: "1" }]);
-    // A key "{" is an ordinary key.
+    // A "{" key or value is ordinary text.
     expect(parseEntities('{ { "1" "{" "2" }')).toEqual([{ "{": "2" }]);
+    expect(parseEntities('{ "a" { "b" "{x" }')).toEqual([{ a: "{", b: "{x" }]);
   });
 
   it("entityVec3 rejects malformed vectors", () => {
