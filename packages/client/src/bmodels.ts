@@ -193,6 +193,7 @@ function spawnMove(
   angles: Vec3,
 ): { origin: Vec3; angles: Vec3 } {
   const flags = atoi(ent.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK;
+  const at = origin.map(f32) as Vec3;
   switch (ent.classname) {
     // SP_func_plat: pos2 is the bottom, "height" below the top or the plat's height less
     // "lip" (default 8). Only a plat something targets starts at the top.
@@ -214,10 +215,10 @@ function spawnMove(
       const distance = atoi(ent.distance ?? "0") || 90;
       const open: Vec3 = [0, 0, 0];
       open[axis] = flags & DOOR_REVERSE ? -distance : distance;
-      return { origin, angles: open };
+      return { origin: at, angles: open };
     }
   }
-  return { origin, angles };
+  return { origin: at, angles };
 }
 
 /** Classes whose spawn function always frees them in deathmatch, before G_FindTeams (lights, monsters, single-player props and goals). */

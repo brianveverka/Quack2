@@ -50,8 +50,9 @@ import {
 
 // The warp is EmitWaterPolys per vertex: r_turbsin packed four to a vec4 (a float[256]
 // would take 256 uniform vectors, all WebGL2 guarantees). int() truncates as the C cast
-// does and `& 255` wraps negatives as two's complement does. Here the argument is
-// evaluated in single precision, the engine's in double, so a vertex near a table step
+// does in int's range (past it GLSL leaves it undefined, `cInt` gives INT_MIN) and
+// `& 255` wraps negatives as two's complement does. Here the argument is evaluated in
+// single precision, the engine's in double, so a vertex near a table step
 // can pick the neighbouring entry. uScroll is in st units on a warp (EmitWaterPolys adds
 // it before the 1/64) and in texture widths otherwise (v[3] + scroll in gl_rsurf.c).
 const VS = `#version 300 es
