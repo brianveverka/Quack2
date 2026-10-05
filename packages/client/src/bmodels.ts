@@ -719,6 +719,8 @@ interface Settle {
    * return), a func_timer's and a target_explosion's.
    */
   nextthink: Map<number, number>;
+  /** target_explosion entities in target_explosion_explode, whose "delay" it has cleared. */
+  exploding: Set<number>;
   /** trigger_counter_use's count, by entity, once a use changed it. */
   counterCount: Map<number, number>;
   /** TRIGGERED trigger_once and trigger_multiple entities trigger_enable gave Use_Multi. */
@@ -934,7 +936,7 @@ function useOne(s: Settle, index: number): void {
       return;
     case "target_explosion": {
       // use_target_explosion explodes now without a "delay", else thinks it at level.time + delay.
-      const delay = f32(atof(ent.delay ?? "0"));
+      const delay = s.exploding.has(index) ? 0 : f32(atof(ent.delay ?? "0"));
       if (delay === 0) explode(s, index);
       else s.nextthink.set(index, f32(levelTimeAt(2) + delay));
       return;
@@ -981,12 +983,14 @@ function timerWait(ent: BspEntity): number {
 
 /**
  * crandom() * random for a func_timer, taking crandom() as 0 where the game draws it in
- * (-1, 1) (`pickTarget` likewise takes the first match). Kept as a product so an infinite
- * "random" still gives NaN; SP_func_timer lowers a random at or above wait to wait - FRAMETIME.
+ * (-1, 1), never exactly 0 (`pickTarget` likewise takes the first match). SP_func_timer
+ * lowers a random at or above wait to wait - FRAMETIME. One still infinite gives an
+ * infinite product of either sign in the game, taken as +Infinity; a NaN stays NaN.
  */
 function timerJitter(ent: BspEntity, wait: number): number {
-  const random = f32(atof(ent.random ?? "0"));
-  return 0 * (random >= wait ? f32(wait - FRAMETIME) : random);
+  const r = f32(atof(ent.random ?? "0"));
+  const random = r >= wait ? f32(wait - FRAMETIME) : r;
+  return random === Infinity || random === -Infinity ? Infinity : 0 * random;
 }
 
 /**
@@ -1027,11 +1031,19 @@ function timerUse(s: Settle, index: number): void {
 }
 
 /**
- * target_explosion_explode: fires its targets with its "delay" cleared. Its
- * T_RadiusDamage (a "dmg" above 0) needs the entities' bounds and is not modeled.
+ * target_explosion_explode: fires its targets with its "delay" cleared, so a use that
+ * reaches it meanwhile explodes it again at once. Its T_RadiusDamage (a "dmg" above 0)
+ * needs the entities' bounds and is not modeled.
  */
 function explode(s: Settle, index: number): void {
-  useTargets(s, { ...userOf(s, index), delay: 0 });
+  // A nested explode saves and restores the cleared 0: the delay stays cleared until the outer one returns.
+  const outer = s.exploding.has(index);
+  s.exploding.add(index);
+  try {
+    useTargets(s, { ...userOf(s, index), delay: 0 });
+  } finally {
+    if (!outer) s.exploding.delete(index);
+  }
 }
 
 /**
@@ -1341,6 +1353,7 @@ function settleSpawnFrames(
     moves: [],
     platsMoving: new Set(),
     nextthink: new Map(),
+    exploding: new Set(),
     counterCount: new Map(),
     multiEnabled: new Set(),
     portalCount: new Map(),

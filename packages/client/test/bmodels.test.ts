@@ -813,10 +813,15 @@ describe("area portals open at spawn", () => {
       });
 
       it("a used func_timer with a delay thinks at level.time + delay, firing through a DelayedUse", () => {
-        // Its think fires in the timer's slot; its DelayedUse lands in the slot the
-        // trigger_always's freed, which the walk has passed.
-        expect(open(always("t") + timer(`"delay" "0.0005"`))).toEqual([]);
-        expect(open(always("t") + timer(`"delay" "0.001"`))).toEqual([]);
+        // A START_ON timer due in this frame uses the second in its slot; no slot is free
+        // yet, so the second's DelayedUse lands after every slot.
+        const chain = (delay: string) =>
+          open(`{ "classname" "func_timer" "target" "t" "spawnflags" "1" "pausetime" "-1.8" } ` + timer(`"delay" "${delay}"`));
+        expect(chain("0.0005")).toEqual([3]);
+        expect(chain("0.001")).toEqual([]);
+        // After a trigger_always's DelayedUse ran, its DelayedUse lands in that freed slot,
+        // which the walk has passed.
+        expect(open(always("t") + timer(`"delay" "-0.1"`))).toEqual([]);
       });
 
       it("a START_ON func_timer thinks at 1 + pausetime + delay + wait, in float", () => {
@@ -835,6 +840,9 @@ describe("area portals open at spawn", () => {
         // wait, even infinite, is lowered to wait - FRAMETIME.
         expect(open(timer(`"spawnflags" "1" "pausetime" "-1.8" "random" "0.5"`))).toEqual([3]);
         expect(open(timer(`"spawnflags" "1" "pausetime" "-1.8" "random" "1e999"`))).toEqual([3]);
+        // One still infinite gives an infinite nextthink, which never runs.
+        expect(open(timer(`"spawnflags" "1" "pausetime" "-1.8" "random" "-1e999"`))).toEqual([]);
+        expect(open(always("t") + timer(`"random" "-1e999"`))).toEqual([3]);
         // A nextthink at or below 0 never runs.
         expect(open(timer(`"spawnflags" "1" "pausetime" "-2"`))).toEqual([]);
         // Due in the first frame: its think fires nothing there (not modeled) and thinks
@@ -872,6 +880,20 @@ describe("area portals open at spawn", () => {
         expect(open(always("e", 2) + explosion(`"delay" "0.0005"`))).toEqual([3]);
         expect(open(always("e") + explosion(`"delay" "-0.1"`))).toEqual([3]);
         expect(open(always("e") + explosion(`"delay" "-0.2"`))).toEqual([]);
+        // Its delay stays cleared while it fires: a use reaching it then explodes it again at once.
+        expect(
+          open(always("e") + `{ "classname" "target_explosion" "targetname" "e" "target" "c" "delay" "0.0005" }
+            { "classname" "trigger_counter" "targetname" "c" "target" "e" "count" "1" }
+            { "classname" "trigger_relay" "targetname" "c" "target" "q" }`),
+        ).toEqual([]);
+        // A nested explode restores the 0 it saved: a use after it, still within the outer
+        // one, explodes it once more.
+        expect(
+          open(always("e") + `{ "classname" "target_explosion" "targetname" "e" "target" "c" "delay" "0.0005" }
+            { "classname" "trigger_counter" "targetname" "c" "target" "e" "count" "1" }
+            { "classname" "trigger_relay" "targetname" "c" "target" "q" }
+            { "classname" "trigger_counter" "targetname" "c" "target" "e" "count" "2" }`),
+        ).toEqual([3]);
       });
     });
 

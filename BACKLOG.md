@@ -51,15 +51,12 @@ Remaining:
   trigger_relay, trigger_once, trigger_multiple (trigger_enable included),
   trigger_counter, func_timer, target_explosion, func_train, func_plat, func_button,
   func_wall, func_object and target_crosslevel_trigger (and a train's pathtarget at a
-  corner it reaches at once). Not modeled: trigger_elevator_use, which passes a use on to
-  its func_train target at the activator's pathtarget, and func_rotating's rotate_use,
+  corner it reaches at once). Not modeled: trigger_elevator_use, which sends its
+  func_train on (train_resume) toward the corner its user's pathtarget names, and
+  func_rotating's rotate_use,
   which starts or stops a drawn brush model turning. Any of them that spawns or frees an
   edict in the second frame also moves where a DelayedUse lands (`spawnEdict` in
   bmodels.ts).
-- Uses in the first settle frame are not modeled: a START_ON func_timer whose
-  1 + pausetime + delay + wait is due by 0.1 thinks there (`runThink`), firing nothing,
-  where the game fires its targets a frame early. Nor is target_explosion_explode's
-  T_RadiusDamage (a "dmg" above 0), which needs the damaged entities' bounds.
 - A team whose master a settle-frame killtarget frees stops moving from that frame (its
   members move and think only through the master's SV_Physics_Pusher), but
   `settleTurrets` ignores frees: a freed breach master is left out while its team is
@@ -145,10 +142,14 @@ Remaining:
   (which crashes the game) costs about 160 ms each to load, measured 2026-10-04 in Node 22.
   One budget for the whole frame would bound it, at the cost of starving later uses on
   such maps.
-- `settleSpawnFrames` ends a pusher master's teamchain walk (turret frees, multi_wait) at
+- `settleSpawnFrames` ends a pusher master's teamchain walk (turret frees, `runThink`) at
   the first freed member. In the game, the member before it still points at that edict,
   so if a G_Spawn later in the frame refills it (a DelayedUse), the master's slot runs
   the new edict's think, earlier than its own slot would.
+- Uses in the first settle frame are not modeled: a START_ON func_timer whose
+  1 + pausetime + delay + wait is due by 0.1 thinks there (`runThink`), firing nothing,
+  where the game fires its targets in that frame. Nor is target_explosion_explode's
+  T_RadiusDamage (a "dmg" above 0), which needs the damaged entities' bounds.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
