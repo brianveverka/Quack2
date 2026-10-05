@@ -555,6 +555,26 @@ describe("brush model instances", () => {
         { "classname" "turret_breach" "model" "*1" "team" "a" "minyaw" "80" "maxyaw" "100" "speed" "3.3" }`)).toEqual([80.0999984741211, 80]);
     });
 
+    it("matches gcc x86-64 turret_breach_think and SV_Push bit for bit", () => {
+      // [turret_base "angle", breach "angles", minpitch, maxpitch, minyaw, maxyaw, speed],
+      // then the float bits gcc -O0 left after 10000 frames (2026-10-05): the base's yaw and
+      // the breach's angles. Chosen from 7952 bit-identical random cases so that each float
+      // rounding of the port, dropped, changes one of them.
+      const cases: [string[], string][] = [
+        [["372.140331", "-15.82 0 359.99999", "32.8", "-84.757917", "-64.432811", "-29.886019", "50.06491616368294"], "43ab208c c2033330 c1ef168b 43b40000"],
+        [["128.09759", "-9e+1 0 -1e6", "-2", "34.990", "-255.0", "-234", "0.8321956791915"], "4369192c b5a20000 42d20000 c9742400"],
+        [["-0.0001", "27.4594273 59 -0.0001", "-89.5236023", "42.13", "90.1264", "-36.98765", "1e9"], "41f902ac 00000000 42b440b8 b8d1b717"],
+      ];
+      const bits = (x: number) => new Uint32Array(new Float32Array([x]).buffer)[0]!.toString(16).padStart(8, "0");
+      for (const [[base, angles, minpitch, maxpitch, minyaw, maxyaw, speed], want] of cases) {
+        const [b, breach] = place(`{ "classname" "worldspawn" }
+          { "classname" "turret_base" "model" "*1" "angle" "${base}" "team" "t" }
+          { "classname" "turret_breach" "model" "*1" "team" "t" "angles" "${angles}" "minpitch" "${minpitch}"
+            "maxpitch" "${maxpitch}" "minyaw" "${minyaw}" "maxyaw" "${maxyaw}" "speed" "${speed}" }`);
+        expect([b!.angles[1], ...breach!.angles].map(bits).join(" ")).toBe(want);
+      }
+    });
+
     it("does not run a turret team past an angle of 2^27, where the game's AnglesNormalize crawls", () => {
       const angles = (src: string) => place(`{ "classname" "worldspawn" }` + src).map((b) => b.angles);
       // Exact steps below 2^27, taken at once: 1e8 is 280 more than a multiple of 360, its
@@ -631,10 +651,9 @@ describe("brush model instances", () => {
       expect(yaws(`{ "classname" "func_object" "model" "*1" "team" "a" } ${breach("a")}`)).toEqual([10, 5]);
       // Both steps in float: SV_Push's avelocity * FRAMETIME, then VectorMA's (gcc x86-64, 2026-10-05).
       expect(
-        place(`{ "classname" "worldspawn" } { "classname" "func_object" "model" "*1" "team" "a" } ${breach("a").replace("}", '"speed" "3.3" }')}`).map(
-          (b) => b.angles[1],
-        ),
-      ).toEqual([0.6599999666213989, 0.32999998331069946]);
+        place(`{ "classname" "worldspawn" } { "classname" "func_object" "model" "*1" "angle" "0.1" "team" "a" }
+          ${breach("a").replace("}", '"speed" "3.3" }')}`).map((b) => b.angles[1]),
+      ).toEqual([0.75999999046325684, 0.32999998331069946]);
       // A breach one 3 degree step from rest stops the team in its second-frame think.
       expect(yaws(`{ "classname" "func_object" "model" "*1" "team" "a" } ${breach("a").replace('"80"', '"3"')}`)).toEqual([3, 3]);
       expect(yaws(`{ "classname" "func_object" "model" "*1" "team" "a" "spawnflags" "1" } ${breach("a")}`)).toEqual([80]);
