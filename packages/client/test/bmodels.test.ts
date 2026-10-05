@@ -348,7 +348,7 @@ describe("brush model instances", () => {
         // A door master's Think_CalcMoveSpeed makes the train's speeds NaN (its distance is
         // 0), so Move_Calc takes the accelerative path and the train stays at a.
         expect(x(`{ "classname" "func_door" "team" "k" } ${train(`"team" "k"`)}`)).toEqual([10]);
-        expect(x(`{ "classname" "func_door_rotating" "team" "k" "targetname" "d" } ${train(`"team" "k"`)}`)).toEqual([10]);
+        expect(x(`{ "classname" "func_door_rotating" "team" "k" "targetname" "dr" } ${train(`"team" "k"`)}`)).toEqual([10]);
         expect(x(`{ "classname" "func_water" "team" "k" } ${train(`"team" "k"`)}`)).toEqual([30]);
         // Under a MOVETYPE_NONE master it never thinks: SV_Physics_Pusher returns for a slave.
         expect(x(`{ "classname" "func_timer" "team" "k" } ${train(`"team" "k"`)}`)).toEqual([5 - 385]);

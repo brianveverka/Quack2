@@ -883,7 +883,7 @@ interface Settle {
   /**
    * level.current_entity, as the edict's slot in `slots`: the edict G_RunFrame is running
    * (a team master during its teamchain walk, whichever member's think runs; a DelayedUse
-   * in the slot a freed entity left), -1 before the walk.
+   * in its own slot, which may be one a freed entity left), -1 before the walk.
    */
   current: number;
   /**
@@ -1377,9 +1377,9 @@ function elevatorInit(s: Settle, index: number): void {
  * trigger_elevator_use: returns while its train has a nextthink (moving or waiting), or
  * when the user (`other`) has no "pathtarget" naming an entity (a DelayedUse has none);
  * else that entity becomes the train's target_ent and the train resumes towards it
- * (train_resume), its move begun at once as `trainCurrent` says. A train freed since init is left alone: the game moves its freed edict,
- * or returns on the nextthink of a DelayedUse G_Spawn put there; neither is drawn or
- * opens a portal.
+ * (train_resume), its move begun at once as `trainCurrent` says. A train freed since
+ * init is left alone: the game moves its freed edict, or returns on the nextthink of a
+ * DelayedUse G_Spawn put there; neither is drawn or opens a portal.
  */
 function elevatorUse(s: Settle, index: number, other: number): void {
   const train = s.elevators.get(index);
@@ -1475,8 +1475,8 @@ function doorUse(s: Settle, index: number): void {
  * func_train_find (`trainFind`) at its own slot, except a team slave: SV_Physics_Pusher
  * returns for it there, and runs its thinks (this one and every later one) in its
  * master's teamchain walk, only under a PUSHER_CLASSES master, and not behind a freed
- * member or under a freed master. Under any other master it never thinks and stays at its
- * spawn origin; a MOVETYPE_TOSS master (SV_Physics_Toss) would also copy its origin to
+ * member or under a freed master. Under any other master it never thinks, and only a
+ * use (train_use) moves it from its spawn origin; a MOVETYPE_TOSS master (SV_Physics_Toss) would also copy its origin to
  * it as it falls, which needs the trace (BACKLOG.md). A func_door or func_door_rotating
  * master's think (Think_CalcMoveSpeed) first sets the speeds of every train on its chain
  * to NaN. A train's mins are its inline model's in `bsp`, else 0 0 0 (without

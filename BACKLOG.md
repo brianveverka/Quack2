@@ -27,7 +27,7 @@ the world walked per frame as R_RecursiveWorldNode does (R_CullBox on nodes and 
 so the sky box is bounded by the sky faces in view), inline brush models where the game
 has them after spawn (untargeted plats lowered, START_OPEN doors open, trains where the
 settle frames' func_train_find and train_next leave them (a team slave's run in its
-MOVETYPE_PUSH or STOP master's teamchain walk, under any other master never), also when a trigger_always uses them
+MOVETYPE_PUSH or STOP master's teamchain walk, under any other master not at all), also when a trigger_always uses them
 or a trigger_elevator sends them on toward its user's "pathtarget" (train_resume),
 turrets turned to rest in their pitch/yaw range, in float, with their teams under a MOVETYPE_PUSH
 or STOP master, until a settle-frame free stops the team or cuts its chain), the doors
