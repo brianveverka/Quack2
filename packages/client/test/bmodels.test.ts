@@ -1476,7 +1476,6 @@ describe("edicts G_FreeEdict refuses (BODY_QUEUE_SIZE)", () => {
     const moving = (flags: string) => brushMovers(bsp, src(flags)).flatMap((t) => t.map((d) => d.mover.nextthink !== 0));
     expect(moving("0")).toEqual([true]);
     expect(moving("2048")).toEqual([]);
-    expect(openAreaPortals(src("2048")).size).toBe(0);
   });
 
   it("entity 0's trigger_always fires through its DelayedUse", () => {

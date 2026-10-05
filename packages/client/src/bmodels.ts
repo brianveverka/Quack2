@@ -1898,8 +1898,12 @@ function movingDoor(ent: BspEntity): boolean {
   return ent.classname === "func_door" || ent.classname === "func_water" || ent.classname === "func_door_rotating";
 }
 
-/** The moveinfo Think_CalcMoveSpeed reads from a team member that is not a door: every other spawn function leaves moveinfo.distance 0. */
-const NO_MOVE: MoveSpeeds = { distance: 0, speed: 0, accel: 0, decel: 0 };
+/**
+ * The moveinfo Think_CalcMoveSpeed reads from a team member that is not a door, or a raw
+ * one: every other spawn function leaves moveinfo.distance 0. Copied per member, as
+ * `calcMoveSpeed` writes the speeds.
+ */
+const NO_MOVE: Readonly<MoveSpeeds> = { distance: 0, speed: 0, accel: 0, decel: 0 };
 
 /**
  * SP_func_door_rotating's mover: it turns about the axis its spawnflags pick (yaw, or
@@ -2146,7 +2150,7 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
     const master = entities[members[0]!]!.classname;
     if (master === "func_door" || master === "func_door_rotating") {
       // Think_CalcMoveSpeed is the master's think; a raw master has none.
-      if (status[members[0]!] === "spawned") calcMoveSpeed(members.map((i) => doors.get(i)?.mover ?? NO_MOVE));
+      if (status[members[0]!] === "spawned") calcMoveSpeed(members.map((i) => doors.get(i)?.mover ?? { ...NO_MOVE }));
     }
     const cut = members.findIndex((i) => freed.has(i));
     const live = (cut < 0 ? members : members.slice(0, cut)).flatMap((i) => doors.get(i) ?? []);
