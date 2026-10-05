@@ -56,8 +56,8 @@ Remaining:
   edicts after the clients, which InitBodyQue fills when entity 0 is worldspawn. Otherwise
   the first 8 G_Spawns of SpawnEntities take them (map entities 1 on, the edicts spawn
   functions G_Spawn, such as a trigger_always's DelayedUse; list them from the source),
-  and those entities stay in use whatever `inGame` says: NOT_DEATHMATCH ones in use
-  without their spawn function run, and ones their spawn function frees partly spawned. G_Find and
+  and those entities stay in use whatever `inGame` says: NOT_DEATHMATCH ones whose
+  spawn function never ran, and ones their spawn function frees partly spawned. G_Find and
   G_FindTeams still find them (spawn spots, teams, targets), and a killtarget cannot
   free them. An empty entity ("{ }") is zeroed by ED_ParseEdict and leaves its edict free.
 - Malformed entity lumps, edict 0: entity 0 fills edict 0 whatever its classname, and
@@ -164,8 +164,9 @@ Remaining:
 - COM_Parse reads `*data` as a signed char, so it skips bytes 0x80-0xFF as whitespace
   and ends a bare word at one; `parseEntities` (on `decodeLatin1` text) keeps them in a
   word, so `{ "a" "1" }\xe9` parses in the game and throws here (gcc -O0, 2026-10-05).
-  A lump ending inside a final quoted `"}...` key also closes its entity in the game, by
-  reading past the lump's terminator; `parseEntities` throws.
+  A lump ending inside a final quoted `"}...` key also closes its entity in the game (its
+  first character is `}`), and the next COM_Parse starts past the lump's terminator, so
+  what follows depends on memory beyond the lump; `parseEntities` throws.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
