@@ -29,7 +29,7 @@ has them after spawn (untargeted plats lowered, START_OPEN doors open, trains wh
 settle frames' func_train_find and train_next leave them, also when a trigger_always uses them
 or a trigger_elevator sends them on toward its user's "pathtarget" (train_resume),
 turrets turned to rest in their pitch/yaw range with their teams under a MOVETYPE_PUSH
-or STOP master), the doors the settle frames send moving drawn moving (linear ones
+or STOP master, until a settle-frame free stops the team or cuts its chain), the doors the settle frames send moving drawn moving (linear ones
 accelerating as Think_AccelMove does when accel or decel differs from speed, rotating ones
 turning as AngleMove_Calc does, their angles sent in 360/256 degree steps and blended by
 LerpAngle), also in teams with other members, and the plats that are no team's slave a
@@ -51,10 +51,6 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- A team whose master a settle-frame killtarget frees stops moving from that frame (its
-  members move and think only through the master's SV_Physics_Pusher), but
-  `settleTurrets` ignores frees: a freed breach master is left out while its team is
-  drawn turned to rest.
 - win32 Quake 2 runs every frame at x87 24-bit precision (`_controlfp(_PC_24)` in
   sys_win.c WinMain), which rounds the C's `double` steps to a 24-bit mantissa too
   (unless a GL driver resets it mid-frame; see `lightmapExtents`).
@@ -71,7 +67,7 @@ Remaining:
   only under a MOVETYPE_PUSH or STOP master (SV_Physics_Pusher). Under a NONE master the
   slave never thinks and stays at its spawn origin; under a TOSS master it takes the
   master's origin (SV_Physics_Toss). `PUSHER_CLASSES` in bmodels.ts has the master
-  rule `settleTurrets` uses. `brushMovers` leaves a slave train out, drawn where the
+  rule `turretTeams` uses. `brushMovers` leaves a slave train out, drawn where the
   settle frames leave it. Move_Calc also takes a slave's teammaster as the entity to
   compare with level.current_entity, where `trainUseIn` and `elevatorUse` compare the
   train itself, so a use from a teammate's think in the master's walk defers its move. Since the settle frames free edicts (turret_breach_finish_init
