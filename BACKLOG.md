@@ -26,7 +26,8 @@ func_object entities a use there shows or hides drawn or left out to match,
 the world walked per frame as R_RecursiveWorldNode does (R_CullBox on nodes and leafs,
 so the sky box is bounded by the sky faces in view), inline brush models where the game
 has them after spawn (untargeted plats lowered, START_OPEN doors open, trains where the
-settle frames' func_train_find and train_next leave them, also when a trigger_always uses them,
+settle frames' func_train_find and train_next leave them, also when a trigger_always uses them
+or a trigger_elevator sends them on toward its user's "pathtarget" (train_resume),
 turrets turned to rest in their pitch/yaw range with their teams under a MOVETYPE_PUSH
 or STOP master), the doors the settle frames send moving drawn moving (linear ones
 accelerating as Think_AccelMove does when accel or decel differs from speed, rotating ones
@@ -47,15 +48,13 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- The settle frames model the uses of func_areaportal, doors, func_door_secret,
-  trigger_relay, trigger_once, trigger_multiple (trigger_enable included),
-  trigger_counter, func_timer, target_explosion, func_train, func_plat, func_button,
-  func_wall, func_object and target_crosslevel_trigger (and a train's pathtarget at a
-  corner it reaches at once). Not modeled: trigger_elevator_use, which sends its
-  func_train on (train_resume) toward the corner its user's pathtarget names, and
-  func_rotating's rotate_use, which starts or stops a drawn brush model turning. Any of
-  them that spawns or frees an edict in the second frame also moves where a DelayedUse
-  lands (`spawnEdict` in bmodels.ts).
+- func_rotating is not drawn turning: SP_func_rotating gives a START_ON one avelocity
+  movedir * speed from spawn, and rotating_use (a use in the settle frames, `useOne` in
+  bmodels.ts) toggles it between that and 0. Needs a sim mover stepped at FRAMETIME
+  (Brian, session 31: brush motion lives in packages/sim, blended by the client as
+  CL_AddPacketEntities does) and the renderer's per-frame instance poses. A use that
+  spawns or frees an edict in the second frame also moves where a DelayedUse lands
+  (`spawnEdict`).
 - A team whose master a settle-frame killtarget frees stops moving from that frame (its
   members move and think only through the master's SV_Physics_Pusher), but
   `settleTurrets` ignores frees: a freed breach master is left out while its team is
@@ -77,7 +76,9 @@ Remaining:
   slave never thinks and stays at its spawn origin; under a TOSS master it takes the
   master's origin (SV_Physics_Toss). `PUSHER_CLASSES` in bmodels.ts has the master
   rule `settleTurrets` uses. `brushMovers` leaves a slave train out, drawn where the
-  settle frames leave it. Since the settle frames free edicts (turret_breach_finish_init
+  settle frames leave it. Move_Calc also takes a slave's teammaster as the entity to
+  compare with level.current_entity, where `trainUseIn` and `elevatorUse` compare the
+  train itself, so a use from a teammate's think in the master's walk defers its move. Since the settle frames free edicts (turret_breach_finish_init
   in the first frame, killtargets in the second), the slot matters: a breach between the
   master and the train can free the train's first path_corner first, and a slave behind
   a teamchain a free cut, or under a master freed earlier in the frame, never thinks.
