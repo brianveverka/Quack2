@@ -2,6 +2,9 @@
 // Entity lump parser. Tokens are quoted strings, bare words, braces, and `//` line
 // comments, as in Quake 2's COM_Parse, except that a brace or quote also ends a bare
 // word (COM_Parse splits only on whitespace). Compiler output parses identically.
+// Braces are tested as SpawnEntities and ED_ParseEdict test them, by a token's first
+// character, quoted or not: a "{..." token opens an entity, a "}..." key closes it, a
+// "}..." value is an error, and a key "{" is an ordinary key.
 
 export class EntityParseError extends Error {
   override name = "EntityParseError";
@@ -18,7 +21,6 @@ export type BspEntity = Readonly<Record<string, string>>;
 
 interface Token {
   readonly text: string;
-  readonly quoted: boolean;
   readonly line: number;
 }
 
@@ -40,20 +42,20 @@ function* tokenize(src: string): Generator<Token> {
       if (end < 0) throw new EntityParseError(`unterminated quoted string at line ${start}`);
       const text = src.slice(i + 1, end);
       for (const ch of text) if (ch === "\n") line++;
-      yield { text, quoted: true, line: start };
+      yield { text, line: start };
       i = end + 1;
     } else if (c === "{" || c === "}") {
-      yield { text: c, quoted: false, line };
+      yield { text: c, line };
       i++;
     } else {
       const start = i;
       while (i < src.length && src[i]! > " " && src[i] !== '"' && src[i] !== "{" && src[i] !== "}") i++;
-      yield { text: src.slice(start, i), quoted: false, line };
+      yield { text: src.slice(start, i), line };
     }
   }
 }
 
-const isBrace = (t: Token, b: "{" | "}") => !t.quoted && t.text === b;
+const startsWith = (t: Token, b: "{" | "}") => t.text[0] === b;
 
 /**
  * Case fold for keys and Q_stricmp compares: A-Z only. Q_stricmp is the C library's
@@ -69,7 +71,7 @@ export function parseEntities(src: string): BspEntity[] {
   for (;;) {
     const open = tokens.next();
     if (open.done) break;
-    if (!isBrace(open.value, "{")) {
+    if (!startsWith(open.value, "{")) {
       throw new EntityParseError(`expected "{" at line ${open.value.line}, found "${open.value.text}"`);
     }
     // Null prototype: keys come from map files, and "__proto__" must stay a plain key.
@@ -77,11 +79,10 @@ export function parseEntities(src: string): BspEntity[] {
     for (;;) {
       const key = tokens.next();
       if (key.done) throw new EntityParseError(`unexpected end of entity string inside entity ${entities.length}`);
-      if (isBrace(key.value, "}")) break;
-      if (isBrace(key.value, "{")) throw new EntityParseError(`unexpected "{" at line ${key.value.line}`);
+      if (startsWith(key.value, "}")) break;
       const value = tokens.next();
       if (value.done) throw new EntityParseError(`key "${key.value.text}" has no value`);
-      if (!value.value.quoted && (value.value.text === "{" || value.value.text === "}")) {
+      if (startsWith(value.value, "}")) {
         throw new EntityParseError(`key "${key.value.text}" has no value at line ${value.value.line}`);
       }
       const name = asciiLower(key.value.text);
