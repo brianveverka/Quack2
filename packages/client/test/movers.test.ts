@@ -752,3 +752,81 @@ describe("train movers", () => {
     expect([[...train.origin], [...train.velocity], train.nextthink]).toEqual([[385, -127, 1], [0, 0, 0], 0]);
   });
 });
+
+describe("func_rotating movers", () => {
+  const f = Math.fround;
+  const W = `{ "classname" "worldspawn" }`;
+  const rotor = (keys: string) => `{ "classname" "func_rotating" "model" "*1" ${keys} }`;
+  const movers = (src: string) => brushMovers(bsp, parseEntities(src)).map((t) => t.map((d) => [d.entity, [...d.mover.avelocity], [...d.mover.angles]]));
+  /** The yaw after `frames` frames at 10 degrees a frame (100 * 0.1f) from `yaw`, in float. */
+  const turned = (yaw: number, frames: number) => {
+    let a = f(yaw);
+    for (let k = 0; k < frames; k++) a = f(a + f(100 * f(0.1)));
+    return a;
+  };
+
+  it("spins a START_ON one from spawn, turned by both settle frames, about the axis its spawnflags pick", () => {
+    expect(movers(W + rotor(`"spawnflags" "1" "angles" "0 5.5 0"`))).toEqual([[[1, [0, 100, 0], [0, turned(5.5, 2), 0]]]]);
+    // X_AXIS turns the roll, Y_AXIS the pitch; REVERSE negates; "speed" sets the rate.
+    expect(movers(W + rotor(`"spawnflags" "5" "speed" "45"`))).toEqual([[[1, [0, 0, 45], [0, 0, f(2 * f(45 * f(0.1)))]]]]);
+    expect(movers(W + rotor(`"spawnflags" "9"`))).toEqual([[[1, [100, 0, 0], [20, 0, 0]]]]);
+    expect(movers(W + rotor(`"spawnflags" "3"`))).toEqual([[[1, [-0, -100, -0], [0, -20, 0]]]]);
+    // MOVETYPE_STOP moves the same.
+    expect(movers(W + rotor(`"spawnflags" "33"`))).toEqual([[[1, [0, 100, 0], [0, 20, 0]]]]);
+  });
+
+  it("leaves one without START_ON at its spawn angles, a mover still", () => {
+    expect(movers(W + rotor(`"angles" "1 2 3"`))).toEqual([[[1, [0, 0, 0], [1, 2, 3]]]]);
+  });
+
+  it("toggles it on a use in the second frame, before or after its own push by slot order (rotating_use)", () => {
+    const use = `{ "classname" "trigger_always" "target" "r" }`;
+    // The DelayedUse lies right after its trigger_always: before the rotor, it stops a
+    // START_ON one before its second push, and starts another in time for it.
+    expect(movers(W + use + rotor(`"targetname" "r" "spawnflags" "1"`))).toEqual([[[2, [0, 0, 0], [0, 10, 0]]]]);
+    expect(movers(W + use + rotor(`"targetname" "r"`))).toEqual([[[2, [0, 100, 0], [0, 10, 0]]]]);
+    // After the rotor: both frames' pushes have run.
+    expect(movers(W + rotor(`"targetname" "r" "spawnflags" "1"`) + use)).toEqual([[[1, [0, 0, 0], [0, 20, 0]]]]);
+    expect(movers(W + rotor(`"targetname" "r"`) + use)).toEqual([[[1, [0, 100, 0], [0, 0, 0]]]]);
+    // A relay and a second use toggle it twice.
+    const twice = `{ "classname" "trigger_always" "target" "r" } { "classname" "trigger_always" "target" "r" }`;
+    expect(movers(W + twice + rotor(`"targetname" "r" "spawnflags" "1"`))).toEqual([[[3, [0, 100, 0], [0, 20, 0]]]]);
+ 
+    // A member's think in its master's slot runs after the master's push (SV_Physics_Pusher):
+    // the DelayedUse sets the explosion due in this frame, and it stops the rotor a push late.
+    const explode = `{ "classname" "trigger_always" "target" "e" }
+      ${rotor(`"targetname" "r" "spawnflags" "1" "team" "t"`)}
+      { "classname" "target_explosion" "targetname" "e" "target" "r" "delay" "0.0005" "team" "t" }`;
+    expect(movers(W + explode)).toEqual([[[2, [0, 0, 0], [0, 20, 0]]]]);
+  });
+
+  it("is drawn where the settle frames turned it, then turning, blended by LerpAngle from network angles", () => {
+    const ents = parseEntities(W + rotor(`"spawnflags" "1"`));
+    expect(brushModelInstances(bsp, ents).instances[0]!.angles).toEqual([0, 20, 0]);
+    const m = new BrushMotion(() => brushMovers(bsp, ents));
+    expect(angles(m.posesAt(0))[1]).toEqual([0, networkAngle(20), 0]);
+    expect(angles(m.posesAt(50))[1]![1]).toBe(lerpAngle(networkAngle(20), networkAngle(30), f(0.5)));
+    expect(angles(m.posesAt(3600))[1]![1]).toBe(networkAngle(turned(0, 38)));
+    expect(m.linkedPoses(3600).get(1)!.angles[1]).toBe(turned(0, 38));
+  });
+
+  it("turns a master with its door slaves, and leaves a slave or a turret team's member out", () => {
+    // The trigger_always uses the slave door, which door_use ignores for a slave.
+    const team =
+      W + rotor(`"spawnflags" "1" "team" "t"`) + `{ "classname" "func_door" "model" "*1" "team" "t" "targetname" "d" } { "classname" "trigger_always" "target" "d" }`;
+    expect(brushMovers(bsp, parseEntities(team)).map((t) => t.map((d) => d.entity))).toEqual([[1, 2]]);
+    // So the door slave stays at the bottom with no think, and Think_CalcMoveSpeed runs only
+    // for a door master, so it keeps its own speed (100 doubled).
+    const door = brushMovers(bsp, parseEntities(team))[0]![1]!.mover;
+    expect([door.state, door.speed, door.think, [...door.origin]]).toEqual(["bottom", 200, undefined, [0, 0, 0]]);
+    // A slave turns only through its master's pusher walk, not modeled here.
+    const slave = W + `{ "classname" "func_wall" "model" "*1" "team" "t" }` + rotor(`"spawnflags" "1" "team" "t"`);
+    expect(movers(slave)).toEqual([]);
+    expect(brushModelInstances(bsp, parseEntities(slave)).instances[1]!.angles).toEqual([0, 0, 0]);
+    // turret_breach_think sets every member's yaw velocity.
+    const breach = W + rotor(`"spawnflags" "1" "team" "t"`) + `{ "classname" "turret_breach" "model" "*1" "team" "t" "target" "x" }`;
+    expect(movers(breach)).toEqual([]);
+    // A killtarget frees it.
+    expect(movers(W + rotor(`"spawnflags" "1" "targetname" "r"`) + `{ "classname" "trigger_always" "killtarget" "r" }`)).toEqual([]);
+  });
+});

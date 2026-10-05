@@ -7,8 +7,8 @@
 // come to rest in their pitch/yaw range. Those a killtarget frees in the settle frames
 // are left out, and func_wall and func_object entities a use there shows or hides are
 // drawn or left out to match. Also the movers of doors (linear and rotating), plats,
-// buttons and trains as the settle frames leave them (`brushMovers`), for
-// `BrushMotion` to step. DOM-free.
+// buttons, trains and func_rotating entities as the settle frames leave them
+// (`brushMovers`), for `BrushMotion` to step. DOM-free.
 
 import {
   FRAMETIME,
@@ -21,6 +21,7 @@ import {
   levelTimeAt,
   platGoDown,
   buttonFire,
+  rotatingUse,
   stepPusher,
   trainResume,
   trainUse,
@@ -112,6 +113,10 @@ const DOOR_Y_AXIS = 128;
 const TRAIN_START_ON = 1;
 const TRAIN_TOGGLE = 2;
 const PATH_CORNER_TELEPORT = 1;
+const ROTATING_START_ON = 1;
+const ROTATING_REVERSE = 2;
+const ROTATING_X_AXIS = 4;
+const ROTATING_Y_AXIS = 8;
 
 /** Q_stricmp equality (see `asciiLower`). */
 function stricmpEqual(a: string, b: string): boolean {
@@ -547,7 +552,7 @@ export interface BrushModelInstance {
   readonly entity: number;
   /** World translation of the model's faces: the entity's "origin", default 0 0 0, after any spawn move. */
   readonly origin: readonly [number, number, number];
-  /** Rotation (pitch, yaw, roll) about the model-space origin, applied before `origin`: the spawn angles for classes that keep them, a START_OPEN func_door_rotating's open angles, else 0 0 0; a turret breach at rest, and the members of its team turned by its yaw. */
+  /** Rotation (pitch, yaw, roll) about the model-space origin, applied before `origin`: the spawn angles for classes that keep them, a START_OPEN func_door_rotating's open angles, else 0 0 0; a func_rotating turned as the settle frames leave it (`rotatingMover`); a turret breach at rest, and the members of its team turned by its yaw. */
   readonly angles: readonly [number, number, number];
   readonly classname: string;
 }
@@ -607,7 +612,7 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
   const instances: BrushModelInstance[] = [];
   const errors: string[] = [];
   const turrets = settleTurrets(entities);
-  const { trains, freed, shown } = settleSpawnFrames(entities, bsp);
+  const { trains, rotating, freed, shown } = settleSpawnFrames(entities, bsp);
   entities.forEach((ent, i) => {
     const ref = ent.model;
     // Point entities carry model paths ("models/..."); only "*N" is an inline model.
@@ -625,7 +630,13 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
     const moved = spawnMove(ent, mins, maxs, spawn, keep);
     // A train is where the settle frames left it: its mins on a corner, or at its spawn origin.
     const train = trains.get(i);
-    const { origin, angles } = train ? { origin: [...train.origin] as Vec3, angles: moved.angles } : moved;
+    // A func_rotating is turned as far as the settle frames turned it.
+    const rotor = rotating.get(i);
+    const { origin, angles } = train
+      ? { origin: [...train.origin] as Vec3, angles: moved.angles }
+      : rotor
+        ? { origin: moved.origin, angles: [...rotor.angles] as Vec3 }
+        : moved;
     const turn = turrets.get(i);
     const turned: Vec3 = turn?.angles ?? (turn?.yaw ? [angles[0], angles[1] + turn.yaw, angles[2]] : angles);
     instances.push({ model, entity: i, origin, angles: turned, classname });
@@ -733,6 +744,8 @@ interface Settle {
   portals: Map<number, boolean>;
   /** Every in-game func_train's mover, by entity index. */
   trains: Map<number, BrushMover>;
+  /** The mover of every in-game func_rotating that is no team's slave and on no turret_breach's team, by entity index. */
+  rotating: Map<number, BrushMover>;
   /** The func_train (movetarget) of each trigger_elevator whose trigger_elevator_init gave it its use. */
   elevators: Map<number, number>;
   /**
@@ -866,8 +879,8 @@ function useTargets(s: Settle, user: User): void {
 /**
  * An entity's use function, used by `other` (G_UseTargets' ent: a map entity, or -1 for
  * a DelayedUse), for the classes whose use changes area portals, a train's
- * position or whether a brush entity is drawn now, or the moveinfo.state door_go_up
- * reads. The rest are not modeled and do nothing here.
+ * position, a func_rotating's turning or whether a brush entity is drawn now, or the
+ * moveinfo.state door_go_up reads. The rest are not modeled and do nothing here.
  */
 function use(s: Settle, index: number, other: number): void {
   if (s.budget <= 0 || s.depth >= MAX_USE_DEPTH) return;
@@ -929,6 +942,12 @@ function useOne(s: Settle, index: number, other: number): void {
     case "func_train":
       trainUseIn(s, index);
       return;
+    case "func_rotating": {
+      // rotating_use; a team slave, or a member of a turret_breach's team, is not modeled turning.
+      const m = s.rotating.get(index);
+      if (m) rotatingUse(m);
+      return;
+    }
     case "trigger_elevator":
       elevatorUse(s, index, other);
       return;
@@ -1346,11 +1365,17 @@ function doorUse(s: Settle, index: number): void {
  * (`elevatorUse`), a func_timer is turned off, or on (`timerUse`), a target_explosion fires
  * its targets or thinks them at level.time + delay (its radius damage is not modeled),
  * a func_wall or func_object is shown or hidden (`wallUse`); an entity a killtarget
- * freed is not drawn. Other use functions are not modeled, nor are a team slave train's
+ * freed is not drawn, a func_rotating starts or stops turning (`rotatingUse`). Other use
+ * functions are not modeled, nor are a team slave train's
  * thinks (both func_train_find and train_next) running in its master's slot.
  *
- * The trains' movers are left as the second frame leaves them, to go on moving; their
- * train_wait fires no pathtarget after it.
+ * Both frames turn each func_rotating `rotatingMover` models (one that is no team's slave
+ * and on no team with a turret_breach, whose think sets every member's yaw velocity) by
+ * its avelocity at its slot (SV_Physics_Pusher), before the thinks there: START_ON gave
+ * it one at spawn, and a use earlier in the second frame has toggled it.
+ *
+ * The trains' and func_rotating entities' movers are left as the second frame leaves
+ * them, to go on moving; the trains' train_wait fires no pathtarget after it.
  */
 function settleSpawnFrames(
   entities: readonly BspEntity[],
@@ -1358,6 +1383,7 @@ function settleSpawnFrames(
 ): {
   portals: Set<number>;
   trains: Map<number, BrushMover>;
+  rotating: Map<number, BrushMover>;
   freed: Set<number>;
   shown: Map<number, boolean>;
   moves: readonly { index: number; up: boolean }[];
@@ -1410,6 +1436,7 @@ function settleSpawnFrames(
     portalCount: new Map(),
     portals: new Map(),
     trains: new Map(),
+    rotating: new Map(),
     elevators: new Map(),
     current: -1,
     budget: MAX_USES,
@@ -1422,6 +1449,15 @@ function settleSpawnFrames(
     const mins: Vec3 = bsp && model !== undefined ? modelBounds(bsp, model).mins : [0, 0, 0];
     s.trains.set(i, trainMover(s, i, mins));
   });
+  const breachTeams = new Set(
+    [...teams.values()].filter((m) => m.some((i) => entities[i]!.classname === "turret_breach")).flat(),
+  );
+  entities.forEach((e, i) => {
+    if (e.classname !== "func_rotating" || !inGame(e) || slaves.has(i) || breachTeams.has(i)) return;
+    const m = brushMover(rotatingMover(e));
+    if (atoi(e.spawnflags ?? "0") & ROTATING_START_ON) rotatingUse(m);
+    s.rotating.set(i, m);
+  });
   entities.forEach((e, i) => {
     if (!inGame(e)) return;
     if (e.classname === "func_timer") {
@@ -1432,9 +1468,13 @@ function settleSpawnFrames(
     if (e.classname === "trigger_elevator") s.nextthink.set(i, f32(FRAMETIME));
   });
   // The first frame, in slot order (a slot freed earlier in it is skipped).
+  const first = levelTimeAt(1);
   for (const slot of [...s.slots]) {
     if (typeof slot !== "number" || s.freed.has(slot)) continue;
     const ent = entities[slot]!;
+    // SV_Physics_Pusher turns a func_rotating before any think on its team runs.
+    const rotor = s.rotating.get(slot);
+    if (rotor) stepPusher([rotor], first);
     const train = s.trains.get(slot);
     if (train) trainFind(s, slot, train);
     runThink(s, slot, 1);
@@ -1468,6 +1508,9 @@ function settleSpawnFrames(
     const slot = s.slots[p]!;
     s.budget = MAX_USES;
     if (typeof slot === "number") {
+      // A func_rotating turns by the avelocity uses in earlier slots left it.
+      const rotor = s.rotating.get(slot);
+      if (rotor) stepPusher([rotor], second);
       // A modeled think due in this frame (`runThink`): in the entity's own slot, and also
       // in a PUSH or STOP master's slot (earlier) for each teamchain member, after the
       // master's push and own think (SV_Physics_Pusher).
@@ -1498,6 +1541,7 @@ function settleSpawnFrames(
   return {
     portals: new Set([...s.portals].filter(([, open]) => open).map(([p]) => p)),
     trains: s.trains,
+    rotating: s.rotating,
     freed: s.freed,
     shown: s.shown,
     moves: s.moves,
@@ -1570,6 +1614,36 @@ function rotatingDoor(ent: BspEntity, origin: Vec3): BrushMoverInit {
 }
 
 /**
+ * SP_func_rotating's mover, at its spawn origin and angles (it keeps them), turning about
+ * the axis its spawnflags pick (yaw, or roll for X_AXIS, pitch for Y_AXIS; REVERSE
+ * negates it) at "speed" degrees a second (default 100) once used (`rotatingUse`).
+ * START_ON uses it at spawn. STOP makes it MOVETYPE_STOP, which moves the same unless
+ * blocked (not modeled). Its moveinfo is left 0.
+ */
+function rotatingMover(ent: BspEntity): BrushMoverInit {
+  const flags = atoi(ent.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK;
+  const movedir: Vec3 = [0, 0, 0];
+  movedir[flags & ROTATING_X_AXIS ? 2 : flags & ROTATING_Y_AXIS ? 0 : 1] = 1;
+  // VectorNegate: the other axes become -0.
+  if (flags & ROTATING_REVERSE) for (let k = 0; k < 3; k++) movedir[k] = -movedir[k]!;
+  const origin = entityVec3(ent, "origin") ?? [0, 0, 0];
+  return {
+    origin,
+    angles: entityAngles(ent),
+    startOrigin: origin,
+    endOrigin: origin,
+    distance: 0,
+    speed: 0,
+    accel: 0,
+    decel: 0,
+    wait: 0,
+    toggle: false,
+    state: "top",
+    spin: { movedir, speed: f32(atof(ent.speed ?? "0")) || 100 },
+  };
+}
+
+/**
  * SP_func_plat's mover: pos1, the top, is its spawn origin, and pos2 lies "height" (an
  * int) below it, or the plat's height less "lip" (an int, default 8), in float. "speed",
  * "accel" and "decel" (default 20, 5 and 5, else a tenth of the value given) are per
@@ -1631,10 +1705,10 @@ function buttonMover(ent: BspEntity, mins: Vec3, maxs: Vec3, origin: Vec3): Brus
 
 /**
  * The doors (func_door, func_water, which SP_func_water renames func_door, and
- * func_door_rotating) and the plats, buttons and trains that are no team's slave as the
- * two settle frames leave them:
+ * func_door_rotating) and the plats, buttons, trains and func_rotating entities that are
+ * no team's slave as the two settle frames leave them:
  * teams in master entity order, each team's doors in team order (the master first when
- * it is a door); a door, plat, button or train with no team is a team of one. SP_func_door and SP_func_water set up each linear door
+ * it is a door); a door, plat, button, train or func_rotating with no team is a team of one. SP_func_door and SP_func_water set up each linear door
  * (`doorPositions`; a door's "speed", default 100, is doubled in deathmatch, and its
  * "accel" and "decel" default to that, "wait" 0 becomes 3; func_water takes "speed",
  * default 25, for all three, and "wait" 0 becomes -1, which makes it DOOR_TOGGLE), and
@@ -1644,22 +1718,23 @@ function buttonMover(ent: BspEntity, mins: Vec3, maxs: Vec3, origin: Vec3): Brus
  * the second the settle frames' uses send doors up or down (`doorUse`), from a
  * DelayedUse's slot, so each starts moving a frame later; a use sends a plat down
  * (Use_Plat, `platMover`) and a button up (button_fire, `buttonMover`) the same way.
- * A train's mover is the one the settle frames ran (`trainMover`), moving on from where
- * they left it.
+ * A train's or func_rotating's mover is the one the settle frames ran (`trainMover`,
+ * `rotatingMover`), moving on from where they left it.
  *
  * Think_CalcMoveSpeed reads every member of the chain: a func_door_rotating's distance
  * is in degrees, and every other class (a func_button, a func_wall) leaves
  * moveinfo.distance 0, which makes the doors' speeds infinite, so a linear door moves
  * all the way in one frame (Move_Final) and a rotating one turns all the way in one
- * (AngleMove_Final). A team keeps only its doors and a plat, button or train master: the
- * other members, slave plats, buttons and trains included, stay where `brushModelInstances` puts them. A func_door_secret, which SP_func_door_secret also
+ * (AngleMove_Final). A team keeps only its doors and a plat, button, train or
+ * func_rotating master: the other members, slave plats, buttons, trains and func_rotating
+ * entities included, stay where `brushModelInstances` puts them. A func_door_secret, which SP_func_door_secret also
  * renames, is not modeled moving. A team with a door that has no inline model is left
  * out. A team's chain ends at the first member a killtarget freed (G_FreeEdict zeroes
  * its teamchain), and a team whose master was freed never moves again
  * (SV_Physics_Pusher returns for the slaves).
  */
 export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBrush[][] {
-  const { freed, moves, areaportalsOf, trains } = settleSpawnFrames(entities, bsp);
+  const { freed, moves, areaportalsOf, trains, rotating } = settleSpawnFrames(entities, bsp);
   const turrets = settleTurrets(entities);
   const groups = [...findTeams(entities).values()];
   const teamed = new Set(groups.flat());
@@ -1672,11 +1747,12 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
     const plat = ent.classname === "func_plat" && !slaves.has(i);
     const button = ent.classname === "func_button" && !slaves.has(i);
     const train = ent.classname === "func_train" && !slaves.has(i);
-    if (!plat && !button && !train && !movingDoor(ent)) return;
+    const rotor = rotating.get(i);
+    if (!plat && !button && !train && !rotor && !movingDoor(ent)) return;
     const model = inlineModel(bsp, ent.model);
     if (model === undefined) return;
-    if (train) {
-      doors.set(i, { entity: i, mover: trains.get(i)!, portals: [] });
+    if (train || rotor) {
+      doors.set(i, { entity: i, mover: rotor ?? trains.get(i)!, portals: [] });
       return;
     }
     const origin = entityVec3(ent, "origin") ?? [0, 0, 0];

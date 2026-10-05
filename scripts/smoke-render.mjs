@@ -16,7 +16,8 @@
 // side's synthetic image in its direction and orientation with it, and skyrotate. A copy
 // split into two areas by an area portal checks that a closed portal hides the world and
 // brush models beyond it, and that a START_OPEN door that targets it opens it. A copy
-// whose func_wall is a door a trigger_always sends up checks the debug origins move.
+// whose func_wall is a door a trigger_always sends up checks the debug origins move, and
+// one whose func_wall is a START_ON func_rotating checks it is drawn turning.
 // Usage: node scripts/smoke-render.mjs [outdir]   (default packages/client/dist/smoke)
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
@@ -100,7 +101,15 @@ SYNTHETIC["/data/train-at-25.bsp"] = withEntityString(fixtureBsp, fixtureEntitie
 // frame. The func_wall placed at the angles it is drawn with at 150 ms and at 250 ms.
 const rotatingEntities = fixtureEntities.replace('"classname" "func_wall"', '"classname" "func_door_rotating"\n"targetname" "smokedoor"');
 SYNTHETIC["/data/door-rotating.bsp"] = withEntityString(fixtureBsp, `${rotatingEntities}{\n"classname" "trigger_always"\n"target" "smokedoor"\n}\n`);
-for (const yaw of ["4.921875", "14.765625"]) {
+// func_rotating: the func_wall made a START_ON func_rotating (yaw at 100 a second) from
+// yaw -30, turned 20 degrees by the settle frames and on 10 a frame after, sent in
+// 360/256 degree steps; it swings about the world origin, so from -30 it stays in the
+// door view. The func_wall placed at the angles it is drawn with at 0, 150 and 250 ms.
+SYNTHETIC["/data/rotating.bsp"] = withEntityString(
+  fixtureBsp,
+  fixtureEntities.replace('"classname" "func_wall"', '"classname" "func_rotating"\n"spawnflags" "1"\n"angles" "0 -30 0"'),
+);
+for (const yaw of ["4.921875", "14.765625", "-9.84375"]) {
   SYNTHETIC[`/data/door-yaw-${yaw}.bsp`] = withEntityString(fixtureBsp, fixtureEntities.replace('"model" "*1"', `"model" "*1"\n"angles" "0 ${yaw} 0"`));
 }
 // Culling: the func_wall at its compiled spot, again at the south spot, and again outside
@@ -610,6 +619,36 @@ try {
   check(rotatingFrames.every((d) => !d.moving.error && !d.placed.error && d.moving.stats.brushModels === 1), "the rotating door is drawn at every time");
   check(rotatingRestTurned > 0.02, "the rotating door's frames at rest and turned differ");
   check(rotatingFrames.every((d) => d.diff === 0), "the rotating door draws as a func_wall turned to the angles brushAngles gives: at rest, 4.921875 at 150 ms, 14.765625 at 250 ms");
+
+  // func_rotating: brushAngles turns it 10 degrees a frame from the -10 the settle frames
+  // left it at (sent as -9.84375, 0, 9.84375, 19.6875) and blends the frames; its
+  // origin stays. Each frame draws as the func_wall turned to those angles.
+  await page.goto(`${ORIGIN}/?map=data/rotating.bsp`);
+  await page.waitForFunction(() => window.quack?.ready || window.quack?.error, null, { timeout: 30000 });
+  const spinMotion = await page.evaluate(() => ({
+    brushModels: window.quack.brushModels,
+    angles: [0, 150, 250, 1000].map((ms) => window.quack.brushAngles(ms)),
+    origins: [0, 1000].map((ms) => window.quack.brushOrigins(ms)),
+  }));
+  console.log(`  func_rotating: ${JSON.stringify(spinMotion)}`);
+  check(
+    JSON.stringify(spinMotion.brushModels) === JSON.stringify(["func_rotating *1 at 0 0 0 angles 0 -10 0"]) &&
+      JSON.stringify(spinMotion.angles) === JSON.stringify([[[0, -9.84375, 0]], [[0, 4.921875, 0]], [[0, 14.765625, 0]], [[0, 90, 0]]]) &&
+      JSON.stringify(spinMotion.origins) === JSON.stringify([[[0, 0, 0]], [[0, 0, 0]]]),
+    "a START_ON func_rotating turns in brushAngles: -9.84375 at 0 ms, 4.921875 at 150 ms, 14.765625 at 250 ms, 90 at 1000 ms",
+  );
+  const spinFrames = [];
+  for (const [ms, yaw] of [[0, "-9.84375"], [150, "4.921875"], [250, "14.765625"]]) {
+    const [moving, placed] = [await doorFrame("data/rotating.bsp", ms), await doorFrame(`data/door-yaw-${yaw}.bsp`, ms)];
+    spinFrames.push({ ms, moving, placed, diff: changed(moving.frame, placed.frame) });
+  }
+  const spinTurned = changed(spinFrames[0].moving.frame, spinFrames[2].moving.frame);
+  console.log(
+    `  func_rotating drawn: ${spinFrames.map((d) => `${d.ms} ms ${d.diff.toFixed(4)} off its placed wall (brush models ${d.moving.stats.brushModels})`).join(", ")}; 0 to 250 ms changes ${spinTurned.toFixed(3)}`,
+  );
+  check(spinFrames.every((d) => !d.moving.error && !d.placed.error && d.moving.stats.brushModels === 1), "the func_rotating is drawn at every time");
+  check(spinTurned > 0.02, "the func_rotating's frames at 0 and 250 ms differ");
+  check(spinFrames.every((d) => d.diff === 0), "the func_rotating draws as a func_wall turned to the angles brushAngles gives at 0, 150 and 250 ms");
 
   // Culling never changes a pixel: each view renders the same with culling off. From the
   // north spot the south wall is beside the view and the one outside the map is in no
