@@ -397,6 +397,8 @@ describe("brush model instances", () => {
       it("does nothing without a pathtarget naming an entity, or for a DelayedUse", () => {
         const idle = { at: 10, to: undefined, next: 0 };
         expect(train(relay("") + elevator)).toMatchObject(idle);
+        // The elevator's own pathtarget is not read.
+        expect(train(relay("") + `{ "classname" "trigger_elevator" "targetname" "e" "target" "t" "pathtarget" "z" }`)).toMatchObject(idle);
         expect(train(relay(`"pathtarget" "nothing"`) + elevator)).toMatchObject(idle);
         expect(train(`{ "classname" "trigger_always" "target" "e" "pathtarget" "z" }` + elevator)).toMatchObject(idle);
       });
@@ -405,7 +407,21 @@ describe("brush model instances", () => {
         const idle = { at: 10, to: undefined };
         expect(train(relay(`"pathtarget" "z"`) + `{ "classname" "trigger_elevator" "targetname" "e" "target" "a" }`)).toMatchObject(idle);
         expect(train(relay(`"pathtarget" "z"`) + `{ "classname" "trigger_elevator" "targetname" "e" }`)).toMatchObject(idle);
+        // Nor when it is freed at spawn (NOT_DEATHMATCH).
         expect(train(relay(`"pathtarget" "z"`) + `{ "classname" "trigger_elevator" "targetname" "e" "target" "t" "spawnflags" "2048" }`)).toMatchObject(idle);
+      });
+
+      it("used from a team member's think in its train master's teamchain walk, has the master current", () => {
+        // The explosion's think (due at 0.15) runs in train t's slot (SV_Physics_Pusher), where
+        // level.current_entity is still t, so Move_Calc begins the move at once.
+        const team = `{ "classname" "worldspawn" } { "classname" "trigger_always" "target" "x" }
+          { "classname" "func_train" "model" "*1" "target" "a" "targetname" "t" "team" "k" }
+          { "classname" "path_corner" "targetname" "a" "origin" "10 0 0" }
+          { "classname" "path_corner" "targetname" "z" "origin" "50 0 0" }
+          { "classname" "target_explosion" "targetname" "x" "team" "k" "delay" "-0.05" "pathtarget" "z" "target" "e" }`;
+        expect(train(elevator, team)).toMatchObject({ at: 10, to: 4, end: 50, think: "moveFinal", next: Math.fround(0.6) });
+        // Out of the team it runs at its own slot, after the train's: not current, deferred.
+        expect(train(elevator, team.replace(`"team" "k" "delay"`, `"delay"`))).toMatchObject({ to: 4, think: "moveBegin", next: Math.fround(0.3) });
       });
 
       it("returns while the train has a nextthink", () => {

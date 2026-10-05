@@ -1058,14 +1058,16 @@ function explode(s: Settle, index: number): void {
 /**
  * SV_RunThink in a settle frame for an entity whose think the walk models: none at or
  * below 0 or past level.time + 0.001 (compared as the C does, so a NaN runs), and
- * nextthink is zeroed before the think. multi_wait does nothing more.
+ * nextthink is zeroed before the think. multi_wait does nothing more. `slot` is the
+ * entity G_RunFrame is running (level.current_entity): a team member's think run in its
+ * master's teamchain walk (SV_Physics_Pusher) runs with the master current.
  */
-function runThink(s: Settle, index: number, frame: 1 | 2): void {
+function runThink(s: Settle, index: number, frame: 1 | 2, slot: number = index): void {
   const think = s.nextthink.get(index) ?? 0;
   if (think <= 0 || think > (frame === 1 ? FIRST_FRAME_DUE : SECOND_FRAME_DUE)) return;
   s.nextthink.set(index, 0);
   const current = s.current;
-  s.current = index;
+  s.current = slot;
   switch (s.entities[index]!.classname) {
     case "func_timer":
       timerThink(s, index, levelTimeAt(frame));
@@ -1213,8 +1215,9 @@ function elevatorInit(s: Settle, index: number): void {
  * when the user (`other`) has no "pathtarget" naming an entity (a DelayedUse has none);
  * else that entity becomes the train's target_ent and the train resumes towards it
  * (train_resume), its move begun at once only from the train's own think, as in
- * `trainUseIn`. A train freed since init is left alone: the game moves its unused edict,
- * which is never drawn.
+ * `trainUseIn`. A train freed since init is left alone: the game moves its freed edict,
+ * or returns on the nextthink of a DelayedUse G_Spawn put there; neither is drawn or
+ * opens a portal.
  */
 function elevatorUse(s: Settle, index: number, other: number): void {
   const train = s.elevators.get(index);
@@ -1310,7 +1313,8 @@ function doorUse(s: Settle, index: number): void {
  * func_train_find (`trainFind`) at its own slot, a team slave's included (BACKLOG.md). A train's mins are its inline model's in `bsp`, else 0 0 0 (without
  * `bsp`, or a train with no inline model). A breach on a team whose master is in
  * PUSHER_CLASSES runs turret_breach_finish_init in the master's slot, along the
- * teamchain up to a freed member, freeing its target. A START_ON func_timer due by then
+ * teamchain up to a freed member, freeing its target; a member trigger_elevator's init
+ * runs there too (`runThink`). A START_ON func_timer due by then
  * thinks again at level.time + wait, its targets unfired (uses here are not modeled), and
  * a trigger_elevator runs trigger_elevator_init (`elevatorInit`).
  *
@@ -1447,7 +1451,7 @@ function settleSpawnFrames(
     if (!members || !PUSHER_CLASSES.has(ent.classname ?? "")) continue;
     for (const m of members) {
       if (s.freed.has(m)) break;
-      runThink(s, m, 1);
+      runThink(s, m, 1, slot);
       if (s.freed.has(m)) break;
       if (entities[m]!.classname !== "turret_breach") continue;
       const t = pickTarget(s, entities[m]!.target);
@@ -1474,7 +1478,7 @@ function settleSpawnFrames(
       if (members && PUSHER_CLASSES.has(entities[slot]!.classname ?? "")) {
         for (const m of members) {
           if (s.freed.has(m)) break;
-          runThink(s, m, 2);
+          runThink(s, m, 2, slot);
           if (s.freed.has(m)) break;
         }
       }

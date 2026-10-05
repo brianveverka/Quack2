@@ -18,8 +18,7 @@ R_SetupFrame's second view cluster 16 units below or above the eye), area portal
 (closed except those the two settle frames open: START_OPEN doors, and trigger_always
 firing portals, doors, secret doors, relays and the trigger_once, trigger_multiple,
 trigger_counter, func_timer and target_explosion entities that pass a use on (the last
-two also from their own think when due), and trigger_elevator sending its train on
-toward its user's "pathtarget" (train_resume), a "delay" on the way firing in the
+two also from their own think when due), a "delay" on the way firing in the
 second frame when due by then and G_Spawn puts its DelayedUse in a slot still ahead;
 a door's door_hit_bottom closes its own again in the game frame it is back down) culling world leafs and brush models,
 brush entities a killtarget frees in the settle frames left out, and func_wall and
@@ -27,7 +26,8 @@ func_object entities a use there shows or hides drawn or left out to match,
 the world walked per frame as R_RecursiveWorldNode does (R_CullBox on nodes and leafs,
 so the sky box is bounded by the sky faces in view), inline brush models where the game
 has them after spawn (untargeted plats lowered, START_OPEN doors open, trains where the
-settle frames' func_train_find and train_next leave them, also when a trigger_always uses them,
+settle frames' func_train_find and train_next leave them, also when a trigger_always uses them
+or a trigger_elevator sends them on toward its user's "pathtarget" (train_resume),
 turrets turned to rest in their pitch/yaw range with their teams under a MOVETYPE_PUSH
 or STOP master), the doors the settle frames send moving drawn moving (linear ones
 accelerating as Think_AccelMove does when accel or decel differs from speed, rotating ones
@@ -49,7 +49,7 @@ and self-extractor stubs included), picked archives read by range, checker fallb
 `pnpm smoke`).
 Remaining:
 - func_rotating is not drawn turning: SP_func_rotating gives a START_ON one avelocity
-  movedir * speed from spawn, and rotate_use (a use in the settle frames, `useOne` in
+  movedir * speed from spawn, and rotating_use (a use in the settle frames, `useOne` in
   bmodels.ts) toggles it between that and 0. Needs a sim mover stepped at FRAMETIME
   (Brian, session 31: brush motion lives in packages/sim, blended by the client as
   CL_AddPacketEntities does) and the renderer's per-frame instance poses. A use that
