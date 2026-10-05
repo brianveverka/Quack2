@@ -558,8 +558,8 @@ describe("brush model instances", () => {
     it("matches gcc x86-64 turret_breach_think and SV_Push bit for bit", () => {
       // [turret_base "angle", breach "angles", minpitch, maxpitch, minyaw, maxyaw, speed],
       // then the float bits gcc -O0 left after 10000 frames (2026-10-05): the base's yaw and
-      // the breach's angles. Chosen from 7952 bit-identical random cases so that each float
-      // rounding of the port, dropped, changes one of them.
+      // the breach's angles. Chosen from 7952 bit-identical random cases so that dropping
+      // any float rounding of the port that can round here changes one of them.
       const cases: [string[], string][] = [
         [["372.140331", "-15.82 0 359.99999", "32.8", "-84.757917", "-64.432811", "-29.886019", "50.06491616368294"], "43ab208c c2033330 c1ef168b 43b40000"],
         [["128.09759", "-9e+1 0 -1e6", "-2", "34.990", "-255.0", "-234", "0.8321956791915"], "4369192c b5a20000 42d20000 c9742400"],

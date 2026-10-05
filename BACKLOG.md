@@ -147,7 +147,12 @@ Remaining:
   func_rotating's own spin about yaw.
 - A turret team stops at the first think that meets a breach angle of 2^27 or more
   (`NORMALIZE_LIMIT` in bmodels.ts), where the game's AnglesNormalize steps round and
-  run a million times a frame (forever from 2^33). Port the rounding steps if a map needs it.
+  run 370000 times a frame or more (forever above 2^33). Port the rounding steps if a map needs it.
+- `entityAngles` parses an "angles" vector to double and then to float (Math.fround);
+  ED_ParseField's sscanf "%f" rounds the decimal to float once, so a value near a
+  midpoint between two floats differs ("1.00000005960464477539062501": sscanf gives the
+  float above 1, the port 1; gcc, 2026-10-05).
+  Every float port reading "angles" (turret breaches, moveDir) shares it.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

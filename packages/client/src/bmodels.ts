@@ -345,8 +345,8 @@ const PER_FRAME = f32(FRAMETIME);
 /**
  * Below this, every step of AnglesNormalize's loop but the last into [0, 360] is exact
  * (a float's spacing there is at most 8, which divides 360), so `normalizeAngle` takes
- * them at once. Above it the game's loop rounds, takes a million steps a frame or more,
- * and from 2^33 never ends.
+ * them at once. Above it the game's loop rounds, takes 370000 steps a frame or more,
+ * and above 2^33 never ends.
  */
 const NORMALIZE_LIMIT = 2 ** 27;
 
@@ -508,9 +508,11 @@ interface TurretTeam {
    * droptofloor, in the second frame.
    */
   chain: number;
-  /** The yaw steps (amove) SV_Push has turned each member by, in order. */
+  /** The yaw steps (amove) SV_Push has turned each member by, in order (`addStep`). */
   readonly steps: number[][];
   yawVel: number;
+  /** Whether a push or think since it was last cleared changed a breach or the yaw velocity. */
+  changed: boolean;
   readonly released: boolean;
   /** Set when a breach's angle reaches NORMALIZE_LIMIT: the team is not run on from there. */
   halted: boolean;
@@ -519,8 +521,8 @@ interface TurretTeam {
 /**
  * The turret teams, by master (a breach with no team is its own): the teams with a
  * turret_breach under a PUSHER_CLASSES master. A team is not run from the first think
- * that meets a breach angle of NORMALIZE_LIMIT or more, or one not finite, where the game's
- * AnglesNormalize loops for a million steps or more, or forever.
+ * that meets a breach angle of NORMALIZE_LIMIT or more, or an infinite one, where the
+ * game's AnglesNormalize loops for 370000 steps or more, or forever.
  */
 function turretTeams(entities: readonly BspEntity[]): Map<number, TurretTeam> {
   const groups: number[][] = [];
@@ -537,7 +539,7 @@ function turretTeams(entities: readonly BspEntity[]): Map<number, TurretTeam> {
     const master = entities[members[0]!]!;
     const released = master.classname === "func_object" && (atoi(master.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK) === 0;
     const steps = members.map((): number[] => []);
-    teams.set(members[0]!, { members, breachAt, chain: members.length, steps, yawVel: 0, released, halted: false });
+    teams.set(members[0]!, { members, breachAt, chain: members.length, steps, yawVel: 0, changed: false, released, halted: false });
   }
   return teams;
 }
@@ -553,6 +555,20 @@ function turretChain(team: TurretTeam, freed: ReadonlySet<number>): number {
   return team.chain;
 }
 
+/** Appends a yaw step to a member's steps, kept as [step, count] runs. */
+function addStep(steps: number[], step: number): void {
+  const n = steps.length;
+  if (n > 0 && Object.is(steps[n - 2], step)) steps[n - 1]!++;
+  else steps.push(step, 1);
+}
+
+/** Stores a turret float, noting on the team whether it changed. */
+function store(team: TurretTeam, values: number[], k: number, value: number): void {
+  if (Object.is(values[k], value)) return;
+  values[k] = value;
+  team.changed = true;
+}
+
 /**
  * SV_Physics_Pusher's push, in float: every member on the teamchain with an avelocity
  * turned by avelocity * FRAMETIME (SV_Push). A member's pitch and roll take a 0 step too.
@@ -563,11 +579,11 @@ function turretPush(team: TurretTeam, freed: ReadonlySet<number>): void {
   for (let p = 0; p < chain; p++) {
     const b = team.breachAt[p];
     if (b && (b.pitchVel || team.yawVel)) {
-      b.angles[0] = f32(b.angles[0] + f32(b.pitchVel * PER_FRAME));
-      b.angles[1] = f32(b.angles[1] + yaw);
-      b.angles[2] = f32(b.angles[2] + 0);
+      store(team, b.angles, 0, f32(b.angles[0] + f32(b.pitchVel * PER_FRAME)));
+      store(team, b.angles, 1, f32(b.angles[1] + yaw));
+      store(team, b.angles, 2, f32(b.angles[2] + 0));
     }
-    if (team.yawVel) team.steps[p]!.push(yaw);
+    if (team.yawVel) addStep(team.steps[p]!, yaw);
   }
 }
 
@@ -575,13 +591,19 @@ function turretPush(team: TurretTeam, freed: ReadonlySet<number>): void {
 function turretThink(team: TurretTeam, p: number): void {
   const b = team.breachAt[p];
   if (!b || team.halted) return;
+  const [move0, move1] = b.move;
   const turn = breachThink(b);
   if (!turn) {
     team.halted = true;
     return;
   }
-  b.pitchVel = f32(turn[0] * PER_SECOND);
-  team.yawVel = f32(turn[1] * PER_SECOND);
+  const pitchVel = f32(turn[0] * PER_SECOND);
+  const yawVel = f32(turn[1] * PER_SECOND);
+  if (!Object.is(move0, b.move[0]) || !Object.is(move1, b.move[1]) || !Object.is(pitchVel, b.pitchVel) || !Object.is(yawVel, team.yawVel)) {
+    team.changed = true;
+  }
+  b.pitchVel = pitchVel;
+  team.yawVel = yawVel;
 }
 
 /**
@@ -591,7 +613,7 @@ function turretThink(team: TurretTeam, p: number): void {
 function turnedAngles(angles: readonly number[], steps: readonly number[]): Vec3 {
   if (steps.length === 0) return [angles[0]!, angles[1]!, angles[2]!];
   let yaw = f32(angles[1]!);
-  for (const step of steps) yaw = f32(yaw + step);
+  for (let k = 0; k < steps.length; k += 2) for (let n = 0; n < steps[k + 1]!; n++) yaw = f32(yaw + steps[k]!);
   return [f32(angles[0]! + 0), yaw, f32(angles[2]! + 0)];
 }
 
@@ -621,19 +643,16 @@ function settleTurrets(
   for (const team of teams.values()) {
     if (team.released) {
       // SV_Physics_Toss: VectorMA(s.angles, FRAMETIME, avelocity), a float step.
-      if (!freed.has(team.members[0]!)) team.steps[0]!.push(f32(team.yawVel * PER_FRAME));
+      if (!freed.has(team.members[0]!)) addStep(team.steps[0]!, f32(team.yawVel * PER_FRAME));
     } else {
-      const breaches = team.breachAt.filter((b) => b !== undefined);
-      const state = () => [team.yawVel, ...breaches.flatMap((b) => [...b.angles, ...b.move, b.pitchVel])];
       for (let frame = 2; frame < MAX_SETTLE_FRAMES; frame++) {
         const chain = turretChain(team, freed);
         if (chain === 0) break;
-        const before = state();
+        team.changed = false;
         turretPush(team, freed);
         // Only the last breach's yaw is kept, so an earlier one may never reach its own.
         for (let p = 0; p < chain; p++) turretThink(team, p);
-        const after = state();
-        if (f32(team.yawVel * PER_FRAME) === 0 && after.every((v, k) => Object.is(v, before[k]))) break;
+        if (f32(team.yawVel * PER_FRAME) === 0 && !team.changed) break;
       }
     }
     team.members.forEach((i, p) => result.set(i, { steps: team.steps[p]! }));
