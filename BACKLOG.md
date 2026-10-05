@@ -53,10 +53,9 @@ Remaining:
   func_wall, func_object and target_crosslevel_trigger (and a train's pathtarget at a
   corner it reaches at once). Not modeled: trigger_elevator_use, which sends its
   func_train on (train_resume) toward the corner its user's pathtarget names, and
-  func_rotating's rotate_use,
-  which starts or stops a drawn brush model turning. Any of them that spawns or frees an
-  edict in the second frame also moves where a DelayedUse lands (`spawnEdict` in
-  bmodels.ts).
+  func_rotating's rotate_use, which starts or stops a drawn brush model turning. Any of
+  them that spawns or frees an edict in the second frame also moves where a DelayedUse
+  lands (`spawnEdict` in bmodels.ts).
 - A team whose master a settle-frame killtarget frees stops moving from that frame (its
   members move and think only through the master's SV_Physics_Pusher), but
   `settleTurrets` ignores frees: a freed breach master is left out while its team is

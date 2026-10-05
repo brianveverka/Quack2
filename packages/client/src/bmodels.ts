@@ -983,9 +983,10 @@ function timerWait(ent: BspEntity): number {
 
 /**
  * crandom() * random for a func_timer, taking crandom() as 0 where the game draws it in
- * (-1, 1), never exactly 0 (`pickTarget` likewise takes the first match). SP_func_timer
+ * [-1, 1], never exactly 0 (`pickTarget` likewise takes the first match). SP_func_timer
  * lowers a random at or above wait to wait - FRAMETIME. One still infinite gives an
- * infinite product of either sign in the game, taken as +Infinity; a NaN stays NaN.
+ * infinite product of either sign in the game, taken as +Infinity; with another infinite
+ * summand the game's nextthink is then infinite or NaN by the draw, and this picks one.
  */
 function timerJitter(ent: BspEntity, wait: number): number {
   const r = f32(atof(ent.random ?? "0"));
