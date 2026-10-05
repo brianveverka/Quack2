@@ -339,8 +339,16 @@ const ITEM_CLASSES = new Set([
 ]);
 /** Frames a turret team is run for at most (1000 s); one that never settles is drawn as it is then. */
 const MAX_SETTLE_FRAMES = 10000;
-/** A turn per frame below this (degrees) counts as settled; a double never quite reaches zero. */
-const SETTLED = 1e-9;
+/** VectorScale's float scales: 1.0/FRAMETIME in turret_breach_think, FRAMETIME in SV_Physics_Pusher and SV_Physics_Toss. */
+const PER_SECOND = f32(1 / FRAMETIME);
+const PER_FRAME = f32(FRAMETIME);
+/**
+ * Below this, every step of AnglesNormalize's loop but the last into [0, 360] is exact
+ * (a float's spacing there is at most 8, which divides 360), so `normalizeAngle` takes
+ * them at once. Above it the game's loop rounds, takes 370000 steps a frame or more,
+ * and above 2^33 never ends.
+ */
+const NORMALIZE_LIMIT = 2 ** 27;
 
 /**
  * Whether an entity's spawn function frees it in deathmatch: always for the classes in
@@ -389,20 +397,24 @@ function findTeams(entities: readonly BspEntity[]): Map<string, number[]> {
 }
 
 /**
- * g_turret.c AnglesNormalize on one angle: `while (a > 360) a -= 360; while (a < 0) a += 360;`
- * in closed form, so a huge angle does not spin here as the game's loop would.
+ * g_turret.c AnglesNormalize on one float angle below NORMALIZE_LIMIT:
+ * `while (a > 360) a -= 360; while (a < 0) a += 360;`, the exact steps taken at once and
+ * the last, which can round, in float.
  */
 function normalizeAngle(a: number): number {
-  if (a > 360) return a - 360 * Math.ceil((a - 360) / 360);
-  if (a < 0) return a + 360 * Math.ceil(-a / 360);
+  if (a > 360) a -= 360 * (Math.ceil((a - 360) / 360) - 1);
+  while (a > 360) a = f32(a - 360);
+  if (a < 0) a += 360 * (Math.ceil(-a / 360) - 1);
+  while (a < 0) a = f32(a + 360);
   return a;
 }
 
-/** The wrap turret_breach_think applies once to each delta. */
+/** The wrap turret_breach_think applies once to each float delta. */
 function wrap180(d: number): number {
-  return d < -180 ? d + 360 : d > 180 ? d - 360 : d;
+  return d < -180 ? f32(d + 360) : d > 180 ? f32(d - 360) : d;
 }
 
+/** A turret_breach's float fields. */
 interface Breach {
   readonly index: number;
   /** s.angles, turned each frame by the pitch and the team's yaw velocity. */
@@ -415,42 +427,50 @@ interface Breach {
   pitchVel: number;
 }
 
-/** SP_turret_breach's fields: speed default 50, minpitch -30, maxpitch 30, maxyaw 360; a 0 means the default. */
+/** SP_turret_breach's fields: speed default 50, minpitch -30, maxpitch 30, maxyaw 360; a float 0 means the default. */
 function breachState(ent: BspEntity, index: number): Breach {
-  const field = (key: string, fallback: number) => atof(ent[key] ?? "0") || fallback;
-  const angles = entityAngles(ent);
+  const field = (key: string, fallback: number) => f32(atof(ent[key] ?? "0")) || fallback;
+  const angles = entityAngles(ent).map(f32) as Vec3;
   return {
     index,
     angles,
     move: [0, angles[1], 0],
-    pos1: [-field("minpitch", -30), atof(ent.minyaw ?? "0")],
+    pos1: [-field("minpitch", -30), f32(atof(ent.minyaw ?? "0"))],
     pos2: [-field("maxpitch", 30), field("maxyaw", 360)],
     speed: field("speed", 50),
     pitchVel: 0,
   };
 }
 
-/** turret_breach_think up to its avelocity: the pitch and yaw turned this frame, at most speed * FRAMETIME each. */
-function breachThink(b: Breach): [number, number] {
+/**
+ * turret_breach_think up to its avelocity, in float: the pitch and yaw to turn this
+ * frame, at most speed * FRAMETIME each. Undefined, and nothing changed, for an angle
+ * `normalizeAngle` does not take.
+ */
+function breachThink(b: Breach): [number, number] | undefined {
   const move = b.move;
+  if (![b.angles[0], b.angles[1], move[0], move[1]].every((a) => Math.abs(a) < NORMALIZE_LIMIT)) return undefined;
+  const current = [normalizeAngle(b.angles[0]), normalizeAngle(b.angles[1])];
   move[0] = normalizeAngle(move[0]);
   move[1] = normalizeAngle(move[1]);
-  if (move[0] > 180) move[0] -= 360;
+  if (move[0] > 180) move[0] = f32(move[0] - 360);
   if (move[0] > b.pos1[0]) move[0] = b.pos1[0];
   else if (move[0] < b.pos2[0]) move[0] = b.pos2[0];
   if (move[1] < b.pos1[1] || move[1] > b.pos2[1]) {
     // The game takes fabs before wrapping, so the < -180 case never applies.
-    const dmin = wrap180(Math.abs(b.pos1[1] - move[1]));
-    const dmax = wrap180(Math.abs(b.pos2[1] - move[1]));
+    const dmin = wrap180(Math.abs(f32(b.pos1[1] - move[1])));
+    const dmax = wrap180(Math.abs(f32(b.pos2[1] - move[1])));
     move[1] = Math.abs(dmin) < Math.abs(dmax) ? b.pos1[1] : b.pos2[1];
   }
+  // speed * FRAMETIME is a double (FRAMETIME is a double literal), stored into the float
+  // delta. A negative speed passes both tests, so the delta ends at -speed * FRAMETIME.
   const step = b.speed * FRAMETIME;
   const clamp = (d: number) => {
-    if (d > step) d = step;
-    if (d < -step) d = -step;
+    if (d > step) d = f32(step);
+    if (d < -step) d = f32(-step);
     return d;
   };
-  return [clamp(wrap180(move[0] - normalizeAngle(b.angles[0]))), clamp(wrap180(move[1] - normalizeAngle(b.angles[1])))];
+  return [clamp(wrap180(f32(move[0] - current[0]!))), clamp(wrap180(f32(move[1] - current[1]!)))];
 }
 
 /**
@@ -488,16 +508,22 @@ interface TurretTeam {
    * droptofloor, in the second frame.
    */
   chain: number;
-  /** The yaw each member has turned by. */
-  readonly turned: number[];
+  /** The yaw steps (amove) SV_Push has turned each member by, in order (`addStep`). */
+  readonly steps: number[][];
   yawVel: number;
+  /** Whether a push or think since it was last cleared changed a breach (not the team's yaw velocity). */
+  changed: boolean;
   readonly released: boolean;
+  /** Set when a breach's angle reaches NORMALIZE_LIMIT: the team is not run on from there. */
+  halted: boolean;
 }
 
 /**
  * The turret teams, by master (a breach with no team is its own): the teams with a
- * turret_breach under a PUSHER_CLASSES master. A team with a non-finite angle or field
- * is not run.
+ * turret_breach under a PUSHER_CLASSES master. A team is not run from the first think
+ * that meets a breach angle of NORMALIZE_LIMIT or more, or one not finite, where the
+ * game's AnglesNormalize loops for 370000 steps or more, or forever (NaN cannot come
+ * from `atof`).
  */
 function turretTeams(entities: readonly BspEntity[]): Map<number, TurretTeam> {
   const groups: number[][] = [];
@@ -510,13 +536,11 @@ function turretTeams(entities: readonly BspEntity[]): Map<number, TurretTeam> {
   const teams = new Map<number, TurretTeam>();
   for (const members of groups) {
     const breachAt = members.map((i) => (entities[i]!.classname === "turret_breach" ? breachState(entities[i]!, i) : undefined));
-    const breaches = breachAt.filter((b) => b !== undefined);
-    if (breaches.length === 0) continue;
-    const values = breaches.flatMap((b) => [...b.angles, ...b.pos1, ...b.pos2, b.speed]);
-    if (!values.every(Number.isFinite)) continue;
+    if (breachAt.every((b) => b === undefined)) continue;
     const master = entities[members[0]!]!;
     const released = master.classname === "func_object" && (atoi(master.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK) === 0;
-    teams.set(members[0]!, { members, breachAt, chain: members.length, turned: members.map(() => 0), yawVel: 0, released });
+    const steps = members.map((): number[] => []);
+    teams.set(members[0]!, { members, breachAt, chain: members.length, steps, yawVel: 0, changed: false, released, halted: false });
   }
   return teams;
 }
@@ -527,66 +551,112 @@ function turretTeams(entities: readonly BspEntity[]): Map<number, TurretTeam> {
  * no longer run at all.
  */
 function turretChain(team: TurretTeam, freed: ReadonlySet<number>): number {
+  if (team.halted) return 0;
   for (let p = 0; p < team.chain; p++) if (freed.has(team.members[p]!)) return p;
   return team.chain;
 }
 
-/** SV_Physics_Pusher's push: every member on the teamchain turned by its avelocity. */
+/** Appends a yaw step to a member's steps, kept as [step, count] runs. */
+function addStep(steps: number[], step: number): void {
+  const n = steps.length;
+  if (n > 0 && Object.is(steps[n - 2], step)) steps[n - 1]!++;
+  else steps.push(step, 1);
+}
+
+/** Stores a turret float, noting on the team whether it changed. */
+function store(team: TurretTeam, values: number[], k: number, value: number): void {
+  if (Object.is(values[k], value)) return;
+  values[k] = value;
+  team.changed = true;
+}
+
+/**
+ * SV_Physics_Pusher's push, in float: every member on the teamchain with an avelocity
+ * turned by avelocity * FRAMETIME (SV_Push). A member's pitch and roll take a 0 step too.
+ */
 function turretPush(team: TurretTeam, freed: ReadonlySet<number>): void {
   const chain = turretChain(team, freed);
+  const yaw = f32(team.yawVel * PER_FRAME);
   for (let p = 0; p < chain; p++) {
     const b = team.breachAt[p];
-    if (b) {
-      b.angles[0] += b.pitchVel * FRAMETIME;
-      b.angles[1] += team.yawVel * FRAMETIME;
+    if (b && (b.pitchVel || team.yawVel)) {
+      store(team, b.angles, 0, f32(b.angles[0] + f32(b.pitchVel * PER_FRAME)));
+      store(team, b.angles, 1, f32(b.angles[1] + yaw));
+      store(team, b.angles, 2, f32(b.angles[2] + 0));
     }
-    team.turned[p]! += team.yawVel * FRAMETIME;
+    if (team.yawVel) addStep(team.steps[p]!, yaw);
   }
 }
 
-/** turret_breach_think on the breach at team position p, if it is one. */
+/** turret_breach_think on the breach at team position p, if it is one: its avelocity, in float. */
 function turretThink(team: TurretTeam, p: number): void {
   const b = team.breachAt[p];
-  if (!b) return;
-  const [pitch, yaw] = breachThink(b);
-  b.pitchVel = pitch / FRAMETIME;
-  team.yawVel = yaw / FRAMETIME;
+  if (!b || team.halted) return;
+  const [move0, move1] = b.move;
+  const turn = breachThink(b);
+  if (!turn) {
+    team.halted = true;
+    return;
+  }
+  const pitchVel = f32(turn[0] * PER_SECOND);
+  const yawVel = f32(turn[1] * PER_SECOND);
+  if (!Object.is(move0, b.move[0]) || !Object.is(move1, b.move[1]) || !Object.is(pitchVel, b.pitchVel)) team.changed = true;
+  b.pitchVel = pitchVel;
+  team.yawVel = yawVel;
+}
+
+/**
+ * A member's angles after the yaw steps SV_Push turned it by, from its float s.angles,
+ * or `angles` unchanged when it never turned.
+ */
+function turnedAngles(angles: readonly number[], steps: readonly number[]): Vec3 {
+  if (steps.length === 0) return [angles[0]!, angles[1]!, angles[2]!];
+  let yaw = f32(angles[1]!);
+  for (let k = 0; k < steps.length; k += 2) for (let n = 0; n < steps[k + 1]!; n++) yaw = f32(yaw + steps[k]!);
+  return [f32(angles[0]! + 0), yaw, f32(angles[2]! + 0)];
 }
 
 /**
  * The turret teams run on from the third frame, as `settleSpawnFrames` left them, with
  * the entities it freed: each frame pushes the members on the chain and runs their
- * breaches' thinks, up to MAX_SETTLE_FRAMES in all, or until a frame turns nothing. An
- * inverted pitch range (minpitch > maxpitch) flips move_angles between the limits every
- * frame, forever, so it runs to the cap. So does a team with a yaw velocity whose chain
- * an item or a free has cut ahead of every breach: nothing on the chain sets it again,
- * and the game spins those members forever. A turned member's own spin (a START_ON
+ * breaches' thinks, up to MAX_SETTLE_FRAMES in all, or until a frame changes nothing and
+ * leaves no yaw step to push (then no later frame changes anything). An inverted pitch
+ * range (minpitch > maxpitch) flips move_angles between the limits every frame, forever,
+ * so it runs to the cap. So does a team with a yaw velocity whose chain an item or a free
+ * has cut ahead of every breach: nothing on the chain sets it again, and the game spins
+ * those members forever. In float a breach can also stop short of its target: a delta
+ * that turned into avelocity and back no longer moves the angle it is added to (below
+ * half its spacing), so the avelocity stays, and the team runs to the cap with its other
+ * members turning by that step every frame. A turned member's own spin (a START_ON
  * func_rotating) is not added, nor are frees after the settle frames. It changes the
  * teams in place, so each map's teams are settled once.
  *
  * Returns, per entity index, the breach's angles at rest, or for any other team member
- * the yaw it has turned by.
+ * the yaw steps it was turned by (`turnedAngles`).
  */
 function settleTurrets(
   teams: ReadonlyMap<number, TurretTeam>,
   freed: ReadonlySet<number>,
-): Map<number, { angles?: Vec3; yaw?: number }> {
-  const result = new Map<number, { angles?: Vec3; yaw?: number }>();
+): Map<number, { angles?: Vec3; steps?: readonly number[] }> {
+  const result = new Map<number, { angles?: Vec3; steps?: readonly number[] }>();
   for (const team of teams.values()) {
     if (team.released) {
-      if (!freed.has(team.members[0]!)) team.turned[0]! += team.yawVel * FRAMETIME;
+      // SV_Physics_Toss: VectorMA(s.angles, FRAMETIME, avelocity), a float step.
+      if (!freed.has(team.members[0]!)) addStep(team.steps[0]!, f32(team.yawVel * PER_FRAME));
     } else {
       for (let frame = 2; frame < MAX_SETTLE_FRAMES; frame++) {
         const chain = turretChain(team, freed);
         if (chain === 0) break;
-        // Only the last breach's yaw is kept, so an earlier one may never reach its own.
-        const pitches = team.breachAt.slice(0, chain).map((b) => Math.abs(b?.pitchVel ?? 0));
-        if (Math.max(Math.abs(team.yawVel), ...pitches) * FRAMETIME <= SETTLED) break;
+        team.changed = false;
+        const yawVel = team.yawVel;
         turretPush(team, freed);
+        // Only the last breach's yaw is kept, so an earlier one may never reach its own,
+        // and the yaw velocity is compared across the frame, not after each think.
         for (let p = 0; p < chain; p++) turretThink(team, p);
+        if (f32(team.yawVel * PER_FRAME) === 0 && Object.is(yawVel, team.yawVel) && !team.changed) break;
       }
     }
-    team.members.forEach((i, p) => result.set(i, { yaw: team.turned[p]! }));
+    team.members.forEach((i, p) => result.set(i, { steps: team.steps[p]! }));
     for (const b of team.breachAt) if (b) result.set(b.index, { angles: b.angles });
   }
   return result;
@@ -696,7 +766,7 @@ export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): B
         ? { origin: moved.origin, angles: [...rotor.angles] as Vec3 }
         : moved;
     const turn = turrets.get(i);
-    const turned: Vec3 = turn?.angles ?? (turn?.yaw ? [angles[0], angles[1] + turn.yaw, angles[2]] : angles);
+    const turned: Vec3 = turn?.angles ?? (turn?.steps ? turnedAngles(angles, turn.steps) : angles);
     instances.push({ model, entity: i, origin, angles: turned, classname });
   });
   return { instances, errors };
@@ -1853,15 +1923,14 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
       doors.set(i, { entity: i, mover: brushMover(buttonMover(ent, mins, maxs, origin)), portals: [] });
       return;
     }
-    // A door in a turret's team starts turned by the yaw its breach comes to rest at, as
-    // `brushModelInstances` draws it (the game reaches it after the settle frames when the
-    // breach is slow). Move_Calc leaves s.angles alone; AngleMove turns towards absolute
-    // start or end angles, so a rotating door turns the yaw back as it moves (BACKLOG.md).
-    const yaw = turrets.get(i)?.yaw ?? 0;
+    // A door in a turret's team starts turned by the yaw steps that bring its breach to
+    // rest, as `brushModelInstances` draws it (the game takes them after the settle frames
+    // when the breach is slow). Move_Calc leaves s.angles alone; AngleMove turns towards
+    // absolute start or end angles, so a rotating door turns the yaw back as it moves (BACKLOG.md).
+    const steps = turrets.get(i)?.steps ?? [];
     if (ent.classname === "func_door_rotating") {
       const init = rotatingDoor(ent, origin);
-      const a = init.angles!;
-      doors.set(i, { entity: i, mover: brushMover({ ...init, angles: [a[0], a[1] + yaw, a[2]] }), portals: areaportalsOf(i) });
+      doors.set(i, { entity: i, mover: brushMover({ ...init, angles: turnedAngles(init.angles!, steps) }), portals: areaportalsOf(i) });
       return;
     }
     const { mins, maxs } = modelBounds(bsp, model);
@@ -1879,7 +1948,7 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
     }
     const mover = brushMover({
       origin: pos1,
-      angles: [0, yaw, 0],
+      angles: turnedAngles([0, 0, 0], steps),
       startOrigin: pos1,
       endOrigin: pos2,
       distance,
