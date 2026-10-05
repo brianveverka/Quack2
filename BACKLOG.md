@@ -76,7 +76,9 @@ Remaining:
   slave never thinks and stays at its spawn origin; under a TOSS master it takes the
   master's origin (SV_Physics_Toss). `PUSHER_CLASSES` in bmodels.ts has the master
   rule `settleTurrets` uses. `brushMovers` leaves a slave train out, drawn where the
-  settle frames leave it. Since the settle frames free edicts (turret_breach_finish_init
+  settle frames leave it. Move_Calc also takes a slave's teammaster as the entity to
+  compare with level.current_entity, where `trainUseIn` and `elevatorUse` compare the
+  train itself, so a use from a teammate's think in the master's walk defers its move. Since the settle frames free edicts (turret_breach_finish_init
   in the first frame, killtargets in the second), the slot matters: a breach between the
   master and the train can free the train's first path_corner first, and a slave behind
   a teamchain a free cut, or under a master freed earlier in the frame, never thinks.

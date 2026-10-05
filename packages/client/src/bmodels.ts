@@ -735,7 +735,10 @@ interface Settle {
   trains: Map<number, BrushMover>;
   /** The func_train (movetarget) of each trigger_elevator whose trigger_elevator_init gave it its use. */
   elevators: Map<number, number>;
-  /** The entity whose think is running (level.current_entity), -1 for a DelayedUse. */
+  /**
+   * level.current_entity: the entity G_RunFrame is running (a team master during its
+   * teamchain walk, whichever member's think runs), -1 for a DelayedUse.
+   */
   current: number;
   /**
    * Uses left before MAX_USES cuts the walk off: per entity run, and for every DelayedUse
@@ -1192,9 +1195,10 @@ function trainPathtarget(s: Settle, index: number, corner: PathCorner): boolean 
 }
 
 /**
- * train_use (`trainUse`). Move_Calc begins the move at once only when the train runs it
- * from its own think, by a pathtarget of its own; from any other slot (a DelayedUse,
- * another train's think) it defers Move_Begin a frame.
+ * train_use (`trainUse`). Move_Calc begins the move at once only when the train is
+ * level.current_entity (`Settle.current`): from its own think, by a pathtarget of its
+ * own, or from a team member's think in its teamchain walk; from any other slot (a
+ * DelayedUse, another train's think) it defers Move_Begin a frame.
  */
 function trainUseIn(s: Settle, index: number): void {
   const m = s.trains.get(index);
@@ -1214,7 +1218,7 @@ function elevatorInit(s: Settle, index: number): void {
  * trigger_elevator_use: returns while its train has a nextthink (moving or waiting), or
  * when the user (`other`) has no "pathtarget" naming an entity (a DelayedUse has none);
  * else that entity becomes the train's target_ent and the train resumes towards it
- * (train_resume), its move begun at once only from the train's own think, as in
+ * (train_resume), its move begun at once only while the train is current, as in
  * `trainUseIn`. A train freed since init is left alone: the game moves its freed edict,
  * or returns on the nextthink of a DelayedUse G_Spawn put there; neither is drawn or
  * opens a portal.
