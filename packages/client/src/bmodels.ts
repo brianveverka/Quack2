@@ -561,10 +561,11 @@ function turretThink(team: TurretTeam, p: number): void {
  * the entities it freed: each frame pushes the members on the chain and runs their
  * breaches' thinks, up to MAX_SETTLE_FRAMES in all, or until a frame turns nothing. An
  * inverted pitch range (minpitch > maxpitch) flips move_angles between the limits every
- * frame, forever, so it runs to the cap; so does a team whose chain an item or a free
- * cut ahead of every breach after the first frame's thinks set a yaw velocity: nothing
- * on the chain sets it again, and the game spins those members forever. A turned member's own spin (a START_ON
- * func_rotating) is not added, nor are frees after the settle frames.
+ * frame, forever, so it runs to the cap. So does a team with a yaw velocity whose chain
+ * an item or a free has cut ahead of every breach: nothing on the chain sets it again,
+ * and the game spins those members forever. A turned member's own spin (a START_ON
+ * func_rotating) is not added, nor are frees after the settle frames. It changes the
+ * teams in place, so each map's teams are settled once.
  *
  * Returns, per entity index, the breach's angles at rest, or for any other team member
  * the yaw it has turned by.
@@ -1447,7 +1448,7 @@ function settleSpawnFrames(
   rotating: Map<number, BrushMover>;
   freed: Set<number>;
   shown: Map<number, boolean>;
-  /** The turret teams as the second frame leaves them, for `settleTurrets` (with `freed`). */
+  /** The turret teams as the second frame leaves them, for one `settleTurrets` call (with `freed`). */
   turrets: Map<number, TurretTeam>;
   moves: readonly { index: number; up: boolean }[];
   /** `areaportalsOf` as the settle frames leave the map: nothing is freed after them. */

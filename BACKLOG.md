@@ -30,8 +30,7 @@ settle frames' func_train_find and train_next leave them, also when a trigger_al
 or a trigger_elevator sends them on toward its user's "pathtarget" (train_resume),
 turrets turned to rest in their pitch/yaw range with their teams under a MOVETYPE_PUSH
 or STOP master, until a settle-frame free stops the team or cuts its chain), the doors
-the settle frames send moving drawn moving (linear ones
-accelerating as Think_AccelMove does when accel or decel differs from speed, rotating ones
+the settle frames send moving drawn moving (linear ones accelerating as Think_AccelMove does when accel or decel differs from speed, rotating ones
 turning as AngleMove_Calc does, their angles sent in 360/256 degree steps and blended by
 LerpAngle), also in teams with other members, and the plats that are no team's slave a
 use there sends down (Use_Plat, accelerating as Think_AccelMove does when accel or decel
