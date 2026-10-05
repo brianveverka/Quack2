@@ -88,10 +88,21 @@ describe("parseEntities", () => {
     ['{ "classname" "x"', /unexpected end of entity string/],
     ['{ "classname" }', /key "classname" has no value/],
     ['{ "classname" "x', /unterminated quoted string at line 1/],
-    ['{ "a" "b" { }', /unexpected "\{"/],
+    // A key "{" is a key, and a value starting with "}" (quoted or not) has no data.
+    ['{ "a" "b" { }', /key "\{" has no value at line 1/],
+    ['{ "a" "}x" }', /key "a" has no value at line 1/],
   ])("rejects %j", (src, msg) => {
     expect(() => parseEntities(src)).toThrow(EntityParseError);
     expect(() => parseEntities(src)).toThrow(msg);
+  });
+
+  it("tests braces by a token's first character, quoted or not, as ED_ParseEdict does", () => {
+    // A "{..." token opens an entity and a "}..." key closes it.
+    expect(parseEntities('"{x" "a" "1" "}" "{" "b" "2" "}y"')).toEqual([{ a: "1" }, { b: "2" }]);
+    expect(parseEntities('{ "a" "1" }')).toEqual([{ a: "1" }]);
+    // A "{" key or value is ordinary text.
+    expect(parseEntities('{ { "1" "{" "2" }')).toEqual([{ "{": "2" }]);
+    expect(parseEntities('{ "a" { "b" "{x" }')).toEqual([{ a: "{", b: "{x" }]);
   });
 
   it("entityVec3 rejects malformed vectors", () => {

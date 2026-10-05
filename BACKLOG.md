@@ -52,10 +52,20 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- Malformed entity lumps: when the first entity is not worldspawn, InitBodyQue never runs,
-  so entities 1-8 land in the body-queue slots G_FreeEdict refuses to free, and stay in
-  the game whatever `inGame` says (spawn spots, teams, targets). ED_ParseEdict also ends
-  an entity on any key starting with "}", quoted or not; `parseEntities` does not.
+- Malformed entity lumps, body queue: G_FreeEdict refuses the first BODY_QUEUE_SIZE (8)
+  edicts after the clients, which InitBodyQue fills when entity 0 is worldspawn. Otherwise
+  the first 8 G_Spawns of SpawnEntities take them (map entities 1 on, the edicts spawn
+  functions G_Spawn, such as a trigger_always's DelayedUse; list them from the source),
+  and those entities stay in use whatever `inGame` says: NOT_DEATHMATCH ones whose
+  spawn function never ran, and ones their spawn function frees partly spawned. G_Find and
+  G_FindTeams still find them (spawn spots, teams, targets), and a killtarget cannot
+  free them. An empty entity ("{ }") is zeroed by ED_ParseEdict and leaves its edict free.
+- Malformed entity lumps, edict 0: entity 0 fills edict 0 whatever its classname, and
+  only SP_worldspawn marks it in use, so otherwise G_RunFrame never runs it and G_Find
+  skips it, though its spawn function's side effects stand (a trigger_always's
+  DelayedUse). `settleSpawnFrames` runs it in slot 0 and finds it by "targetname". A
+  later worldspawn entity runs SP_worldspawn (InitBodyQue, CS_SKY and the other
+  configstrings), which `skySettings` ignores.
 - A light style change scans every face for the styles it uses (`setLightmapStyles`):
   0.7-0.9 ms per 10 Hz step over 5461 faces, measured 2026-10-04 in Node 22 on a
   synthetic map where no face uses the changed style. A per-style face list would make it scale with the
@@ -147,6 +157,16 @@ Remaining:
   (SV_Physics_Pusher), pushed with the team. Under a func_door or func_door_rotating
   master its speeds are NaN (Think_CalcMoveSpeed), so each move goes through
   Think_AccelMove with NaN speeds.
+- COM_Parse keeps 128 characters of a quoted token (and writes its terminator one byte
+  past com_token) and discards a bare word of 128 characters or more (empty token);
+  `parseEntities` keeps every token whole, so a long "targetname" or "target" matches
+  differently.
+- COM_Parse reads `*data` as a signed char, so it skips bytes 0x80-0xFF as whitespace
+  and ends a bare word at one; `parseEntities` (on `decodeLatin1` text) keeps them in a
+  word, so `{ "a" "1" }\xe9` parses in the game and throws here (gcc -O0, 2026-10-05).
+  A lump ending inside a final quoted `"}...` key also closes its entity in the game (its
+  first character is `}`), and the next COM_Parse starts past the lump's terminator, so
+  what follows depends on memory beyond the lump; `parseEntities` throws.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
