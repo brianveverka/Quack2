@@ -22,6 +22,7 @@ import {
   platGoDown,
   buttonFire,
   stepPusher,
+  trainResume,
   trainUse,
   type Bsp,
   type BspEntity,
@@ -716,7 +717,8 @@ interface Settle {
   /**
    * nextthink of the entities whose think the walk models (`runThink`): a trigger_once,
    * trigger_multiple or trigger_counter's from multi_trigger (while nonzero its later uses
-   * return), a func_timer's and a target_explosion's.
+   * return), a func_timer's, a target_explosion's and a trigger_elevator's
+   * (trigger_elevator_init).
    */
   nextthink: Map<number, number>;
   /** target_explosion entities in target_explosion_explode, whose "delay" it has cleared. */
@@ -731,6 +733,8 @@ interface Settle {
   portals: Map<number, boolean>;
   /** Every in-game func_train's mover, by entity index. */
   trains: Map<number, BrushMover>;
+  /** The func_train (movetarget) of each trigger_elevator whose trigger_elevator_init gave it its use. */
+  elevators: Map<number, number>;
   /** The entity whose think is running (level.current_entity), -1 for a DelayedUse. */
   current: number;
   /**
@@ -851,28 +855,29 @@ function useTargets(s: Settle, user: User): void {
   for (const t of findTargets(s, user.target)) {
     // Doors set their portals in door_use_areaportals instead.
     if (isDoor && stricmpEqual(s.entities[t]!.classname ?? "", "func_areaportal")) continue;
-    if (t !== user.index) use(s, t);
+    if (t !== user.index) use(s, t, user.index);
     if (gone()) return;
   }
 }
 
 /**
- * An entity's use function, for the classes whose use changes area portals, a train's
+ * An entity's use function, used by `other` (G_UseTargets' ent: a map entity, or -1 for
+ * a DelayedUse), for the classes whose use changes area portals, a train's
  * position or whether a brush entity is drawn now, or the moveinfo.state door_go_up
  * reads. The rest are not modeled and do nothing here.
  */
-function use(s: Settle, index: number): void {
+function use(s: Settle, index: number, other: number): void {
   if (s.budget <= 0 || s.depth >= MAX_USE_DEPTH) return;
   s.budget--;
   s.depth++;
   try {
-    useOne(s, index);
+    useOne(s, index, other);
   } finally {
     s.depth--;
   }
 }
 
-function useOne(s: Settle, index: number): void {
+function useOne(s: Settle, index: number, other: number): void {
   const ent = s.entities[index]!;
   switch (ent.classname) {
     case "func_areaportal": {
@@ -920,6 +925,9 @@ function useOne(s: Settle, index: number): void {
       return;
     case "func_train":
       trainUseIn(s, index);
+      return;
+    case "trigger_elevator":
+      elevatorUse(s, index, other);
       return;
     case "func_button": {
       // button_use -> button_fire: returns if up or at the top, else starts up. Its
@@ -1065,6 +1073,9 @@ function runThink(s: Settle, index: number, frame: 1 | 2): void {
     case "target_explosion":
       explode(s, index);
       break;
+    case "trigger_elevator":
+      elevatorInit(s, index);
+      break;
   }
   s.current = current;
 }
@@ -1189,6 +1200,35 @@ function trainUseIn(s: Settle, index: number): void {
 }
 
 /**
+ * trigger_elevator_init, its think in the first frame: the use is given only when its
+ * "target" picks an entity whose classname is exactly func_train.
+ */
+function elevatorInit(s: Settle, index: number): void {
+  const t = pickTarget(s, s.entities[index]!.target);
+  if (t !== undefined && s.entities[t]!.classname === "func_train") s.elevators.set(index, t);
+}
+
+/**
+ * trigger_elevator_use: returns while its train has a nextthink (moving or waiting), or
+ * when the user (`other`) has no "pathtarget" naming an entity (a DelayedUse has none);
+ * else that entity becomes the train's target_ent and the train resumes towards it
+ * (train_resume), its move begun at once only from the train's own think, as in
+ * `trainUseIn`. A train freed since init is left alone: the game moves its unused edict,
+ * which is never drawn.
+ */
+function elevatorUse(s: Settle, index: number, other: number): void {
+  const train = s.elevators.get(index);
+  if (train === undefined || s.freed.has(train)) return;
+  const m = s.trains.get(train)!;
+  if (m.nextthink !== 0) return;
+  const pathtarget = other >= 0 ? s.entities[other]!.pathtarget : undefined;
+  const corner = pathtarget === undefined ? undefined : pathCorner(s, pathtarget);
+  if (!corner) return;
+  m.train!.targetEnt = corner;
+  trainResume(m, levelTimeAt(2), s.current === train);
+}
+
+/**
  * func_wall_use and func_object_use. SP_func_wall gives a use only to a wall with any of
  * TRIGGER_SPAWN, TOGGLE or START_ON, and SP_func_object to an object with any spawnflag;
  * the use shows a hidden one and hides a shown wall. An object's use then clears itself,
@@ -1271,7 +1311,8 @@ function doorUse(s: Settle, index: number): void {
  * `bsp`, or a train with no inline model). A breach on a team whose master is in
  * PUSHER_CLASSES runs turret_breach_finish_init in the master's slot, along the
  * teamchain up to a freed member, freeing its target. A START_ON func_timer due by then
- * thinks again at level.time + wait, its targets unfired (uses here are not modeled).
+ * thinks again at level.time + wait, its targets unfired (uses here are not modeled), and
+ * a trigger_elevator runs trigger_elevator_init (`elevatorInit`).
  *
  * Second frame: a train runs its think if due
  * (SV_Physics_Pusher: train_next for a START_ON one, or what a use earlier in the frame
@@ -1293,7 +1334,8 @@ function doorUse(s: Settle, index: number): void {
  * 0 0 0 opens its portals, a trigger_relay fires its targets, a trigger_once,
  * trigger_multiple or trigger_counter passes it on as multi_trigger does (`multiTrigger`;
  * a TRIGGERED one is armed by its first, a counter fires as its count runs out), a train runs train_use
- * (`trainUseIn`), a func_timer is turned off, or on (`timerUse`), a target_explosion fires
+ * (`trainUseIn`), a trigger_elevator sends its train on toward its user's "pathtarget"
+ * (`elevatorUse`), a func_timer is turned off, or on (`timerUse`), a target_explosion fires
  * its targets or thinks them at level.time + delay (its radius damage is not modeled),
  * a func_wall or func_object is shown or hidden (`wallUse`); an entity a killtarget
  * freed is not drawn. Other use functions are not modeled, nor are a team slave train's
@@ -1360,6 +1402,7 @@ function settleSpawnFrames(
     portalCount: new Map(),
     portals: new Map(),
     trains: new Map(),
+    elevators: new Map(),
     current: -1,
     budget: MAX_USES,
     spawnedBudget: MAX_USES,
@@ -1372,9 +1415,13 @@ function settleSpawnFrames(
     s.trains.set(i, trainMover(s, i, mins));
   });
   entities.forEach((e, i) => {
-    if (e.classname !== "func_timer" || !inGame(e)) return;
-    const think = timerSpawnThink(e);
-    if (think !== 0) s.nextthink.set(i, think);
+    if (!inGame(e)) return;
+    if (e.classname === "func_timer") {
+      const think = timerSpawnThink(e);
+      if (think !== 0) s.nextthink.set(i, think);
+    }
+    // SP_trigger_elevator thinks trigger_elevator_init at level.time + FRAMETIME.
+    if (e.classname === "trigger_elevator") s.nextthink.set(i, f32(FRAMETIME));
   });
   // The first frame, in slot order (a slot freed earlier in it is skipped).
   for (const slot of [...s.slots]) {

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseBsp, parseEntities } from "@quack2/sim";
 import { describe, expect, it } from "vitest";
-import { brushModelInstances, entityAngles, openAreaPortals, playerSpawnSpot, visibleAtSpawn } from "../src/bmodels.js";
+import { brushModelInstances, brushMovers, entityAngles, openAreaPortals, playerSpawnSpot, visibleAtSpawn } from "../src/bmodels.js";
 
 const bsp = parseBsp(new Uint8Array(readFileSync(fileURLToPath(new URL("../../../fixtures/maps/test_arena.bsp", import.meta.url)))));
 
@@ -368,6 +368,73 @@ describe("brush model instances", () => {
         expect(x(train + always)).toEqual([20]);
         // Without TOGGLE the use is ignored either way.
         expect(x(always + `{ "classname" "func_train" "model" "*1" "target" "a" "targetname" "t" "spawnflags" "1" }`)).toEqual([20]);
+      });
+    });
+
+    describe("a trigger_elevator sends its train on toward its user's pathtarget (trigger_elevator_use)", () => {
+      // Train "t" waits at a (x 10); corner z at x 50. Entities: 0 worldspawn, 1 train, 2 a, 3 z, then `src`.
+      const base = `{ "classname" "worldspawn" }
+        { "classname" "func_train" "model" "*1" "target" "a" "targetname" "t" }
+        { "classname" "path_corner" "targetname" "a" "origin" "10 0 0" }
+        { "classname" "path_corner" "targetname" "z" "origin" "50 0 0" }`;
+      const train = (src: string, prefix = base) => {
+        const ents = parseEntities(prefix + src);
+        const i = ents.findIndex((e) => e.classname === "func_train");
+        const m = brushMovers(bsp, ents).flat().find((b) => b.entity === i)!.mover;
+        return { at: m.origin[0] - 385, to: m.train!.targetEnt?.entity, end: m.endOrigin[0] - 385, think: m.think, next: m.nextthink };
+      };
+      const relay = (keys: string) => `{ "classname" "trigger_always" "target" "r" } { "classname" "trigger_relay" "targetname" "r" "target" "e" ${keys} }`;
+      const elevator = `{ "classname" "trigger_elevator" "targetname" "e" "target" "t" }`;
+
+      it("resumes it toward the entity the user's pathtarget names, its move begun a frame later from another slot", () => {
+        expect(train(relay(`"pathtarget" "z"`) + elevator)).toEqual({ at: 10, to: 3, end: 50, think: "moveBegin", next: Math.fround(0.3) });
+        // The elevator's own slot does not matter: its use was given in the first frame.
+        expect(train(elevator + relay(`"pathtarget" "z"`))).toMatchObject({ to: 3, end: 50 });
+        // And any entity with that targetname, read where it spawned.
+        expect(train(relay(`"pathtarget" "e"`) + `{ "classname" "trigger_elevator" "targetname" "e" "target" "t" "origin" "70 0 0" }`)).toMatchObject({ to: 6, end: 70 });
+      });
+
+      it("does nothing without a pathtarget naming an entity, or for a DelayedUse", () => {
+        const idle = { at: 10, to: undefined, next: 0 };
+        expect(train(relay("") + elevator)).toMatchObject(idle);
+        expect(train(relay(`"pathtarget" "nothing"`) + elevator)).toMatchObject(idle);
+        expect(train(`{ "classname" "trigger_always" "target" "e" "pathtarget" "z" }` + elevator)).toMatchObject(idle);
+      });
+
+      it("has no use unless its target picks an entity whose classname is func_train", () => {
+        const idle = { at: 10, to: undefined };
+        expect(train(relay(`"pathtarget" "z"`) + `{ "classname" "trigger_elevator" "targetname" "e" "target" "a" }`)).toMatchObject(idle);
+        expect(train(relay(`"pathtarget" "z"`) + `{ "classname" "trigger_elevator" "targetname" "e" }`)).toMatchObject(idle);
+        expect(train(relay(`"pathtarget" "z"`) + `{ "classname" "trigger_elevator" "targetname" "e" "target" "t" "spawnflags" "2048" }`)).toMatchObject(idle);
+      });
+
+      it("returns while the train has a nextthink", () => {
+        // A START_ON train has train_next due in the second frame: after its slot its move to b
+        // (at no distance, wait -1) is done and the elevator resumes it; before it, it is busy.
+        const startOn = `{ "classname" "worldspawn" }
+          { "classname" "func_train" "model" "*1" "target" "a" "targetname" "t" "spawnflags" "1" }
+          { "classname" "path_corner" "targetname" "a" "target" "b" "origin" "10 0 0" }
+          { "classname" "path_corner" "targetname" "z" "origin" "50 0 0" }
+          { "classname" "path_corner" "targetname" "b" "origin" "10 0 0" "wait" "-1" }`;
+        expect(train(relay(`"pathtarget" "z"`) + elevator, startOn)).toMatchObject({ to: 3, end: 50, next: Math.fround(0.3) });
+        expect(train(elevator, startOn.replace(`{ "classname" "func_train"`, `${relay(`"pathtarget" "z"`)} { "classname" "func_train"`))).toMatchObject({
+          to: 6,
+          end: 10,
+          next: 0,
+        });
+      });
+
+      it("from its train's own corner pathtarget begins the move at once, toward the entity the corner's pathtarget names", () => {
+        // b's pathtarget names the elevator, so trigger_elevator_use picks the elevator itself.
+        const own = `{ "classname" "worldspawn" }
+          { "classname" "func_train" "model" "*1" "target" "a" }
+          { "classname" "path_corner" "targetname" "a" "target" "b" "origin" "10 0 0" }
+          { "classname" "path_corner" "targetname" "b" "origin" "10 0 0" "wait" "-1" "pathtarget" "e" }
+          { "classname" "trigger_elevator" "targetname" "e" "target" "t" "origin" "90 0 0" }`;
+        const named = own.replace(`"target" "a" }`, `"target" "a" "targetname" "t" "spawnflags" "1" }`);
+        expect(train("", named)).toEqual({ at: 10, to: 4, end: 90, think: "moveFinal", next: Math.fround(1) });
+        // Without the elevator's use (no train named t) it stays at b.
+        expect(train("", own)).toMatchObject({ at: 10, to: 3, end: 10, next: 0 });
       });
     });
 
