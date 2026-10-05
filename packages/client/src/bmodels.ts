@@ -1475,9 +1475,10 @@ function doorUse(s: Settle, index: number): void {
  * func_train_find (`trainFind`) at its own slot, except a team slave: SV_Physics_Pusher
  * returns for it there, and runs its thinks (this one and every later one) in its
  * master's teamchain walk, only under a PUSHER_CLASSES master, and not behind a freed
- * member or under a freed master. Under any other master it never thinks, and only a
- * use (train_use) moves it from its spawn origin; a MOVETYPE_TOSS master (SV_Physics_Toss) would also copy its origin to
- * it as it falls, which needs the trace (BACKLOG.md). A func_door or func_door_rotating
+ * member or under a freed master. Under any other master it never thinks or is pushed:
+ * a use (train_use, train_next) moves it only to a TELEPORT path_corner, and a
+ * MOVETYPE_TOSS master (SV_Physics_Toss) would also copy its origin to it as it falls,
+ * which needs the trace (BACKLOG.md). A func_door or func_door_rotating
  * master's think (Think_CalcMoveSpeed) first sets the speeds of every train on its chain
  * to NaN. A train's mins are its inline model's in `bsp`, else 0 0 0 (without
  * `bsp`, or a train with no inline model). A breach on a team whose master is in
