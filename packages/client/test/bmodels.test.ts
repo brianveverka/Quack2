@@ -528,10 +528,50 @@ describe("brush model instances", () => {
       `);
       close(level!, [0, 90, 5]); // roll is never turned
       close(inRange!, [0, -90, 0]); // 270, already in range
-      close(clampedUp!, [-10, 0, 0]); // pitch range -20..-10 (Quake pitch is down), at 0.3 deg a frame
-      close(nearMin!, [0, 370, 0]); // 20 deg the short way, up past 360
-      close(nearMax!, [0, 100, 0]);
+      // Pitch range -20..-10 (Quake pitch is down), at 0.3 deg a frame in float: the last
+      // step lands 9.5e-6 short, where AnglesNormalize rounds -10.0000095 + 360 to 350, so
+      // the delta is 0 (as gcc x86-64 runs turret_breach_think and SV_Push, 2026-10-05).
+      expect(clampedUp).toEqual([Math.fround(-10.0000095), 0, 0]);
+      expect(nearMin).toEqual([0, 370, 0]); // 20 deg the short way, up past 360
+      expect(nearMax).toEqual([0, 100, 0]);
       expect(huge).toEqual([0, Infinity, 0]); // not run: the game's AnglesNormalize would never end
+    });
+
+    it("turns a turret team in float, as gcc x86-64 runs turret_breach_think and SV_Push", () => {
+      const yaws = (src: string) => place(`{ "classname" "worldspawn" }` + src).map((b) => b.angles[1]);
+      const team = (breach: string) => yaws(`{ "classname" "turret_base" "model" "*1" "team" "a" }
+        { "classname" "turret_breach" "model" "*1" "team" "a" ${breach} }`);
+      // From -80.630379 to minyaw 0 (maxyaw 111) at 5 a frame: the last step stops 2^-17 short, which
+      // normalizes to 360, the top of the range. The base takes the same float steps from 0.
+      expect(team(`"angle" "-80.630379" "maxyaw" "111"`)).toEqual([80.63037109375, -(2 ** -17)]);
+      // 1049.832 normalizes to 329.83203 (exact), 2^-15 below minyaw 329.83206: the delta
+      // turns into a 2^-15 step, under half the spacing at 1049.832, so the breach never
+      // moves and keeps its yaw velocity, and the base turns by it to the frame cap (gcc
+      // measured the same angles after 10000 frames, 2026-10-05).
+      expect(team(`"angle" "1049.832" "minyaw" "329.83206"`)).toEqual([9999 * 2 ** -15, Math.fround(1049.832)]);
+      // A member adds each float step to its own float yaw: from 0.1, the steps to 80 come
+      // to 80.1 rounded, not a double sum.
+      expect(yaws(`{ "classname" "turret_base" "model" "*1" "angle" "0.1" "team" "a" }
+        { "classname" "turret_breach" "model" "*1" "team" "a" "minyaw" "80" "maxyaw" "100" "speed" "3.3" }`)).toEqual([80.0999984741211, 80]);
+    });
+
+    it("does not run a turret team past an angle of 2^27, where the game's AnglesNormalize crawls", () => {
+      const angles = (src: string) => place(`{ "classname" "worldspawn" }` + src).map((b) => b.angles);
+      // Exact steps below 2^27, taken at once: 1e8 is 280 more than a multiple of 360, its
+      // range 0..360 holds it, and nothing turns.
+      expect(angles(`{ "classname" "turret_breach" "model" "*1" "angle" "100000000" }`)).toEqual([[0, 1e8, 0]]);
+      // A float yaw just below 0 normalizes to 360 (-0.00001 + 360 rounds), the top of the
+      // range, so it stays; one at 2^27 is not run at all.
+      expect(angles(`{ "classname" "turret_breach" "model" "*1" "angle" "-0.00001" }`)).toEqual([[0, Math.fround(-0.00001), 0]]);
+      expect(angles(`{ "classname" "turret_breach" "model" "*1" "angle" "134217728" "minyaw" "10" "maxyaw" "20" }`)).toEqual([[0, 2 ** 27, 0]]);
+      // A breach turning from 0 to maxyaw -40000 (nearer than minyaw: the yaw is
+      // normalized into 0..360 and set back to it every frame) moves about 40000 a frame,
+      // past 2^27, and stops the team there, the base with it.
+      const [base, breach] = angles(`{ "classname" "turret_base" "model" "*1" "team" "a" }
+        { "classname" "turret_breach" "model" "*1" "minyaw" "-50000" "maxyaw" "-40000" "speed" "1e9" "team" "a" }`);
+      expect(breach![1]).toBeLessThan(-(2 ** 27));
+      expect(breach![1]).toBeGreaterThan(-(2 ** 27) - 50000);
+      expect(base![1]).toBe(breach![1]);
     });
 
     it("turns a turret team by the yaw of its last breach, only under a turret master", () => {
@@ -589,6 +629,12 @@ describe("brush model instances", () => {
       // step (speed 50 * FRAMETIME) is pushed, in that frame, and SV_Physics_Toss turns the
       // master alone by one more in the third. A triggered one stays PUSH.
       expect(yaws(`{ "classname" "func_object" "model" "*1" "team" "a" } ${breach("a")}`)).toEqual([10, 5]);
+      // Both steps in float: SV_Push's avelocity * FRAMETIME, then VectorMA's (gcc x86-64, 2026-10-05).
+      expect(
+        place(`{ "classname" "worldspawn" } { "classname" "func_object" "model" "*1" "team" "a" } ${breach("a").replace("}", '"speed" "3.3" }')}`).map(
+          (b) => b.angles[1],
+        ),
+      ).toEqual([0.6599999666213989, 0.32999998331069946]);
       // A breach one 3 degree step from rest stops the team in its second-frame think.
       expect(yaws(`{ "classname" "func_object" "model" "*1" "team" "a" } ${breach("a").replace('"80"', '"3"')}`)).toEqual([3, 3]);
       expect(yaws(`{ "classname" "func_object" "model" "*1" "team" "a" "spawnflags" "1" } ${breach("a")}`)).toEqual([80]);

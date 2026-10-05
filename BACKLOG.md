@@ -28,7 +28,7 @@ so the sky box is bounded by the sky faces in view), inline brush models where t
 has them after spawn (untargeted plats lowered, START_OPEN doors open, trains where the
 settle frames' func_train_find and train_next leave them, also when a trigger_always uses them
 or a trigger_elevator sends them on toward its user's "pathtarget" (train_resume),
-turrets turned to rest in their pitch/yaw range with their teams under a MOVETYPE_PUSH
+turrets turned to rest in their pitch/yaw range, in float, with their teams under a MOVETYPE_PUSH
 or STOP master, until a settle-frame free stops the team or cuts its chain), the doors
 the settle frames send moving drawn moving (linear ones accelerating as Think_AccelMove does when accel or decel differs from speed, rotating ones
 turning as AngleMove_Calc does, their angles sent in 360/256 degree steps and blended by
@@ -51,14 +51,6 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- The turret settle code in bmodels.ts (`normalizeAngle`, `breachState`/`breachThink`,
-  `turretPush`/`turretThink`, the members' added yaw) runs in double where
-  turret_breach_think and SV_Push keep angles, move_angles, pos1/pos2, speed and delta in
-  float, so it misses an SSE build's angles (CLAUDE.md, Constraints): about 1e-5 degrees at
-  rest, up to 0.007 on a slow breach still turning (1546 of 3000 random breaches differ
-  after 300 frames against gcc x86-64, 2026-10-05). Port it in float, round the spawn
-  fields, run AnglesNormalize's loop, and settle on an exact 0 avelocity in place of
-  `SETTLED`; check the 10000-frame cap still holds.
 - A func_train that is a team slave runs its thinks (func_train_find, train_next) at its
   own entity slot in `settleSpawnFrames`; the game runs them in its master's slot, and
   only under a MOVETYPE_PUSH or STOP master (SV_Physics_Pusher). Under a NONE master the
@@ -153,6 +145,9 @@ Remaining:
   SV_Physics_Pusher (only under a PUSH or STOP master; under any other it never turns),
   and turret_breach_think sets every member's yaw velocity each frame, overriding a
   func_rotating's own spin about yaw.
+- A turret team stops at the first think that meets a breach angle of 2^27 or more
+  (`NORMALIZE_LIMIT` in bmodels.ts), where the game's AnglesNormalize steps round and
+  run a million times a frame (forever from 2^33). Port the rounding steps if a map needs it.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
