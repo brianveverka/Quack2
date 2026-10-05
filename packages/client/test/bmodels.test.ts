@@ -329,6 +329,73 @@ describe("brush model instances", () => {
       ]);
     });
 
+    describe("a func_train that is a team slave thinks in its master's teamchain walk", () => {
+      // Corners: a at x 10, then b at 10 too, then TELEPORT c at 30, then d at 40.
+      const corners = `{ "classname" "path_corner" "targetname" "a" "target" "b" "origin" "10 0 0" }
+        { "classname" "path_corner" "targetname" "b" "target" "c" "origin" "10 0 0" }
+        { "classname" "path_corner" "targetname" "c" "target" "d" "origin" "30 0 0" "spawnflags" "1" }
+        { "classname" "path_corner" "targetname" "d" "origin" "40 0 0" }`;
+      const x = (src: string) => place(`{ "classname" "worldspawn" } ${src} ${corners}`).map((b) => b.origin[0] - 385);
+      const train = (keys: string) => `{ "classname" "func_train" "model" "*1" "origin" "5 0 0" "target" "a" ${keys} }`;
+
+      it("runs func_train_find and train_next only under a MOVETYPE_PUSH or STOP master", () => {
+        // START_ON (no targetname): found at a, then train_next moves it on to b at no
+        // distance, train_wait runs train_next again and c teleports it.
+        expect(x(`{ "classname" "func_wall" "team" "k" } ${train(`"team" "k"`)}`)).toEqual([30]);
+        expect(x(`{ "classname" "func_train" "team" "k" } ${train(`"team" "k"`)}`)).toEqual([30]);
+        // A targeted one is found and waits at a.
+        expect(x(`{ "classname" "func_wall" "team" "k" } ${train(`"team" "k" "targetname" "t"`)}`)).toEqual([10]);
+        // A door master's Think_CalcMoveSpeed makes the train's speeds NaN (its distance is
+        // 0), so Move_Calc takes the accelerative path and the train stays at a.
+        expect(x(`{ "classname" "func_door" "team" "k" } ${train(`"team" "k"`)}`)).toEqual([10]);
+        expect(x(`{ "classname" "func_door_rotating" "team" "k" "targetname" "d" } ${train(`"team" "k"`)}`)).toEqual([10]);
+        expect(x(`{ "classname" "func_water" "team" "k" } ${train(`"team" "k"`)}`)).toEqual([30]);
+        // Under a MOVETYPE_NONE master it never thinks: SV_Physics_Pusher returns for a slave.
+        expect(x(`{ "classname" "func_timer" "team" "k" } ${train(`"team" "k"`)}`)).toEqual([5 - 385]);
+        expect(x(`{ "classname" "info_notnull" "team" "k" } ${train(`"team" "k"`)}`)).toEqual([5 - 385]);
+        // The master of its own team still thinks in its own slot.
+        expect(x(`${train(`"team" "k"`)} { "classname" "func_timer" "team" "k" }`)).toEqual([30]);
+      });
+
+      it("runs func_train_find in team order, so a breach after it frees its first corner too late", () => {
+        // turret_breach_finish_init frees its target, corner a, in the master's slot.
+        const breach = `{ "classname" "turret_breach" "team" "k" "target" "a" }`;
+        expect(x(`{ "classname" "func_wall" "team" "k" } ${train(`"team" "k" "targetname" "t"`)} ${breach}`)).toEqual([10]);
+        expect(x(`{ "classname" "func_wall" "team" "k" } ${breach} ${train(`"team" "k" "targetname" "t"`)}`)).toEqual([5 - 385]);
+      });
+
+      it("never thinks behind a freed member, or under a master freed earlier in the frame", () => {
+        const killed = `{ "classname" "func_wall" "team" "k" "targetname" "w" }`;
+        // The breach frees the wall member ahead of the train: the chain ends there.
+        expect(x(`{ "classname" "func_wall" "team" "k" } { "classname" "turret_breach" "team" "k" "target" "w" } ${killed} ${train(`"team" "k"`)}`)).toEqual([5 - 385]);
+        // A trigger_always's DelayedUse frees the master in the second frame: found at a in
+        // the first, train_next never runs in the second.
+        expect(x(`{ "classname" "trigger_always" "killtarget" "w" } ${killed} ${train(`"team" "k"`)}`)).toEqual([10]);
+      });
+
+      it("begins a move at once when its teammaster is level.current_entity (Move_Calc)", () => {
+        // The explosion's think (due at 0.15) runs in the master's walk and uses the train:
+        // Move_Begin runs at once, and through b's train_wait c teleports it.
+        const explosion = (keys: string) => `{ "classname" "target_explosion" "targetname" "x" "delay" "-0.05" "target" "t" ${keys} }`;
+        const always = `{ "classname" "trigger_always" "target" "x" }`;
+        const team = (member: string) => `${always} { "classname" "func_wall" "team" "k" } ${member} ${train(`"team" "k" "targetname" "t"`)}`;
+        expect(x(team(explosion(`"team" "k"`)))).toEqual([30]);
+        // Out of the team it runs at its own slot: Move_Begin waits a frame, the train stays at a.
+        expect(x(team(explosion("")))).toEqual([10]);
+      });
+
+      it("begins a move at once from a DelayedUse in the slot of its freed master", () => {
+        // The DelayedUse frees the master, and the relay's own DelayedUse (due at 0.15)
+        // takes the master's freed slot, still ahead: the slave's teammaster is that edict.
+        const relay = `{ "classname" "trigger_relay" "targetname" "r" "delay" "-0.05" "target" "t" }`;
+        const master = `{ "classname" "func_wall" "team" "k" "targetname" "w" }`;
+        const slave = train(`"team" "k" "targetname" "t"`);
+        expect(x(`{ "classname" "trigger_always" "target" "r" "killtarget" "w" } ${relay} ${master} ${slave}`)).toEqual([30]);
+        // With the master in place the relay's DelayedUse goes after every slot.
+        expect(x(`{ "classname" "trigger_always" "target" "r" } ${relay} ${master} ${slave}`)).toEqual([10]);
+      });
+    });
+
     describe("a targeted func_train a trigger_always uses in the second frame (train_use)", () => {
       const path = `
         { "classname" "path_corner" "targetname" "a" "target" "b" "origin" "10 0 0" }
