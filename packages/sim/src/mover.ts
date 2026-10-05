@@ -558,6 +558,21 @@ function vectorScale(v: Vec3f, scale: number, out: Vec3f): void {
  * AngleMove_Done are the only ways there after spawn, and the endfunc stays set.
  */
 export function stepPusher(team: readonly BrushMover[], levelTime: number): BrushMover[] {
+  pushMovers(team);
+  const hitBottom: BrushMover[] = [];
+  for (const m of team) {
+    const was = m.state;
+    runMoverThink(m, levelTime);
+    if (m.state === "bottom" && was !== "bottom" && m.endfunc === "doorHitBottom") hitBottom.push(m);
+  }
+  return hitBottom;
+}
+
+/**
+ * The push half of `stepPusher`: every moving member is pushed and turned, before any
+ * think on the team runs. Also clears each member's `teleported`.
+ */
+export function pushMovers(team: readonly BrushMover[]): void {
   for (const m of team) m.teleported = false;
   for (const m of team) {
     const v = m.velocity;
@@ -572,16 +587,13 @@ export function stepPusher(team: readonly BrushMover[], levelTime: number): Brus
     }
     for (let i = 0; i < 3; i++) m.angles[i] = Math.fround(m.angles[i]! + Math.fround(av[i]! * FRAMETIME_F));
   }
-  const hitBottom: BrushMover[] = [];
-  for (const m of team) {
-    const was = m.state;
-    runThink(m, levelTime);
-    if (m.state === "bottom" && was !== "bottom" && m.endfunc === "doorHitBottom") hitBottom.push(m);
-  }
-  return hitBottom;
 }
 
-function runThink(m: BrushMover, levelTime: number): void {
+/**
+ * SV_RunThink for a mover, the think half of `stepPusher`: run where the game runs it, in
+ * its own slot or, for a team slave, in its master's teamchain walk.
+ */
+export function runMoverThink(m: BrushMover, levelTime: number): void {
   const thinktime = m.nextthink;
   if (thinktime <= 0 || thinktime > levelTime + 0.001) return;
   m.nextthink = 0;

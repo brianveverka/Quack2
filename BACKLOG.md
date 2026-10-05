@@ -26,7 +26,8 @@ func_object entities a use there shows or hides drawn or left out to match,
 the world walked per frame as R_RecursiveWorldNode does (R_CullBox on nodes and leafs,
 so the sky box is bounded by the sky faces in view), inline brush models where the game
 has them after spawn (untargeted plats lowered, START_OPEN doors open, trains where the
-settle frames' func_train_find and train_next leave them, also when a trigger_always uses them
+settle frames' func_train_find and train_next leave them (a team slave's run in its
+MOVETYPE_PUSH or STOP master's teamchain walk, under any other master not at all), also when a trigger_always uses them
 or a trigger_elevator sends them on toward its user's "pathtarget" (train_resume),
 turrets turned to rest in their pitch/yaw range, in float, with their teams under a MOVETYPE_PUSH
 or STOP master, until a settle-frame free stops the team or cuts its chain), the doors
@@ -51,18 +52,6 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- A func_train that is a team slave runs its thinks (func_train_find, train_next) at its
-  own entity slot in `settleSpawnFrames`; the game runs them in its master's slot, and
-  only under a MOVETYPE_PUSH or STOP master (SV_Physics_Pusher). Under a NONE master the
-  slave never thinks and stays at its spawn origin; under a TOSS master it takes the
-  master's origin (SV_Physics_Toss). `PUSHER_CLASSES` in bmodels.ts has the master
-  rule `turretTeams` uses. `brushMovers` leaves a slave train out, drawn where the
-  settle frames leave it. Move_Calc also takes a slave's teammaster as the entity to
-  compare with level.current_entity, where `trainUseIn` and `elevatorUse` compare the
-  train itself, so a use from a teammate's think in the master's walk defers its move. Since the settle frames free edicts (turret_breach_finish_init
-  in the first frame, killtargets in the second), the slot matters: a breach between the
-  master and the train can free the train's first path_corner first, and a slave behind
-  a teamchain a free cut, or under a master freed earlier in the frame, never thinks.
 - Malformed entity lumps: when the first entity is not worldspawn, InitBodyQue never runs,
   so entities 1-8 land in the body-queue slots G_FreeEdict refuses to free, and stay in
   the game whatever `inGame` says (spawn spots, teams, targets). ED_ParseEdict also ends
@@ -153,6 +142,11 @@ Remaining:
   midpoint between two floats differs ("1.00000005960464477539062501": sscanf gives the
   float above 1, the port 1; gcc, 2026-10-05).
   Every float port reading "angles" (turret breaches, moveDir) shares it.
+- A func_train that is a team slave is left out of `brushMovers` and drawn where the
+  settle frames leave it; in the game it moves on in its PUSH or STOP master's walk
+  (SV_Physics_Pusher), pushed with the team. Under a func_door or func_door_rotating
+  master its speeds are NaN (Think_CalcMoveSpeed), so each move goes through
+  Think_AccelMove with NaN speeds.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

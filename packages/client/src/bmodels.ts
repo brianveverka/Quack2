@@ -22,6 +22,8 @@ import {
   platGoDown,
   buttonFire,
   rotatingUse,
+  pushMovers,
+  runMoverThink,
   stepPusher,
   trainResume,
   trainUse,
@@ -844,6 +846,8 @@ interface Settle {
   /** Team members, master first, by master index. */
   teams: Map<number, number[]>;
   slaves: Set<number>;
+  /** Each slave's teammaster. */
+  teammaster: Map<number, number>;
   /** moveinfo.state of the entities used so far; the rest are at `spawnState`. */
   moveState: Map<number, MoveState>;
   /**
@@ -877,8 +881,9 @@ interface Settle {
   /** The func_train (movetarget) of each trigger_elevator whose trigger_elevator_init gave it its use. */
   elevators: Map<number, number>;
   /**
-   * level.current_entity: the entity G_RunFrame is running (a team master during its
-   * teamchain walk, whichever member's think runs), -1 for a DelayedUse.
+   * level.current_entity, as the edict's slot in `slots`: the edict G_RunFrame is running
+   * (a team master during its teamchain walk, whichever member's think runs; a DelayedUse
+   * in its own slot, which may be one a freed entity left), -1 before the walk.
    */
   current: number;
   /**
@@ -1217,7 +1222,7 @@ function runThink(s: Settle, index: number, frame: 1 | 2, slot: number = index):
   if (think <= 0 || think > (frame === 1 ? FIRST_FRAME_DUE : SECOND_FRAME_DUE)) return;
   s.nextthink.set(index, 0);
   const current = s.current;
-  s.current = slot;
+  s.current = s.slotOf.get(slot)!;
   switch (s.entities[index]!.classname) {
     case "func_timer":
       timerThink(s, index, levelTimeAt(frame));
@@ -1342,14 +1347,21 @@ function trainPathtarget(s: Settle, index: number, corner: PathCorner): boolean 
 }
 
 /**
- * train_use (`trainUse`). Move_Calc begins the move at once only when the train is
- * level.current_entity (`Settle.current`): from its own think, by a pathtarget of its
- * own, or from a team member's think in its teamchain walk; from any other slot (a
- * DelayedUse, another train's think) it defers Move_Begin a frame.
+ * Whether Move_Calc begins a train's move at once: when level.current_entity
+ * (`Settle.current`) is the train, or for a team slave its teammaster. A slave thinks
+ * only in its master's teamchain walk, so its own think, a pathtarget of its own and a
+ * teammate's think there begin it; so does a DelayedUse G_Spawn put in the slot of a
+ * master freed earlier, as the slave's teammaster still points at that edict. From any
+ * other slot (a DelayedUse, another train's think) Move_Calc defers Move_Begin a frame.
  */
+function trainCurrent(s: Settle, index: number): boolean {
+  return s.current === s.slotOf.get(s.teammaster.get(index) ?? index);
+}
+
+/** train_use (`trainUse`), its move begun at once as `trainCurrent` says. */
 function trainUseIn(s: Settle, index: number): void {
   const m = s.trains.get(index);
-  if (m) trainUse(m, levelTimeAt(2), s.current === index);
+  if (m) trainUse(m, levelTimeAt(2), trainCurrent(s, index));
 }
 
 /**
@@ -1365,10 +1377,9 @@ function elevatorInit(s: Settle, index: number): void {
  * trigger_elevator_use: returns while its train has a nextthink (moving or waiting), or
  * when the user (`other`) has no "pathtarget" naming an entity (a DelayedUse has none);
  * else that entity becomes the train's target_ent and the train resumes towards it
- * (train_resume), its move begun at once only while the train is current, as in
- * `trainUseIn`. A train freed since init is left alone: the game moves its freed edict,
- * or returns on the nextthink of a DelayedUse G_Spawn put there; neither is drawn or
- * opens a portal.
+ * (train_resume), its move begun at once as `trainCurrent` says. A train freed since
+ * init is left alone: the game moves its freed edict, or returns on the nextthink of a
+ * DelayedUse G_Spawn put there; neither is drawn or opens a portal.
  */
 function elevatorUse(s: Settle, index: number, other: number): void {
   const train = s.elevators.get(index);
@@ -1379,7 +1390,7 @@ function elevatorUse(s: Settle, index: number, other: number): void {
   const corner = pathtarget === undefined ? undefined : pathCorner(s, pathtarget);
   if (!corner) return;
   m.train!.targetEnt = corner;
-  trainResume(m, levelTimeAt(2), s.current === train);
+  trainResume(m, levelTimeAt(2), trainCurrent(s, train));
 }
 
 /**
@@ -1461,7 +1472,15 @@ function doorUse(s: Settle, index: number): void {
  * and, if START_OPEN, opens every portal door_use_areaportals finds: in-game entities
  * whose classname is func_areaportal and whose "targetname" is the door's "target",
  * compared case insensitively (G_Find, Q_stricmp). Every train not yet freed runs
- * func_train_find (`trainFind`) at its own slot, a team slave's included (BACKLOG.md). A train's mins are its inline model's in `bsp`, else 0 0 0 (without
+ * func_train_find (`trainFind`) at its own slot, except a team slave: SV_Physics_Pusher
+ * returns for it there, and runs its thinks (this one and every later one) in its
+ * master's teamchain walk, only under a PUSHER_CLASSES master, and not behind a freed
+ * member or under a freed master. Under any other master it never thinks or is pushed:
+ * a use (train_use, train_next) moves it only to a TELEPORT path_corner, and a
+ * MOVETYPE_TOSS master (SV_Physics_Toss) would also copy its origin to it as it falls,
+ * which needs the trace (BACKLOG.md). A func_door or func_door_rotating
+ * master's think (Think_CalcMoveSpeed) first sets the speeds of every train on its chain
+ * to NaN. A train's mins are its inline model's in `bsp`, else 0 0 0 (without
  * `bsp`, or a train with no inline model). A breach on a team whose master is in
  * PUSHER_CLASSES runs turret_breach_finish_init in the master's slot, along the
  * teamchain up to a freed member, freeing its target, then turret_breach_think
@@ -1469,9 +1488,9 @@ function doorUse(s: Settle, index: number): void {
  * thinks again at level.time + wait, its targets unfired (uses here are not modeled), and
  * a trigger_elevator runs trigger_elevator_init (`elevatorInit`).
  *
- * Second frame: a train runs its think if due
- * (SV_Physics_Pusher: train_next for a START_ON one, or what a use earlier in the frame
- * left it). Every
+ * Second frame: a train runs its think if due, at its own slot or a slave's in its
+ * master's walk, after every member on the chain is pushed (SV_Physics_Pusher:
+ * train_next for a START_ON one, or what a use earlier in the frame left it). Every
  * in-game trigger_always fires its targets through a DelayedUse (SP_trigger_always
  * raises "delay" to at least 0.2 s; one above that comes due later and is skipped),
  * which G_Spawn placed right after it: freed slots are refilled by the next spawn, so
@@ -1495,8 +1514,7 @@ function doorUse(s: Settle, index: number): void {
  * its targets or thinks them at level.time + delay (its radius damage is not modeled),
  * a func_wall or func_object is shown or hidden (`wallUse`); an entity a killtarget
  * freed is not drawn, a func_rotating starts or stops turning (`rotatingUse`). Other use
- * functions are not modeled, nor are a team slave train's
- * thinks (both func_train_find and train_next) running in its master's slot.
+ * functions are not modeled.
  *
  * Both frames turn each func_rotating `rotatingMover` models (one that is no team's slave
  * and on no team with a turret_breach, whose think sets every member's yaw velocity) by
@@ -1523,9 +1541,13 @@ function settleSpawnFrames(
 } {
   const teams = new Map<number, number[]>();
   const slaves = new Set<number>();
+  const teammaster = new Map<number, number>();
   for (const members of findTeams(entities).values()) {
     teams.set(members[0]!, members);
-    members.slice(1).forEach((i) => slaves.add(i));
+    for (const i of members.slice(1)) {
+      slaves.add(i);
+      teammaster.set(i, members[0]!);
+    }
   }
   const byTargetname = new Map<string, number[]>();
   entities.forEach((e, i) => {
@@ -1557,6 +1579,7 @@ function settleSpawnFrames(
     useCleared: new Set(),
     teams,
     slaves,
+    teammaster,
     moveState: new Map(),
     moves: [],
     platsMoving: new Set(),
@@ -1610,8 +1633,9 @@ function settleSpawnFrames(
     // SV_Physics_Pusher turns a func_rotating before any think on its team runs.
     const rotor = s.rotating.get(slot);
     if (rotor) stepPusher([rotor], first);
+    // A slave train's func_train_find runs in its master's walk below, if at all.
     const train = s.trains.get(slot);
-    if (train) trainFind(s, slot, train);
+    if (train && !slaves.has(slot)) trainFind(s, slot, train);
     runThink(s, slot, 1);
     if (
       (ent.classname === "func_door" || ent.classname === "func_door_rotating") &&
@@ -1623,11 +1647,22 @@ function settleSpawnFrames(
       spawnEdict(s, "doorTrigger");
       if (atoi(ent.spawnflags ?? "0") & DOOR_START_OPEN) doorUseAreaportals(s, slot, true);
     }
+    // A door master's think (Think_CalcMoveSpeed, or Think_SpawnDoorTrigger, which ends in
+    // it) rescales every member on its chain to the smallest moveinfo.distance there. A
+    // train's is 0, so the time is 0 and the train's speed, accel and decel become 0 / 0,
+    // NaN: its Move_Calc always takes the accelerative path, a frame later.
+    const members = teams.get(slot);
+    if (members && (ent.classname === "func_door" || ent.classname === "func_door_rotating")) {
+      for (const m of members) {
+        if (s.freed.has(m)) break;
+        const t = s.trains.get(m);
+        if (t) t.speed = t.accel = t.decel = Number.NaN;
+      }
+    }
     // SV_Physics_Pusher runs a PUSH or STOP master's team thinks along its teamchain, which
     // ends at a freed member (G_FreeEdict clears its teamchain). turret_breach_finish_init
     // frees the breach's target (G_PickTarget; the game crashes on a target that names nothing).
     // It then runs turret_breach_think.
-    const members = teams.get(slot);
     if (!members || !PUSHER_CLASSES.has(ent.classname ?? "")) {
       if (turret) turretThink(turret, 0);
       continue;
@@ -1635,6 +1670,8 @@ function settleSpawnFrames(
     for (const [p, m] of members.entries()) {
       if (s.freed.has(m)) break;
       runThink(s, m, 1, slot);
+      const slaveTrain = p > 0 ? s.trains.get(m) : undefined;
+      if (slaveTrain) trainFind(s, m, slaveTrain);
       if (s.freed.has(m)) break;
       if (entities[m]!.classname !== "turret_breach") continue;
       const t = pickTarget(s, entities[m]!.target);
@@ -1649,28 +1686,46 @@ function settleSpawnFrames(
     const slot = s.slots[p]!;
     s.budget = MAX_USES;
     if (typeof slot === "number") {
-      // A func_rotating turns by the avelocity uses in earlier slots left it, a turret
-      // team by what its breaches' thinks set in the first frame.
+      const members = teams.get(slot);
+      const walk = members && PUSHER_CLASSES.has(entities[slot]!.classname ?? "") ? members : undefined;
+      // SV_Physics_Pusher pushes every member on a PUSH or STOP master's teamchain (up to
+      // a freed member) before any think runs. A func_rotating turns by the avelocity uses
+      // in earlier slots left it, a turret team by what its breaches' thinks set in the
+      // first frame; a slave train is pushed in its master's slot, not its own.
       const rotor = s.rotating.get(slot);
       if (rotor) stepPusher([rotor], second);
       const turret = turrets.get(slot);
       if (turret) turretPush(turret, s.freed);
+      const pushed: BrushMover[] = [];
+      if (!slaves.has(slot)) {
+        for (const m of walk ?? [slot]) {
+          if (s.freed.has(m)) break;
+          const t = s.trains.get(m);
+          if (t) pushed.push(t);
+        }
+      }
+      pushMovers(pushed);
       // A modeled think due in this frame (`runThink`): in the entity's own slot, and also
       // in a PUSH or STOP master's slot (earlier) for each teamchain member, after the
-      // master's push and own think (SV_Physics_Pusher).
+      // master's own think (SV_Physics_Pusher). A train's think runs with its slot
+      // current: a slave train's in its master's.
+      const here = p;
+      const trainThink = (m: BrushMover) => {
+        const current = s.current;
+        s.current = here;
+        runMoverThink(m, second);
+        s.current = current;
+      };
       runThink(s, slot, 2);
       const train = s.trains.get(slot);
-      if (train) {
-        s.current = slot;
-        stepPusher([train], second);
-        s.current = -1;
-      }
+      if (train && !slaves.has(slot)) trainThink(train);
       // An item's droptofloor, due now, ends the teamchain after the item.
-      const members = teams.get(slot);
-      if (members && PUSHER_CLASSES.has(entities[slot]!.classname ?? "")) {
-        for (const [p, m] of members.entries()) {
+      if (walk) {
+        for (const [p, m] of walk.entries()) {
           if (s.freed.has(m)) break;
           runThink(s, m, 2, slot);
+          const slaveTrain = p > 0 ? s.trains.get(m) : undefined;
+          if (slaveTrain) trainThink(slaveTrain);
           if (s.freed.has(m)) break;
           if (turret) turretThink(turret, p);
           if (ITEM_CLASSES.has(entities[m]!.classname ?? "")) {
@@ -1682,7 +1737,9 @@ function settleSpawnFrames(
     } else if (slot !== null && slot !== "doorTrigger" && slot.nextthink > 0 && slot.nextthink <= SECOND_FRAME_DUE) {
       // SV_RunThink: a nextthink at or below 0 never runs. Think_Delay frees the slot after its uses.
       if (slot.inFrame) s.budget = s.spawnedBudget;
+      s.current = p;
       useTargets(s, { index: -1, classname: "DelayedUse", target: slot.target, killtarget: slot.killtarget, delay: 0 });
+      s.current = -1;
       if (slot.inFrame) s.spawnedBudget = s.budget;
       s.slots[p] = null;
     }
