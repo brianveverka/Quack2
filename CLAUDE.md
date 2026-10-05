@@ -276,8 +276,8 @@ community map pool. pnpm workspace, TypeScript strict, vitest.
   with `lib: ["ES2022"]` and `types: []`. Node APIs are allowed only in `packages/sim/test`.
 - Ports of the C match an SSE (x86-64) build of the engine: C float rounds to IEEE single
   (Math.fround at each float operation and store), C double stays double, and (int) is
-  `cInt` (INT_MIN for NaN and out of range), or Math.trunc where the value cannot leave
-  int's range or the result is the same. The win32 x87 build (24-bit
+  `cInt` (INT_MIN for NaN and out of range), or Math.trunc (GLSL int() in shaders) where
+  the value cannot leave int's range or the result is the same. The win32 x87 build (24-bit
   precision from `_controlfp(_PC_24)`, MSVC `_ftol`) is not the reference; comments note
   where it differs only when that is known.
 - All coordinates are float. Integer fields on disk (node/leaf bounds) are widened to

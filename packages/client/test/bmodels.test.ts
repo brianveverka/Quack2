@@ -212,9 +212,14 @@ describe("brush model instances", () => {
     });
 
     it("keeps an unmoved brush entity's origin as the float it parses to", () => {
-      const [b] = place(`{ "classname" "func_door" "model" "*1" "origin" "0 0 1.00000006" }`);
-      expect(b!.origin[2]).toBe(Math.fround(1.00000006));
-      expect(b!.origin[2]).not.toBe(1.00000006);
+      const [b, r] = place(`
+        { "classname" "func_door" "model" "*1" "origin" "0 0 1.00000006" }
+        { "classname" "func_door_rotating" "model" "*1" "spawnflags" "1" "origin" "0 0 1.00000006" }
+      `);
+      for (const e of [b!, r!]) {
+        expect(e.origin[2]).toBe(Math.fround(1.00000006));
+        expect(e.origin[2]).not.toBe(1.00000006);
+      }
     });
 
     it("opens a START_OPEN func_door or func_water along its move direction", () => {
