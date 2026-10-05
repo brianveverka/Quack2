@@ -813,6 +813,10 @@ describe("func_rotating movers", () => {
   it("turns a master with its door slaves, and leaves a slave or a turret team's member out", () => {
     const team = W + rotor(`"spawnflags" "1" "team" "t"`) + `{ "classname" "func_door" "model" "*1" "team" "t" }`;
     expect(brushMovers(bsp, parseEntities(team)).map((t) => t.map((d) => d.entity))).toEqual([[1, 2]]);
+    // The door slave is never sent up (door_use returns for a slave), and Think_CalcMoveSpeed
+    // runs only for a door master, so it keeps its own speed (100 doubled).
+    const door = brushMovers(bsp, parseEntities(team))[0]![1]!.mover;
+    expect([door.state, door.speed, door.think, [...door.origin]]).toEqual(["bottom", 200, undefined, [0, 0, 0]]);
     // A slave turns only through its master's pusher walk, not modeled here.
     const slave = W + `{ "classname" "func_wall" "model" "*1" "team" "t" }` + rotor(`"spawnflags" "1" "team" "t"`);
     expect(movers(slave)).toEqual([]);

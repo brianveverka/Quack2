@@ -771,7 +771,8 @@ describe("func_rotating mover", () => {
   });
 
   it("turns by avelocity * 0.1f a frame, in float, without end, with no think", () => {
-    const m = rotor(Math.fround(33.3));
+    // brushMover stores speed as a float.
+    const m = rotor(33.3);
     rotatingUse(m);
     let yaw = Math.fround(10);
     const amove = Math.fround(Math.fround(33.3) * Math.fround(0.1));
