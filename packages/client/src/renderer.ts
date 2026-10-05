@@ -516,7 +516,8 @@ export class WorldRenderer {
     if (rebuild) gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, world.indices.subarray(0, world.indexCount), gl.DYNAMIC_DRAW);
     gl.uniformMatrix4fv(this.uModel, false, IDENTITY);
     gl.uniform1f(this.uTime, this.time);
-    // EmitWaterPolys' scroll for SURF_FLOWING warps, computed as the C does in double.
+    // EmitWaterPolys' scroll for SURF_FLOWING warps, computed as the C does in double; its
+    // store to float scroll is uniform1f's rounding.
     this.warpScroll = -64 * (this.time * 0.5 - Math.trunc(this.time * 0.5));
     this.flowScroll = flowingScroll(this.time);
     this.drawRanges(world.draws);

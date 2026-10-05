@@ -178,6 +178,13 @@ describe("warpTexCoord", () => {
     expect(warpTexCoord(0, -16, 0, false)).toEqual([f(f(-7.31368) / 64), -0.25]);
   });
 
+  it("takes entry 0 past int's range, where an SSE build's (int) gives INT_MIN", () => {
+    // (3e9 * 0.125 + 1) * TURBSCALE is about 1.5e10; wrapping it to 32 bits would pick entry 209.
+    expect(TURBSIN[209]).not.toBe(TURBSIN[0]);
+    expect(warpTexCoord(1, 3e9, 1, false)[0]).toBe(f(f(1 + TURBSIN[0]!) * (1 / 64)));
+    expect(warpTexCoord(3e9, 1, 1, false)[1]).toBe(f(f(1 + TURBSIN[0]!) * (1 / 64)));
+  });
+
   it("scrolls flowing surfaces by -64 * frac(time / 2)", () => {
     // time 3: scroll = -64 * 0.5 = -32; index 3 * 40.74 = 122.2 -> 122.
     const sin = TURBSIN[122]!;
