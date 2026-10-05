@@ -799,6 +799,82 @@ describe("area portals open at spawn", () => {
       });
     });
 
+    describe("func_timer and target_explosion fire targets from their own think", () => {
+      const always = (target: string, n = 1) => `{ "classname" "trigger_always" "target" "${target}" } `.repeat(n);
+      const timer = (keys = "") => `{ "classname" "func_timer" "targetname" "t" "target" "q" ${keys} }`;
+
+      it("a used func_timer thinks at once without a delay, and a second use turns it off", () => {
+        expect(open(always("t") + timer())).toEqual([3]);
+        expect(open(always("t", 2) + timer())).toEqual([3]);
+        // A wait due in this frame thinks again in the timer's slot, if it lies ahead.
+        expect(open(always("t") + timer(`"wait" "0.0005"`))).toEqual([]);
+        expect(open(timer(`"wait" "0.0005"`) + always("t"))).toEqual([3]);
+        expect(open(always("t") + timer(`"wait" "0.001"`))).toEqual([3]);
+      });
+
+      it("a used func_timer with a delay thinks at level.time + delay, firing through a DelayedUse", () => {
+        // Its think fires in the timer's slot; its DelayedUse lands in the slot the
+        // trigger_always's freed, which the walk has passed.
+        expect(open(always("t") + timer(`"delay" "0.0005"`))).toEqual([]);
+        expect(open(always("t") + timer(`"delay" "0.001"`))).toEqual([]);
+      });
+
+      it("a START_ON func_timer thinks at 1 + pausetime + delay + wait, in float", () => {
+        expect(open(timer(`"spawnflags" "1"`))).toEqual([]);
+        // 1 + -1.8f + 1 rounds to just above 0.2f, still within level.time + 0.001.
+        expect(open(timer(`"spawnflags" "1" "pausetime" "-1.8"`))).toEqual([3]);
+        expect(open(timer(`"pausetime" "-1.8"`))).toEqual([]);
+        expect(open(timer(`"spawnflags" "1" "pausetime" "-1.79"`))).toEqual([]);
+        // pausetime is a float: with -1.799 in double the sum would round past the bound.
+        expect(open(timer(`"spawnflags" "1" "pausetime" "-1.799"`))).toEqual([3]);
+        expect(open(timer(`"spawnflags" "1" "delay" "-0.8"`))).toEqual([]);
+        expect(open(timer(`"spawnflags" "1" "delay" "-0.8" "pausetime" "-1"`))).toEqual([]);
+        // Due by 0.2 with its delay; its DelayedUse lands after every slot and fires too.
+        expect(open(timer(`"spawnflags" "1" "pausetime" "-1.8005" "delay" "0.0005"`))).toEqual([3]);
+        // A random below wait counts as 0 (crandom() taken as its mean); one at or above
+        // wait, even infinite, is lowered to wait - FRAMETIME.
+        expect(open(timer(`"spawnflags" "1" "pausetime" "-1.8" "random" "0.5"`))).toEqual([3]);
+        expect(open(timer(`"spawnflags" "1" "pausetime" "-1.8" "random" "1e999"`))).toEqual([3]);
+        // A nextthink at or below 0 never runs.
+        expect(open(timer(`"spawnflags" "1" "pausetime" "-2"`))).toEqual([]);
+        // Due in the first frame: its think fires nothing there (not modeled) and thinks
+        // again at 0.1 + wait, due in the second.
+        expect(open(timer(`"spawnflags" "1" "pausetime" "-1" "wait" "0.05"`))).toEqual([3]);
+        expect(open(timer(`"spawnflags" "1" "pausetime" "-1.9"`))).toEqual([]);
+        // A use before its slot turns it off.
+        expect(open(always("t") + timer(`"spawnflags" "1" "pausetime" "-1.8"`))).toEqual([]);
+        expect(open(timer(`"spawnflags" "1" "pausetime" "-1.8"`) + always("t"))).toEqual([3]);
+      });
+
+      it("a PUSH or STOP master runs a member's think in its slot, then the member's own slot runs it again if due", () => {
+        const team = (master: string) =>
+          open(always("t") + `{ "classname" "${master}" "team" "x" }` + timer(`"team" "x" "wait" "0.0005"`));
+        expect(team("func_door")).toEqual([3]);
+        expect(team("trigger_relay")).toEqual([]);
+        // A think that frees its own entity ends the teamchain there.
+        const chain = (kill: string) =>
+          open(always("e") + always("t") + `{ "classname" "func_door" "team" "x" }
+            { "classname" "target_explosion" "team" "x" "targetname" "e" ${kill} "delay" "0.0005" }` +
+            timer(`"team" "x" "wait" "0.0005"`));
+        expect(chain(`"killtarget" "e"`)).toEqual([]);
+        expect(chain("")).toEqual([3]);
+      });
+
+      it("a used target_explosion fires its targets at once, or in its slot when its delay comes due", () => {
+        const explosion = (keys = "") => `{ "classname" "target_explosion" "targetname" "e" "target" "q" ${keys} }`;
+        expect(open(always("e") + explosion())).toEqual([3]);
+        expect(open(always("e", 2) + explosion())).toEqual([]);
+        // Its delay is cleared while it fires: no DelayedUse.
+        expect(open(always("e") + explosion(`"delay" "0.0005"`))).toEqual([3]);
+        expect(open(explosion(`"delay" "0.0005"`) + always("e"))).toEqual([]);
+        expect(open(always("e") + explosion(`"delay" "0.001"`))).toEqual([]);
+        // A later use only sets its nextthink again: it fires once.
+        expect(open(always("e", 2) + explosion(`"delay" "0.0005"`))).toEqual([3]);
+        expect(open(always("e") + explosion(`"delay" "-0.1"`))).toEqual([3]);
+        expect(open(always("e") + explosion(`"delay" "-0.2"`))).toEqual([]);
+      });
+    });
+
     it("G_Spawn puts a DelayedUse in the first free slot, and one before the edict running waits a frame", () => {
       const relay = `{ "classname" "trigger_relay" "targetname" "r" "target" "q" "delay" "0.0005" }`;
       // The first trigger_always's DelayedUse frees its slot after firing; the relay's lands there.

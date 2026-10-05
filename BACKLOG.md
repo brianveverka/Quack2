@@ -16,8 +16,9 @@ worldspawn sky box drawn where the world's sky faces bound it (R_DrawSkyBox, wit
 skyrotate/skyaxis, .tga or .pcx images, r_notexture without), PVS (with
 R_SetupFrame's second view cluster 16 units below or above the eye), area portals
 (closed except those the two settle frames open: START_OPEN doors, and trigger_always
-firing portals, doors, secret doors, relays and the trigger_once, trigger_multiple and
-trigger_counter entities that pass a use on, a "delay" on the way firing in the
+firing portals, doors, secret doors, relays and the trigger_once, trigger_multiple,
+trigger_counter, func_timer and target_explosion entities that pass a use on (the last
+two also from their own think when due), a "delay" on the way firing in the
 second frame when due by then and G_Spawn puts its DelayedUse in a slot still ahead;
 a door's door_hit_bottom closes its own again in the game frame it is back down) culling world leafs and brush models,
 brush entities a killtarget frees in the settle frames left out, and func_wall and
@@ -48,13 +49,17 @@ and self-extractor stubs included), picked archives read by range, checker fallb
 Remaining:
 - The settle frames model the uses of func_areaportal, doors, func_door_secret,
   trigger_relay, trigger_once, trigger_multiple (trigger_enable included),
-  trigger_counter, func_train, func_plat, func_button, func_wall, func_object and
-  target_crosslevel_trigger (and a train's pathtarget at a corner it reaches at once).
-  Not modeled: the uses that pass a use on (trigger_elevator, func_timer, whose own
-  nextthink can come due in the second frame, and target_explosion, whose own "delay"
-  can too), and func_rotating's rotate_use, which starts or stops a drawn brush model
-  turning. Any of them that spawns or frees an edict in the second frame also moves
-  where a DelayedUse lands (`spawnEdict` in bmodels.ts).
+  trigger_counter, func_timer, target_explosion, func_train, func_plat, func_button,
+  func_wall, func_object and target_crosslevel_trigger (and a train's pathtarget at a
+  corner it reaches at once). Not modeled: trigger_elevator_use, which passes a use on to
+  its func_train target at the activator's pathtarget, and func_rotating's rotate_use,
+  which starts or stops a drawn brush model turning. Any of them that spawns or frees an
+  edict in the second frame also moves where a DelayedUse lands (`spawnEdict` in
+  bmodels.ts).
+- Uses in the first settle frame are not modeled: a START_ON func_timer whose
+  1 + pausetime + delay + wait is due by 0.1 thinks there (`runThink`), firing nothing,
+  where the game fires its targets a frame early. Nor is target_explosion_explode's
+  T_RadiusDamage (a "dmg" above 0), which needs the damaged entities' bounds.
 - A team whose master a settle-frame killtarget frees stops moving from that frame (its
   members move and think only through the master's SV_Physics_Pusher), but
   `settleTurrets` ignores frees: a freed breach master is left out while its team is
