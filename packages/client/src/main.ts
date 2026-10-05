@@ -42,7 +42,7 @@ export interface QuackDebug {
   brushModels?: readonly string[];
   /**
    * The origin each brush model instance (in `brushModels` order) has at level time `ms`
-   * (default now) as the client would draw it: the doors, plats, buttons and trains `BrushMotion` steps (at rest
+   * (default now) as the client would draw it: the doors, plats, buttons, trains and func_rotating entities `BrushMotion` steps (at rest
    * or not, at the network's 1/8 unit), the rest where `brushModels` says. Each frame is
    * drawn with these at its level time.
    */

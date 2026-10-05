@@ -9,6 +9,7 @@ import {
   brushMover,
   platGoDown,
   platGoUp,
+  rotatingUse,
   stepPusher,
   trainNext,
   trainUse,
@@ -739,5 +740,63 @@ describe("teams Think_CalcMoveSpeed gives non-finite speeds", () => {
     stepPusher([d], levelTimeAt(3));
     stepPusher([d], levelTimeAt(4));
     expect([...d.origin]).toEqual([Number.NaN, step, step]);
+  });
+});
+
+describe("func_rotating mover", () => {
+  const rotor = (speed: number, movedir: [number, number, number] = [0, 1, 0]): BrushMover =>
+    brushMover({
+      origin: [0, 0, 0],
+      angles: [0, 10, 0],
+      startOrigin: [0, 0, 0],
+      endOrigin: [0, 0, 0],
+      distance: 0,
+      speed: 0,
+      accel: 0,
+      decel: 0,
+      wait: 0,
+      toggle: false,
+      state: "top",
+      spin: { movedir, speed },
+    });
+
+  it("toggles avelocity between movedir * speed and 0 (rotating_use)", () => {
+    const m = rotor(100, [0, -1, -0]);
+    rotatingUse(m);
+    expect([...m.avelocity]).toEqual([0, -100, -0]);
+    rotatingUse(m);
+    expect([...m.avelocity]).toEqual([0, 0, 0]);
+    rotatingUse(m);
+    expect(m.avelocity[1]).toBe(-100);
+  });
+
+  it("turns by avelocity * 0.1f a frame, in float, without end, with no think", () => {
+    const m = rotor(Math.fround(33.3));
+    rotatingUse(m);
+    let yaw = Math.fround(10);
+    const amove = Math.fround(Math.fround(33.3) * Math.fround(0.1));
+    for (let f = 1; f <= 50; f++) {
+      stepPusher([m], levelTimeAt(f));
+      yaw = Math.fround(yaw + amove);
+    }
+    expect(m.angles[1]).toBe(yaw);
+    expect(m.angles[0]).toBe(0);
+    expect(m.nextthink).toBe(0);
+    rotatingUse(m);
+    stepPusher([m], levelTimeAt(51));
+    expect(m.angles[1]).toBe(yaw);
+  });
+
+  it("stops an infinite speed's NaN avelocity on a use, as VectorCompare reads NaN as not at rest", () => {
+    // 0 * inf on the other axes is NaN.
+    const m = rotor(Number.POSITIVE_INFINITY);
+    rotatingUse(m);
+    expect([...m.avelocity]).toEqual([Number.NaN, Number.POSITIVE_INFINITY, Number.NaN]);
+    rotatingUse(m);
+    expect([...m.avelocity]).toEqual([0, 0, 0]);
+  });
+
+  it("is refused on a mover that is not a func_rotating", () => {
+    expect(() => rotatingUse(door())).toThrow("not a func_rotating");
   });
 });

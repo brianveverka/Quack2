@@ -39,7 +39,10 @@ and plat_hit_top's 3 s return), and the buttons that are no team's slave a use t
 fires (button_fire up, button_wait, and button_return back down after "wait"), and
 the trains that are no team's slave, from where the settle frames leave them (train_next
 moving the train's mins corner to corner, train_wait's "wait", a TELEPORT corner drawn
-unblended as CL_DeltaEntity does for EV_OTHER_TELEPORT)
+unblended as CL_DeltaEntity does for EV_OTHER_TELEPORT), and the func_rotating entities
+that are no team's slave nor on a turret_breach's team, turning by the avelocity START_ON
+gives them at spawn and the settle frames' uses toggle (rotating_use), from where those
+frames turned them
 (`brushMovers`, stepped at the 10 Hz game
 frame by `BrushMotion` and blended as CL_AddPacketEntities does, re-linked each frame
 they move or turn), culled by area, PVS and
@@ -48,13 +51,6 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- func_rotating is not drawn turning: SP_func_rotating gives a START_ON one avelocity
-  movedir * speed from spawn, and rotating_use (a use in the settle frames, `useOne` in
-  bmodels.ts) toggles it between that and 0. Needs a sim mover stepped at FRAMETIME
-  (Brian, session 31: brush motion lives in packages/sim, blended by the client as
-  CL_AddPacketEntities does) and the renderer's per-frame instance poses. A use that
-  spawns or frees an edict in the second frame also moves where a DelayedUse lands
-  (`spawnEdict`).
 - A team whose master a settle-frame killtarget frees stops moving from that frame (its
   members move and think only through the master's SV_Physics_Pusher), but
   `settleTurrets` ignores frees: a freed breach master is left out while its team is
@@ -120,7 +116,7 @@ Remaining:
 - button_wait fires the button's targets (G_UseTargets) when it reaches the top, and
   train_wait a corner's "pathtarget" when a train reaches it, after the settle frames:
   nothing models uses after them (a train mover's `usePathtarget` is dropped), so a
-  door, plat, train or portal they target stays as the settle frames left it, and a
+  door, plat, train, func_rotating or portal they target stays as the settle frames left it, and a
   train a corner's killtarget frees after them goes on moving where the game frees it.
 - Texture animation is not drawn: no texinfo `nexttexinfo` chain is followed.
   R_TextureAnimation steps world faces at 2 Hz, and a brush entity's faces by the frame
@@ -150,6 +146,12 @@ Remaining:
   1 + pausetime + delay + wait is due by 0.1 thinks there (`runThink`), firing nothing,
   where the game fires its targets in that frame. Nor is target_explosion_explode's
   T_RadiusDamage (a "dmg" above 0), which needs the damaged entities' bounds.
+- A func_rotating that is a team slave, or on a turret_breach's team, is left out of
+  `brushMovers` and drawn at its spawn angles (plus the breach's yaw), and a settle-frame
+  use of it does nothing. The game turns a slave by its own avelocity in its master's
+  SV_Physics_Pusher (only under a PUSH or STOP master; under any other it never turns),
+  and turret_breach_think sets every member's yaw velocity each frame, overriding a
+  func_rotating's own spin about yaw.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to

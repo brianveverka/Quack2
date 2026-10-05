@@ -17,7 +17,7 @@ Player movement, the server, and netcode are not written yet. See [BACKLOG.md](B
 
 | Path | What |
 | --- | --- |
-| `packages/sim` | Shared simulation, runs in browser and Node. BSP v38 parser, entity parser, integrity checks, face/lightmap math, PVS, area portal connectivity, light style table, brush movers (linear and rotating doors, plats, buttons) stepped at the 10 Hz game frame, pak and zip readers, constants. |
+| `packages/sim` | Shared simulation, runs in browser and Node. BSP v38 parser, entity parser, integrity checks, face/lightmap math, PVS, area portal connectivity, light style table, brush movers (linear and rotating doors, plats, buttons, trains, func_rotating) stepped at the 10 Hz game frame, pak and zip readers, constants. |
 | `packages/client` | Browser client: WebGL2 world renderer, free-fly camera, `.wal` and palette decoding, game data mounting. |
 | `packages/server` | Game server (Node, `ws`). Stub. |
 | `fixtures/maps` | Test map source (`.map`), its compiled `.bsp`, and a golden dump from ericw-tools. |

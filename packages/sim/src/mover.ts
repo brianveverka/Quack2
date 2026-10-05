@@ -3,7 +3,8 @@
 // Move_Calc and its thinks, the accelerative move (Think_AccelMove and the plat_
 // functions it calls), AngleMove_Calc and its thinks for a func_door_rotating, the
 // func_door, func_plat and func_button state functions, a func_train's train_next,
-// train_wait, train_resume and train_use, and Think_CalcMoveSpeed (game/g_func.c), and the move and
+// train_wait, train_resume and train_use, a func_rotating's rotating_use, and
+// Think_CalcMoveSpeed (game/g_func.c), and the move and
 // think order of SV_Physics_Pusher and SV_RunThink (game/g_phys.c). Shared so the
 // server and the client step movers the same way.
 //
@@ -75,6 +76,14 @@ export interface TrainInfo {
   usePathtarget: ((corner: PathCorner) => boolean) | undefined;
 }
 
+/** A func_rotating's fields beyond moveinfo. */
+export interface SpinInfo {
+  /** movedir: the axis SP_func_rotating picks from its spawnflags, negated for REVERSE. */
+  readonly movedir: Vec3f;
+  /** self->speed: degrees per second about movedir. */
+  readonly speed: number;
+}
+
 export interface BrushMover {
   /**
    * A func_door_rotating: door_go_up and door_go_down turn it with AngleMove_Calc
@@ -131,6 +140,8 @@ export interface BrushMover {
   teleported: boolean;
   /** A func_train's fields; undefined for every other mover. */
   readonly train: TrainInfo | undefined;
+  /** A func_rotating's fields; undefined for every other mover. */
+  readonly spin: SpinInfo | undefined;
 }
 
 export interface BrushMoverInit {
@@ -152,6 +163,8 @@ export interface BrushMoverInit {
   readonly state: MoverState;
   /** A func_train's fields (`trainInit`). */
   readonly train?: TrainInfo;
+  /** A func_rotating's fields; `movedir` and `speed` are stored as floats. */
+  readonly spin?: SpinInfo;
 }
 
 const f3 = (v: readonly [number, number, number]): Vec3f => [Math.fround(v[0]), Math.fround(v[1]), Math.fround(v[2])];
@@ -185,6 +198,7 @@ export function brushMover(init: BrushMoverInit): BrushMover {
     nextthink: 0,
     teleported: false,
     train: init.train,
+    spin: init.spin && { movedir: f3(init.spin.movedir), speed: Math.fround(init.spin.speed) },
   };
 }
 
@@ -672,6 +686,18 @@ export function trainUse(m: BrushMover, levelTime: number, current: boolean): vo
   } else {
     trainNext(m, levelTime, current);
   }
+}
+
+/**
+ * rotating_use: a func_rotating turning stops (avelocity cleared), and one at rest turns
+ * at movedir * speed. VectorCompare with vec3_origin decides, so a NaN avelocity counts
+ * as turning. Its sound and touch function change nothing drawn.
+ */
+export function rotatingUse(m: BrushMover): void {
+  if (!m.spin) throw new Error("not a func_rotating");
+  const av = m.avelocity;
+  if (av[0] === 0 && av[1] === 0 && av[2] === 0) vectorScale(m.spin.movedir, m.spin.speed, av);
+  else av.fill(0);
 }
 
 /** VectorSubtract (corner origin, self->mins, out), in float. */
