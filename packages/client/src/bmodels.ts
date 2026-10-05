@@ -511,7 +511,7 @@ interface TurretTeam {
   /** The yaw steps (amove) SV_Push has turned each member by, in order (`addStep`). */
   readonly steps: number[][];
   yawVel: number;
-  /** Whether a push or think since it was last cleared changed a breach or the yaw velocity. */
+  /** Whether a push or think since it was last cleared changed a breach (not the team's yaw velocity). */
   changed: boolean;
   readonly released: boolean;
   /** Set when a breach's angle reaches NORMALIZE_LIMIT: the team is not run on from there. */
@@ -521,8 +521,9 @@ interface TurretTeam {
 /**
  * The turret teams, by master (a breach with no team is its own): the teams with a
  * turret_breach under a PUSHER_CLASSES master. A team is not run from the first think
- * that meets a breach angle of NORMALIZE_LIMIT or more, or an infinite one, where the
- * game's AnglesNormalize loops for 370000 steps or more, or forever.
+ * that meets a breach angle of NORMALIZE_LIMIT or more, or one not finite, where the
+ * game's AnglesNormalize loops for 370000 steps or more, or forever (NaN cannot come
+ * from `atof`).
  */
 function turretTeams(entities: readonly BspEntity[]): Map<number, TurretTeam> {
   const groups: number[][] = [];
@@ -599,9 +600,7 @@ function turretThink(team: TurretTeam, p: number): void {
   }
   const pitchVel = f32(turn[0] * PER_SECOND);
   const yawVel = f32(turn[1] * PER_SECOND);
-  if (!Object.is(move0, b.move[0]) || !Object.is(move1, b.move[1]) || !Object.is(pitchVel, b.pitchVel) || !Object.is(yawVel, team.yawVel)) {
-    team.changed = true;
-  }
+  if (!Object.is(move0, b.move[0]) || !Object.is(move1, b.move[1]) || !Object.is(pitchVel, b.pitchVel)) team.changed = true;
   b.pitchVel = pitchVel;
   team.yawVel = yawVel;
 }
@@ -649,10 +648,12 @@ function settleTurrets(
         const chain = turretChain(team, freed);
         if (chain === 0) break;
         team.changed = false;
+        const yawVel = team.yawVel;
         turretPush(team, freed);
-        // Only the last breach's yaw is kept, so an earlier one may never reach its own.
+        // Only the last breach's yaw is kept, so an earlier one may never reach its own,
+        // and the yaw velocity is compared across the frame, not after each think.
         for (let p = 0; p < chain; p++) turretThink(team, p);
-        if (f32(team.yawVel * PER_FRAME) === 0 && !team.changed) break;
+        if (f32(team.yawVel * PER_FRAME) === 0 && Object.is(yawVel, team.yawVel) && !team.changed) break;
       }
     }
     team.members.forEach((i, p) => result.set(i, { steps: team.steps[p]! }));
