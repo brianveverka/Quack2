@@ -10,7 +10,7 @@
 //
 // Fields the C keeps as float are rounded with Math.fround where it stores them, and
 // float-only arithmetic is rounded at each operation; the C's double intermediates stay
-// double, so this matches SSE builds (see BACKLOG.md on x87). A float the C tests for truth
+// double, so this matches SSE builds, the reference (CLAUDE.md, Constraints). A float the C tests for truth
 // is compared with 0 here, so NaN counts as true as it does there. Not modeled yet:
 // anything that blocks a push (that needs the box trace).
 
