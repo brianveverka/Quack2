@@ -771,7 +771,8 @@ describe("func_rotating mover", () => {
   });
 
   it("turns by avelocity * 0.1f a frame, in float, without end, with no think", () => {
-    // brushMover stores speed as a float.
+    // movedir is a signed unit axis, so vectorScale's rounded products give fround(speed)
+    // whether or not the speed was stored rounded.
     const m = rotor(33.3);
     rotatingUse(m);
     let yaw = Math.fround(10);
