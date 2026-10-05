@@ -486,9 +486,9 @@ interface TurretTeam {
   readonly members: readonly number[];
   readonly breachAt: readonly (Breach | undefined)[];
   /**
-   * Members [0, chain) are on the master's teamchain, short of a freed member
-   * (`turretChain`): an item on the team cuts the chain after itself in its droptofloor,
-   * in the second frame.
+   * Members [0, chain) are on the master's teamchain unless a freed member ends it
+   * sooner (`turretChain`): an item on the team cuts the chain after itself in its
+   * droptofloor, in the second frame.
    */
   chain: number;
   /** The yaw each member has turned by. */
@@ -561,7 +561,9 @@ function turretThink(team: TurretTeam, p: number): void {
  * the entities it freed: each frame pushes the members on the chain and runs their
  * breaches' thinks, up to MAX_SETTLE_FRAMES in all, or until a frame turns nothing. An
  * inverted pitch range (minpitch > maxpitch) flips move_angles between the limits every
- * frame, forever, so it runs to the cap. A turned member's own spin (a START_ON
+ * frame, forever, so it runs to the cap; so does a team whose chain an item or a free
+ * cut ahead of every breach after the first frame's thinks set a yaw velocity: nothing
+ * on the chain sets it again, and the game spins those members forever. A turned member's own spin (a START_ON
  * func_rotating) is not added, nor are frees after the settle frames.
  *
  * Returns, per entity index, the breach's angles at rest, or for any other team member
@@ -668,7 +670,9 @@ function inlineModel(bsp: Bsp, ref: string | undefined): number | undefined {
 export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): BrushModelInstances {
   const instances: BrushModelInstance[] = [];
   const errors: string[] = [];
-  const { trains, rotating, freed, shown, turrets } = settleSpawnFrames(entities, bsp);
+  const frames = settleSpawnFrames(entities, bsp);
+  const { trains, rotating, freed, shown } = frames;
+  const turrets = settleTurrets(frames.turrets, freed);
   entities.forEach((ent, i) => {
     const ref = ent.model;
     // Point entities carry model paths ("models/..."); only "*N" is an inline model.
@@ -1443,8 +1447,8 @@ function settleSpawnFrames(
   rotating: Map<number, BrushMover>;
   freed: Set<number>;
   shown: Map<number, boolean>;
-  /** `settleTurrets`: the turret teams turned to rest. */
-  turrets: Map<number, { angles?: Vec3; yaw?: number }>;
+  /** The turret teams as the second frame leaves them, for `settleTurrets` (with `freed`). */
+  turrets: Map<number, TurretTeam>;
   moves: readonly { index: number; up: boolean }[];
   /** `areaportalsOf` as the settle frames leave the map: nothing is freed after them. */
   areaportalsOf: (index: number) => number[];
@@ -1622,7 +1626,7 @@ function settleSpawnFrames(
     rotating: s.rotating,
     freed: s.freed,
     shown: s.shown,
-    turrets: settleTurrets(turrets, s.freed),
+    turrets,
     moves: s.moves,
     areaportalsOf: (index) => areaportalsOf(s, index),
   };
@@ -1813,7 +1817,9 @@ function buttonMover(ent: BspEntity, mins: Vec3, maxs: Vec3, origin: Vec3): Brus
  * (SV_Physics_Pusher returns for the slaves).
  */
 export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBrush[][] {
-  const { freed, moves, areaportalsOf, trains, rotating, turrets } = settleSpawnFrames(entities, bsp);
+  const frames = settleSpawnFrames(entities, bsp);
+  const { freed, moves, areaportalsOf, trains, rotating } = frames;
+  const turrets = settleTurrets(frames.turrets, freed);
   const groups = [...findTeams(entities).values()];
   const teamed = new Set(groups.flat());
   // A team's master, a team of one included, is not a FL_TEAMSLAVE: Use_Plat or
