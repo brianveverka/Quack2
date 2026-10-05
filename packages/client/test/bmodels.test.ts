@@ -203,6 +203,14 @@ describe("brush model instances", () => {
       ]);
     });
 
+    it("lowers a func_plat in float, from its origin parsed to float", () => {
+      // pos2[2] -= st.height on a float: 1.00000006 parses to 1.00000012, less 2 is
+      // -0.999999881 (double arithmetic on the unparsed text would give -0.99999994).
+      const [b] = place(`{ "classname" "func_plat" "model" "*1" "origin" "0 0 1.00000006" "height" "2" }`);
+      expect(b!.origin[2]).toBe(Math.fround(Math.fround(1.00000006) - 2));
+      expect(b!.origin[2]).not.toBe(1.00000006 - 2);
+    });
+
     it("opens a START_OPEN func_door or func_water along its move direction", () => {
       const got = place(`
         { "classname" "func_door" "model" "*1" "spawnflags" "1" "origin" "16 -32 8" }

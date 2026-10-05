@@ -183,8 +183,7 @@ function doorPositions(ent: BspEntity, mins: readonly number[], maxs: readonly n
  * settle, from its spawn "origin" (and angles, 0 0 0 for every class moved here), per g_func.c.
  * `mins`/`maxs` are the entity's bounds as gi.setmodel sets them: the model's bounds
  * spread by a unit (CMod_LoadSubmodels). "lip", "height" and "distance" are integer
- * spawn fields (atoi), 0 when absent. Positions are computed in double, where the game
- * uses float, except a door's (`doorPositions`).
+ * spawn fields (atoi), 0 when absent. Positions are float, as the game computes them.
  */
 function spawnMove(
   ent: BspEntity,
@@ -194,15 +193,12 @@ function spawnMove(
   angles: Vec3,
 ): { origin: Vec3; angles: Vec3 } {
   const flags = atoi(ent.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK;
-  const size = [0, 1, 2].map((k) => maxs[k]! - mins[k]!);
   switch (ent.classname) {
     // SP_func_plat: pos2 is the bottom, "height" below the top or the plat's height less
     // "lip" (default 8). Only a plat something targets starts at the top.
     case "func_plat": {
       if (ent.targetname !== undefined) break;
-      const height = atoi(ent.height ?? "0");
-      const lip = atoi(ent.lip ?? "0") || 8;
-      return { origin: [origin[0], origin[1], origin[2] - (height || size[2]! - lip)], angles };
+      return { origin: platPositions(ent, mins, maxs, origin).pos2, angles };
     }
     // SP_func_door / SP_func_water: a START_OPEN door starts at the far end.
     case "func_door":
@@ -1727,6 +1723,15 @@ function rotatingMover(ent: BspEntity): BrushMoverInit {
   };
 }
 
+/** SP_func_plat's pos1 (the spawn origin) and pos2 (`platMover`), in float. */
+function platPositions(ent: BspEntity, mins: readonly number[], maxs: readonly number[], origin: Vec3): { pos1: Vec3; pos2: Vec3 } {
+  const pos1 = origin.map(f32) as Vec3;
+  const height = atoi(ent.height ?? "0");
+  const lip = atoi(ent.lip ?? "0") || 8;
+  const drop = height ? f32(height) : f32(f32(f32(maxs[2]!) - f32(mins[2]!)) - lip);
+  return { pos1, pos2: [pos1[0], pos1[1], f32(pos1[2] - drop)] };
+}
+
 /**
  * SP_func_plat's mover: pos1, the top, is its spawn origin, and pos2 lies "height" (an
  * int) below it, or the plat's height less "lip" (an int, default 8), in float. "speed",
@@ -1737,11 +1742,7 @@ function rotatingMover(ent: BspEntity): BrushMoverInit {
  * moveinfo.distance is left 0 and "wait" is unused: plat_hit_top always waits 3 s.
  */
 function platMover(ent: BspEntity, mins: Vec3, maxs: Vec3, origin: Vec3): BrushMoverInit {
-  const pos1 = origin.map(f32) as Vec3;
-  const height = atoi(ent.height ?? "0");
-  const lip = atoi(ent.lip ?? "0") || 8;
-  const drop = height ? f32(height) : f32(f32(f32(maxs[2]) - f32(mins[2])) - lip);
-  const pos2: Vec3 = [pos1[0], pos1[1], f32(pos1[2] - drop)];
+  const { pos1, pos2 } = platPositions(ent, mins, maxs, origin);
   // ent->speed *= 0.1: the float times a double, stored as a float.
   const field = (key: string, absent: number) => {
     const v = f32(atof(ent[key] ?? "0"));
