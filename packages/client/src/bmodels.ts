@@ -410,8 +410,9 @@ interface Edicts {
 /**
  * SpawnEntities in deathmatch. Entity 0 fills edict 0 and every later one takes G_Spawn's
  * edict: the lowest free one above the clients (one freed at level.time 0 is always
- * reusable), else a new one at the end. Spawn functions G_Spawn too: SP_worldspawn's
- * InitBodyQue (8 edicts), SP_func_plat's and SP_misc_teleporter's triggers, and
+ * reusable), else a new one at the end. Spawn functions G_Spawn too, entity 0's
+ * included (SpawnEntities never inhibits it, nor can its spawn function free it):
+ * SP_worldspawn's InitBodyQue (8 edicts), SP_func_plat's and SP_misc_teleporter's triggers, and
  * SP_trigger_always's DelayedUse (G_UseTargets, as SP_trigger_always raises "delay" to at
  * least 0.2 s). An entity with no key at all is zeroed by ED_ParseEdict, which frees its
  * edict whatever its number. One a NOT_DEATHMATCH spawnflag inhibits, or whose spawn
@@ -436,11 +437,29 @@ function spawnEntities(entities: readonly BspEntity[]): Edicts {
   const initBodyQue = () => {
     for (let k = 0; k < BODY_QUEUE_SIZE; k++) spawn("inert");
   };
+  // The edicts a spawn function that kept its entity G_Spawns. ED_CallSpawn matches
+  // classnames case sensitively.
+  const spawnFor = (e: BspEntity) => {
+    switch (e.classname) {
+      case "worldspawn":
+        initBodyQue();
+        break;
+      case "func_plat":
+      case "misc_teleporter":
+        spawn("inert");
+        break;
+      case "trigger_always": {
+        const delay = Math.fround(atof(e.delay ?? "0"));
+        spawn({ nextthink: Math.max(delay, Math.fround(0.2)), inFrame: false, target: e.target, killtarget: e.killtarget });
+        break;
+      }
+    }
+  };
   entities.forEach((e, i) => {
     if (i === 0) {
       status.push(inGame(e) ? "spawned" : "free");
-      // ED_CallSpawn matches classnames case sensitively.
-      if (e.classname === "worldspawn") initBodyQue();
+      // SpawnEntities never inhibits edict 0, so its spawn function always runs.
+      if (!freedAtSpawn(e)) spawnFor(e);
       return;
     }
     const p = spawn(i);
@@ -461,20 +480,7 @@ function spawnEntities(entities: readonly BspEntity[]): Edicts {
     }
     slotOf.set(i, p);
     status.push("spawned");
-    switch (e.classname) {
-      case "worldspawn":
-        initBodyQue();
-        break;
-      case "func_plat":
-      case "misc_teleporter":
-        spawn("inert");
-        break;
-      case "trigger_always": {
-        const delay = Math.fround(atof(e.delay ?? "0"));
-        spawn({ nextthink: Math.max(delay, Math.fround(0.2)), inFrame: false, target: e.target, killtarget: e.killtarget });
-        break;
-      }
-    }
+    spawnFor(e);
   });
   return { slots, slotOf, status };
 }
@@ -1784,7 +1790,7 @@ function settleSpawnFrames(
       if (s.freed.has(m)) break;
       if (!spawned(m) || entities[m]!.classname !== "turret_breach") continue;
       const t = pickTarget(s, entities[m]!.target);
-      if (t !== undefined && t !== 0) freeEdict(s, t);
+      if (t !== undefined) freeEdict(s, t);
       if (s.freed.has(m)) break;
       if (turret) turretThink(turret, p);
     }
@@ -2139,7 +2145,8 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
     if (members.some((i) => status[i] === "spawned" && movingDoor(entities[i]!) && !doors.has(i))) continue;
     const master = entities[members[0]!]!.classname;
     if (master === "func_door" || master === "func_door_rotating") {
-      calcMoveSpeed(members.map((i) => doors.get(i)?.mover ?? NO_MOVE));
+      // Think_CalcMoveSpeed is the master's think; a raw master has none.
+      if (status[members[0]!] === "spawned") calcMoveSpeed(members.map((i) => doors.get(i)?.mover ?? NO_MOVE));
     }
     const cut = members.findIndex((i) => freed.has(i));
     const live = (cut < 0 ? members : members.slice(0, cut)).flatMap((i) => doors.get(i) ?? []);

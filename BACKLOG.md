@@ -57,8 +57,8 @@ and self-extractor stubs included), picked archives read by range, checker fallb
 Remaining:
 - Malformed entity lumps, edict 0: entity 0 fills edict 0 whatever its classname, and
   only SP_worldspawn marks it in use, so otherwise G_RunFrame never runs it and G_Find
-  skips it, though its spawn function's side effects stand (a trigger_always's
-  DelayedUse). `settleSpawnFrames` runs it in slot 0 and finds it by "targetname". A
+  skips it, though its spawn function's side effects stand (`spawnEntities` models the
+  edicts it G_Spawns). `settleSpawnFrames` runs it in slot 0 and finds it by "targetname". A
   later worldspawn entity runs SP_worldspawn: `spawnEntities` models the edicts its
   InitBodyQue takes, not its MOVETYPE_PUSH or CS_SKY and the other configstrings, which
   `skySettings` ignores.

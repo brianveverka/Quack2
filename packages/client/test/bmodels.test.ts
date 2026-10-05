@@ -1341,7 +1341,7 @@ describe("edicts G_FreeEdict refuses (BODY_QUEUE_SIZE)", () => {
         parseEntities(`${first} { "classname" "func_train" "model" "*1" "target" "c" } ${src}
           { "classname" "path_corner" "targetname" "c" "origin" "1 0 0" "spawnflags" "2048" }
           { "classname" "path_corner" "targetname" "c" "origin" "2 0 0" }`),
-      ).instances.map((b) => b.origin[0] - 385);
+      ).instances.flatMap((b) => (b.entity === 1 ? [b.origin[0] - 385] : []));
     expect(x(notnull(6))).toEqual([1]);
     expect(x(notnull(7))).toEqual([2]);
     expect(x(notnull(6), `{ "classname" "worldspawn" }`)).toEqual([2]);
@@ -1350,13 +1350,19 @@ describe("edicts G_FreeEdict refuses (BODY_QUEUE_SIZE)", () => {
     expect(x(`{ } `.repeat(7) + notnull(6))).toEqual([1]);
     expect(x(`{ "_c" "" } ` + notnull(6))).toEqual([2]);
     // Spawned edicts: func_plat's and misc_teleporter's triggers, trigger_always's DelayedUse.
-    expect(x(`{ "classname" "func_plat" } `.repeat(3))).toEqual([1]);
-    expect(x(`{ "classname" "func_plat" } `.repeat(4))).toEqual([2]);
+    expect(x(`{ "classname" "func_plat" "model" "*1" } `.repeat(3))).toEqual([1]);
+    expect(x(`{ "classname" "func_plat" "model" "*1" } `.repeat(4))).toEqual([2]);
     expect(x(`{ "classname" "misc_teleporter" "target" "n" } `.repeat(4))).toEqual([2]);
     expect(x(`{ "classname" "misc_teleporter" } `.repeat(6))).toEqual([1]); // freed, so raw
     expect(x(`{ "classname" "trigger_always" } `.repeat(4))).toEqual([2]);
     expect(x(`{ "classname" "monster_soldier" } `.repeat(6))).toEqual([1]);
     expect(x(`{ "classname" "info_notnull" "spawnflags" "2048" } `.repeat(6))).toEqual([1]);
+    // So do entity 0's, as edict 0 is never inhibited.
+    expect(x(notnull(5), `{ "classname" "func_plat" "model" "*1" "spawnflags" "2048" }`)).toEqual([1]);
+    expect(x(notnull(6), `{ "classname" "func_plat" "model" "*1" "spawnflags" "2048" }`)).toEqual([2]);
+    expect(x(notnull(6), `{ "classname" "misc_teleporter" "target" "n" }`)).toEqual([2]);
+    expect(x(notnull(6), `{ "classname" "trigger_always" }`)).toEqual([2]);
+    expect(x(notnull(6), `{ "classname" "misc_teleporter" }`)).toEqual([1]);
     // A later worldspawn's InitBodyQue takes 8.
     expect(x(`{ "classname" "worldspawn" }`)).toEqual([2]);
     expect(x(`{ "classname" "Worldspawn" }`)).toEqual([1]);
@@ -1378,20 +1384,28 @@ describe("edicts G_FreeEdict refuses (BODY_QUEUE_SIZE)", () => {
   });
 
   it("door_go_up leaves a raw team member at STATE_TOP", () => {
+    // The game then errors on the member's NULL think in this frame (not modeled).
     const team = (flags: string) =>
       open(`{ "classname" "info_null" } { "classname" "trigger_always" "target" "d" }
         { "classname" "func_door" "targetname" "d" "team" "t" }
         { "classname" "func_door" "team" "t" "target" "p" "spawnflags" "${flags}" } ${portal()}`);
     expect(team("0")).toEqual([3]);
     expect(team("2048")).toEqual([]);
-    // Its team still moves.
-    const movers = brushMovers(
-      bsp,
-      parseEntities(`{ "classname" "info_null" } { "classname" "trigger_always" "target" "d" }
-        { "classname" "func_door" "model" "*1" "targetname" "d" "team" "t" }
-        { "classname" "func_door" "model" "*1" "team" "t" "spawnflags" "2048" }`),
-    );
-    expect(movers.map((t) => t.map((d) => d.entity))).toEqual([[2]]);
+  });
+
+  it("a team with a raw member keeps its spawned doors; a raw master leaves their speeds", () => {
+    const movers = (src: string) =>
+      brushMovers(bsp, parseEntities(`{ "classname" "info_null" } ${src}`)).map((t) =>
+        t.map((d) => [d.entity, d.mover.speed]),
+      );
+    // Think_CalcMoveSpeed takes the raw member's zero distance: time 0, speed distance / 0.
+    expect(
+      movers(`{ "classname" "func_door" "model" "*1" "team" "t" } { "classname" "func_door" "model" "*1" "team" "t" "spawnflags" "2048" }`),
+    ).toEqual([[[1, Infinity]]]);
+    // Think_CalcMoveSpeed is the master's think: a raw master never runs it.
+    expect(
+      movers(`{ "classname" "func_door" "team" "t" "spawnflags" "2048" } { "classname" "func_door" "model" "*1" "team" "t" }`),
+    ).toEqual([[[2, 200]]]);
   });
 
   it("a raw entity never thinks", () => {
@@ -1453,11 +1467,21 @@ describe("edicts G_FreeEdict refuses (BODY_QUEUE_SIZE)", () => {
   });
 
   it("a trigger_elevator's raw func_train does not move", () => {
-    expect(
-      open(`{ "classname" "info_null" } { "classname" "trigger_elevator" "targetname" "e" "target" "tr" }
-        { "classname" "func_train" "targetname" "tr" "spawnflags" "2048" }
-        { "classname" "trigger_always" "target" "e" } ${portal()}`),
-    ).toEqual([]);
+    // The relay is the elevator's user, with a "pathtarget" naming a corner.
+    const src = (flags: string) =>
+      parseEntities(`{ "classname" "info_null" } { "classname" "trigger_elevator" "targetname" "e" "target" "tr" }
+        { "classname" "func_train" "model" "*1" "targetname" "tr" "spawnflags" "${flags}" }
+        { "classname" "trigger_always" "target" "r" } { "classname" "trigger_relay" "targetname" "r" "target" "e" "pathtarget" "c" }
+        { "classname" "path_corner" "targetname" "c" "origin" "50 0 0" } ${portal()}`);
+    const moving = (flags: string) => brushMovers(bsp, src(flags)).flatMap((t) => t.map((d) => d.mover.nextthink !== 0));
+    expect(moving("0")).toEqual([true]);
+    expect(moving("2048")).toEqual([]);
+    expect(openAreaPortals(src("2048")).size).toBe(0);
+  });
+
+  it("entity 0's trigger_always fires through its DelayedUse", () => {
+    expect(open(`{ "classname" "trigger_always" "target" "p" } ${portal()}`)).toEqual([3]);
+    expect(open(`{ "classname" "trigger_always" "target" "p" "spawnflags" "2048" } ${portal()}`)).toEqual([3]);
   });
 
   it("a DelayedUse that ran in one stays in use", () => {
