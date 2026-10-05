@@ -570,6 +570,8 @@ describe("brush model instances", () => {
       // step (speed 50 * FRAMETIME) is pushed, in that frame, and SV_Physics_Toss turns the
       // master alone by one more in the third. A triggered one stays PUSH.
       expect(yaws(`{ "classname" "func_object" "model" "*1" "team" "a" } ${breach("a")}`)).toEqual([10, 5]);
+      // A breach one 3 degree step from rest stops the team in its second-frame think.
+      expect(yaws(`{ "classname" "func_object" "model" "*1" "team" "a" } ${breach("a").replace('"80"', '"3"')}`)).toEqual([3, 3]);
       expect(yaws(`{ "classname" "func_object" "model" "*1" "team" "a" "spawnflags" "1" } ${breach("a")}`)).toEqual([80]);
     });
 
@@ -591,6 +593,32 @@ describe("brush model instances", () => {
       `);
       expect(cut).toBe(5);
       expect(base).toBe(5 * 9999); // no push in the first frame
+    });
+
+    it("stops a turret team at a member the settle frames free, and all of it at a freed master", () => {
+      const yaws = (src: string) => place(`{ "classname" "worldspawn" }` + src).map((b) => Math.round(b.angles[1] * 1e9) / 1e9);
+      const breach = (keys = "") => `{ "classname" "turret_breach" "model" "*1" "minyaw" "80" "maxyaw" "100" "team" "a" ${keys} }`;
+      const base = (keys = "") => `{ "classname" "turret_base" "model" "*1" "team" "a" ${keys} }`;
+      const kill = `{ "classname" "trigger_always" "killtarget" "m" }`;
+      // A killtarget in the second frame frees the master before its slot: nothing turns,
+      // as turret_breach_finish_init only set the velocities in the first. After its slot,
+      // the team was pushed once (5 degrees) and stops there.
+      const freedMaster = `${base(`"targetname" "m"`)} ${breach()} ${base()}`;
+      expect(yaws(kill + freedMaster)).toEqual([0, 0]);
+      expect(yaws(freedMaster + kill)).toEqual([5, 5]);
+      // A freed member ends the chain: the master and breach before it turn to rest, the
+      // base after it stays where the last push left it.
+      const freedMember = `${base()} ${breach()} { "classname" "func_wall" "model" "*1" "team" "a" "targetname" "m" } ${base()}`;
+      expect(yaws(kill + freedMember)).toEqual([80, 80, 0]);
+      expect(yaws(freedMember + kill)).toEqual([80, 80, 5]);
+      // turret_breach_finish_init frees its target in the first frame, before its own
+      // think: a later breach past the freed member never thinks, so the first sets the
+      // team's yaw; a breach targeting its master stops the team at once.
+      expect(
+        yaws(`${base()} ${breach(`"target" "x"`)} { "classname" "func_wall" "model" "*1" "team" "a" "targetname" "x" }
+          { "classname" "turret_breach" "model" "*1" "minyaw" "180" "maxyaw" "190" "team" "a" } ${base()}`),
+      ).toEqual([80, 80, 0, 0]);
+      expect(yaws(`${base(`"targetname" "x"`)} ${breach(`"target" "x"`)}`)).toEqual([0]);
     });
 
     it("leaves out of teams and target lookups the entities a spawn function frees in deathmatch", () => {
@@ -1032,6 +1060,16 @@ describe("area portals open at spawn", () => {
         { "classname" "func_areaportal" "targetname" "q" "style" "3" }
         { "classname" "trigger_always" "target" "c" } ${relay.replace('"r"', '"c"')}`);
       expect([...openAreaPortals(worldCross)]).toEqual([3]);
+    });
+
+    it("ends a pusher master's second-frame walk at an item, whose droptofloor cuts the teamchain", () => {
+      // The timer after the item thinks in its own slot, after the trigger_always fired the
+      // relay; ahead of the item, it frees the relay in the door's slot first.
+      const timer = `{ "classname" "func_timer" "team" "d" "spawnflags" "1" "pausetime" "-1.8" "killtarget" "r" }`;
+      const fire = `{ "classname" "trigger_always" "target" "r" } { "classname" "trigger_relay" "targetname" "r" "target" "q" }`;
+      const door = `{ "classname" "func_door" "model" "*1" "team" "d" "targetname" "dd" }`;
+      expect(open(`${door} { "classname" "item_health" "team" "d" } ${fire} ${timer}`)).toEqual([3]);
+      expect(open(`${door} { "classname" "info_notnull" "team" "d" } ${fire} ${timer}`)).toEqual([]);
     });
 
     it("ends a chain of tiny delays that spawns faster than it frees (ED_Alloc errors in the game)", () => {

@@ -457,32 +457,52 @@ function breachThink(b: Breach): [number, number] {
 }
 
 /**
- * Turret breaches turned to rest, as the game does over the first seconds: each frame
- * SV_Physics_Pusher turns every member of a team by its avelocity, then runs the
- * members' thinks in team order. A breach's think sets its own pitch velocity and the
- * yaw velocity of every member of its team (G_FindTeams: the in-game entities with the
- * same "team", compared case sensitively, in entity order), so the last breach in a team
- * sets the yaw every member turns by. A breach with no team turns alone here; the stock
- * game crashes on it (turret_breach_finish_init writes through its NULL teammaster).
+ * A turret team turning to rest, as the game does over the first seconds: each frame, at
+ * the master's slot, SV_Physics_Pusher turns every member on the master's teamchain by its
+ * avelocity (`turretPush`), then runs the members' thinks in team order. A breach's think
+ * (`turretThink`) sets its own pitch velocity and the yaw velocity of every member of its
+ * team (G_FindTeams: the in-game entities with the same "team", compared case sensitively,
+ * in entity order), so the last breach in a team sets the yaw every member turns by. A
+ * breach with no team turns alone here; the stock game crashes on it
+ * (turret_breach_finish_init writes through its NULL teammaster).
  *
  * Only a master in PUSHER_CLASSES runs its slaves' thinks; under any other the team keeps
- * its spawn angles. A spawnflags-0 func_object master turns MOVETYPE_TOSS in its think in
- * the second frame (func_object_release), so its team runs for two frames only (turning in
- * the second), and the master alone turns once more in the third: SV_Physics_Toss turns it by the avelocity the
- * breaches last set until it lands (later frames need the trace). An item on the team
- * cuts the master's chain after itself in its droptofloor, in the second frame: members
- * after it are neither turned nor thought for from then on. Other frees that cut a chain
- * the same way are not modeled (a killtarget, turret_breach_finish_init freeing its
- * target, a target_crosslevel_target firing), nor a use that releases a triggered
- * func_object. A turned member's own spin (a START_ON func_rotating) is not added. An
- * inverted pitch range (minpitch > maxpitch) flips move_angles between the limits every
- * frame, forever; it runs to MAX_SETTLE_FRAMES here, or stops on a frame that turns
- * nothing.
+ * its spawn angles. The two settle frames step the team in their slot walk
+ * (`settleSpawnFrames`), and `settleTurrets` runs it on from the third. A spawnflags-0
+ * func_object master turns MOVETYPE_TOSS in its think in the second frame
+ * (func_object_release), so its team runs for two frames only (turning in the second), and
+ * the master alone turns once more in the third: SV_Physics_Toss turns it by the
+ * avelocity the breaches last set until it lands (later frames need the trace).
  *
- * Returns, per entity index, the breach's angles at rest, or for any other team member
- * the yaw it has turned by. A team with a non-finite angle or field is not run.
+ * A settle-frame free (a killtarget, turret_breach_finish_init freeing its target) stops
+ * the team from the point in the slot walk where it happens: G_RunFrame skips a freed
+ * master and SV_Physics_Pusher returns for its slaves, so the members keep their angles;
+ * a freed member ends the chain (`turretChain`), so the members after it are neither
+ * pushed nor thought for, in the rest of that frame's walk if it is still ahead, and in
+ * every later frame. A use that releases a triggered func_object is not modeled, nor is
+ * droptofloor freeing an item that starts in solid (it needs the trace).
  */
-function settleTurrets(entities: readonly BspEntity[]): Map<number, { angles?: Vec3; yaw?: number }> {
+interface TurretTeam {
+  readonly members: readonly number[];
+  readonly breachAt: readonly (Breach | undefined)[];
+  /**
+   * Members [0, chain) are on the master's teamchain unless a freed member ends it
+   * sooner (`turretChain`): an item on the team cuts the chain after itself in its
+   * droptofloor, in the second frame.
+   */
+  chain: number;
+  /** The yaw each member has turned by. */
+  readonly turned: number[];
+  yawVel: number;
+  readonly released: boolean;
+}
+
+/**
+ * The turret teams, by master (a breach with no team is its own): the teams with a
+ * turret_breach under a PUSHER_CLASSES master. A team with a non-finite angle or field
+ * is not run.
+ */
+function turretTeams(entities: readonly BspEntity[]): Map<number, TurretTeam> {
   const groups: number[][] = [];
   entities.forEach((e, i) => {
     if (i > 0 && inGame(e) && e.team === undefined && e.classname === "turret_breach") groups.push([i]);
@@ -490,8 +510,7 @@ function settleTurrets(entities: readonly BspEntity[]): Map<number, { angles?: V
   for (const members of findTeams(entities).values()) {
     if (PUSHER_CLASSES.has(entities[members[0]!]!.classname ?? "")) groups.push(members);
   }
-
-  const result = new Map<number, { angles?: Vec3; yaw?: number }>();
+  const teams = new Map<number, TurretTeam>();
   for (const members of groups) {
     const breachAt = members.map((i) => (entities[i]!.classname === "turret_breach" ? breachState(entities[i]!, i) : undefined));
     const breaches = breachAt.filter((b) => b !== undefined);
@@ -500,37 +519,78 @@ function settleTurrets(entities: readonly BspEntity[]): Map<number, { angles?: V
     if (!values.every(Number.isFinite)) continue;
     const master = entities[members[0]!]!;
     const released = master.classname === "func_object" && (atoi(master.spawnflags ?? "0") & ~SPAWNFLAG_SKILL_MASK) === 0;
-    const frames = released ? 2 : MAX_SETTLE_FRAMES;
-    // Members [0, chain) are on the master's teamchain.
-    let chain = members.length;
-    const turned = members.map(() => 0);
-    let yawVel = 0;
-    for (let frame = 0; frame < frames; frame++) {
-      for (let p = 0; p < chain; p++) {
-        const b = breachAt[p];
-        if (b) {
-          b.angles[0] += b.pitchVel * FRAMETIME;
-          b.angles[1] += yawVel * FRAMETIME;
-        }
-        turned[p]! += yawVel * FRAMETIME;
-      }
-      for (let p = 0; p < chain; p++) {
-        const b = breachAt[p];
-        if (b) {
-          const [pitch, yaw] = breachThink(b);
-          b.pitchVel = pitch / FRAMETIME;
-          yawVel = yaw / FRAMETIME;
-        } else if (frame === 1 && ITEM_CLASSES.has(entities[members[p]!]!.classname ?? "")) {
-          chain = p + 1;
-        }
-      }
-      // Only the last breach's yaw is kept, so an earlier one may never reach its own.
-      const pitches = breachAt.slice(0, chain).map((b) => Math.abs(b?.pitchVel ?? 0));
-      if (Math.max(Math.abs(yawVel), ...pitches) * FRAMETIME <= SETTLED) break;
+    teams.set(members[0]!, { members, breachAt, chain: members.length, turned: members.map(() => 0), yawVel: 0, released });
+  }
+  return teams;
+}
+
+/**
+ * How many members the master's teamchain walk reaches: G_FreeEdict zeroes a freed
+ * member's teamchain (and its avelocity), so the walk ends at it, and a freed master is
+ * no longer run at all.
+ */
+function turretChain(team: TurretTeam, freed: ReadonlySet<number>): number {
+  for (let p = 0; p < team.chain; p++) if (freed.has(team.members[p]!)) return p;
+  return team.chain;
+}
+
+/** SV_Physics_Pusher's push: every member on the teamchain turned by its avelocity. */
+function turretPush(team: TurretTeam, freed: ReadonlySet<number>): void {
+  const chain = turretChain(team, freed);
+  for (let p = 0; p < chain; p++) {
+    const b = team.breachAt[p];
+    if (b) {
+      b.angles[0] += b.pitchVel * FRAMETIME;
+      b.angles[1] += team.yawVel * FRAMETIME;
     }
-    if (released) turned[0]! += yawVel * FRAMETIME;
-    members.forEach((i, p) => result.set(i, { yaw: turned[p]! }));
-    for (const b of breaches) result.set(b.index, { angles: b.angles });
+    team.turned[p]! += team.yawVel * FRAMETIME;
+  }
+}
+
+/** turret_breach_think on the breach at team position p, if it is one. */
+function turretThink(team: TurretTeam, p: number): void {
+  const b = team.breachAt[p];
+  if (!b) return;
+  const [pitch, yaw] = breachThink(b);
+  b.pitchVel = pitch / FRAMETIME;
+  team.yawVel = yaw / FRAMETIME;
+}
+
+/**
+ * The turret teams run on from the third frame, as `settleSpawnFrames` left them, with
+ * the entities it freed: each frame pushes the members on the chain and runs their
+ * breaches' thinks, up to MAX_SETTLE_FRAMES in all, or until a frame turns nothing. An
+ * inverted pitch range (minpitch > maxpitch) flips move_angles between the limits every
+ * frame, forever, so it runs to the cap. So does a team with a yaw velocity whose chain
+ * an item or a free has cut ahead of every breach: nothing on the chain sets it again,
+ * and the game spins those members forever. A turned member's own spin (a START_ON
+ * func_rotating) is not added, nor are frees after the settle frames. It changes the
+ * teams in place, so each map's teams are settled once.
+ *
+ * Returns, per entity index, the breach's angles at rest, or for any other team member
+ * the yaw it has turned by.
+ */
+function settleTurrets(
+  teams: ReadonlyMap<number, TurretTeam>,
+  freed: ReadonlySet<number>,
+): Map<number, { angles?: Vec3; yaw?: number }> {
+  const result = new Map<number, { angles?: Vec3; yaw?: number }>();
+  for (const team of teams.values()) {
+    if (team.released) {
+      if (!freed.has(team.members[0]!)) team.turned[0]! += team.yawVel * FRAMETIME;
+    } else {
+      for (let frame = 2; frame < MAX_SETTLE_FRAMES; frame++) {
+        const chain = turretChain(team, freed);
+        if (chain === 0) break;
+        // Only the last breach's yaw is kept, so an earlier one may never reach its own.
+        const pitches = team.breachAt.slice(0, chain).map((b) => Math.abs(b?.pitchVel ?? 0));
+        if (Math.max(Math.abs(team.yawVel), ...pitches) * FRAMETIME <= SETTLED) break;
+        turretPush(team, freed);
+        for (let p = 0; p < chain; p++) turretThink(team, p);
+      }
+    }
+    team.members.forEach((i, p) => result.set(i, { yaw: team.turned[p]! }));
+    for (const b of team.breachAt) if (b) result.set(b.index, { angles: b.angles });
   }
   return result;
 }
@@ -611,8 +671,9 @@ function inlineModel(bsp: Bsp, ref: string | undefined): number | undefined {
 export function brushModelInstances(bsp: Bsp, entities: readonly BspEntity[]): BrushModelInstances {
   const instances: BrushModelInstance[] = [];
   const errors: string[] = [];
-  const turrets = settleTurrets(entities);
-  const { trains, rotating, freed, shown } = settleSpawnFrames(entities, bsp);
+  const frames = settleSpawnFrames(entities, bsp);
+  const { trains, rotating, freed, shown } = frames;
+  const turrets = settleTurrets(frames.turrets, freed);
   entities.forEach((ent, i) => {
     const ref = ent.model;
     // Point entities carry model paths ("models/..."); only "*N" is an inline model.
@@ -1336,8 +1397,8 @@ function doorUse(s: Settle, index: number): void {
  * func_train_find (`trainFind`) at its own slot, a team slave's included (BACKLOG.md). A train's mins are its inline model's in `bsp`, else 0 0 0 (without
  * `bsp`, or a train with no inline model). A breach on a team whose master is in
  * PUSHER_CLASSES runs turret_breach_finish_init in the master's slot, along the
- * teamchain up to a freed member, freeing its target; a member trigger_elevator's init
- * runs there too (`runThink`). A START_ON func_timer due by then
+ * teamchain up to a freed member, freeing its target, then turret_breach_think
+ * (`turretThink`); a member trigger_elevator's init runs there too (`runThink`). A START_ON func_timer due by then
  * thinks again at level.time + wait, its targets unfired (uses here are not modeled), and
  * a trigger_elevator runs trigger_elevator_init (`elevatorInit`).
  *
@@ -1352,7 +1413,8 @@ function doorUse(s: Settle, index: number): void {
  * slot; it fires in this frame if it is due and its slot lies ahead (`useTargets`).
  * Likewise a think due in this frame (`runThink`: multi_wait, func_timer_think,
  * target_explosion_explode) runs at the entity's slot, and earlier at a PUSHER_CLASSES
- * master's along its teamchain.
+ * master's along its teamchain, after the master's turret team is pushed (`turretPush`)
+ * and up to an item, whose droptofloor ends the chain after itself.
  * Slots droptofloor frees (a start-solid item, in the second frame) need the trace and
  * are not modeled, nor is a target_crosslevel_target with a "delay" up to about 0.2
  * firing and freeing itself in either frame. G_UseTargets first frees its killtargets, then uses its targets: a
@@ -1386,6 +1448,8 @@ function settleSpawnFrames(
   rotating: Map<number, BrushMover>;
   freed: Set<number>;
   shown: Map<number, boolean>;
+  /** The turret teams as the second frame leaves them, for one `settleTurrets` call (with `freed`). */
+  turrets: Map<number, TurretTeam>;
   moves: readonly { index: number; up: boolean }[];
   /** `areaportalsOf` as the settle frames leave the map: nothing is freed after them. */
   areaportalsOf: (index: number) => number[];
@@ -1467,11 +1531,15 @@ function settleSpawnFrames(
     // SP_trigger_elevator thinks trigger_elevator_init at level.time + FRAMETIME.
     if (e.classname === "trigger_elevator") s.nextthink.set(i, f32(FRAMETIME));
   });
+  const turrets = turretTeams(entities);
   // The first frame, in slot order (a slot freed earlier in it is skipped).
   const first = levelTimeAt(1);
   for (const slot of [...s.slots]) {
     if (typeof slot !== "number" || s.freed.has(slot)) continue;
     const ent = entities[slot]!;
+    // Nothing turns yet: turret_breach_finish_init sets the first velocities below.
+    const turret = turrets.get(slot);
+    if (turret) turretPush(turret, s.freed);
     // SV_Physics_Pusher turns a func_rotating before any think on its team runs.
     const rotor = s.rotating.get(slot);
     if (rotor) stepPusher([rotor], first);
@@ -1491,15 +1559,21 @@ function settleSpawnFrames(
     // SV_Physics_Pusher runs a PUSH or STOP master's team thinks along its teamchain, which
     // ends at a freed member (G_FreeEdict clears its teamchain). turret_breach_finish_init
     // frees the breach's target (G_PickTarget; the game crashes on a target that names nothing).
+    // It then runs turret_breach_think.
     const members = teams.get(slot);
-    if (!members || !PUSHER_CLASSES.has(ent.classname ?? "")) continue;
-    for (const m of members) {
+    if (!members || !PUSHER_CLASSES.has(ent.classname ?? "")) {
+      if (turret) turretThink(turret, 0);
+      continue;
+    }
+    for (const [p, m] of members.entries()) {
       if (s.freed.has(m)) break;
       runThink(s, m, 1, slot);
       if (s.freed.has(m)) break;
       if (entities[m]!.classname !== "turret_breach") continue;
       const t = pickTarget(s, entities[m]!.target);
       if (t !== undefined && t !== 0) freeEdict(s, t);
+      if (s.freed.has(m)) break;
+      if (turret) turretThink(turret, p);
     }
   }
   const second = levelTimeAt(2);
@@ -1508,9 +1582,12 @@ function settleSpawnFrames(
     const slot = s.slots[p]!;
     s.budget = MAX_USES;
     if (typeof slot === "number") {
-      // A func_rotating turns by the avelocity uses in earlier slots left it.
+      // A func_rotating turns by the avelocity uses in earlier slots left it, a turret
+      // team by what its breaches' thinks set in the first frame.
       const rotor = s.rotating.get(slot);
       if (rotor) stepPusher([rotor], second);
+      const turret = turrets.get(slot);
+      if (turret) turretPush(turret, s.freed);
       // A modeled think due in this frame (`runThink`): in the entity's own slot, and also
       // in a PUSH or STOP master's slot (earlier) for each teamchain member, after the
       // master's push and own think (SV_Physics_Pusher).
@@ -1521,14 +1598,20 @@ function settleSpawnFrames(
         stepPusher([train], second);
         s.current = -1;
       }
+      // An item's droptofloor, due now, ends the teamchain after the item.
       const members = teams.get(slot);
       if (members && PUSHER_CLASSES.has(entities[slot]!.classname ?? "")) {
-        for (const m of members) {
+        for (const [p, m] of members.entries()) {
           if (s.freed.has(m)) break;
           runThink(s, m, 2, slot);
           if (s.freed.has(m)) break;
+          if (turret) turretThink(turret, p);
+          if (ITEM_CLASSES.has(entities[m]!.classname ?? "")) {
+            if (turret) turret.chain = p + 1;
+            break;
+          }
         }
-      }
+      } else if (turret) turretThink(turret, 0);
     } else if (slot !== null && slot !== "doorTrigger" && slot.nextthink > 0 && slot.nextthink <= SECOND_FRAME_DUE) {
       // SV_RunThink: a nextthink at or below 0 never runs. Think_Delay frees the slot after its uses.
       if (slot.inFrame) s.budget = s.spawnedBudget;
@@ -1544,6 +1627,7 @@ function settleSpawnFrames(
     rotating: s.rotating,
     freed: s.freed,
     shown: s.shown,
+    turrets,
     moves: s.moves,
     areaportalsOf: (index) => areaportalsOf(s, index),
   };
@@ -1734,8 +1818,9 @@ function buttonMover(ent: BspEntity, mins: Vec3, maxs: Vec3, origin: Vec3): Brus
  * (SV_Physics_Pusher returns for the slaves).
  */
 export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBrush[][] {
-  const { freed, moves, areaportalsOf, trains, rotating } = settleSpawnFrames(entities, bsp);
-  const turrets = settleTurrets(entities);
+  const frames = settleSpawnFrames(entities, bsp);
+  const { freed, moves, areaportalsOf, trains, rotating } = frames;
+  const turrets = settleTurrets(frames.turrets, freed);
   const groups = [...findTeams(entities).values()];
   const teamed = new Set(groups.flat());
   // A team's master, a team of one included, is not a FL_TEAMSLAVE: Use_Plat or
