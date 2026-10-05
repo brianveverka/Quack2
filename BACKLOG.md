@@ -21,7 +21,10 @@ trigger_counter, func_timer and target_explosion entities that pass a use on (th
 two also from their own think when due), a "delay" on the way firing in the
 second frame when due by then and G_Spawn puts its DelayedUse in a slot still ahead;
 a door's door_hit_bottom closes its own again in the game frame it is back down) culling world leafs and brush models,
-brush entities a killtarget frees in the settle frames left out, and func_wall and
+brush entities a killtarget frees in the settle frames left out (G_FreeEdict refuses
+edict 0 and the 8 after the clients: the body queue's, or with no worldspawn first the
+first map entities' and their spawned edicts', where an entity inhibited or freed at
+spawn stays in use, inert but found by G_Find and G_FindTeams), and func_wall and
 func_object entities a use there shows or hides drawn or left out to match,
 the world walked per frame as R_RecursiveWorldNode does (R_CullBox on nodes and leafs,
 so the sky box is bounded by the sky faces in view), inline brush models where the game
@@ -52,20 +55,13 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- Malformed entity lumps, body queue: G_FreeEdict refuses the first BODY_QUEUE_SIZE (8)
-  edicts after the clients, which InitBodyQue fills when entity 0 is worldspawn. Otherwise
-  the first 8 G_Spawns of SpawnEntities take them (map entities 1 on, the edicts spawn
-  functions G_Spawn, such as a trigger_always's DelayedUse; list them from the source),
-  and those entities stay in use whatever `inGame` says: NOT_DEATHMATCH ones whose
-  spawn function never ran, and ones their spawn function frees partly spawned. G_Find and
-  G_FindTeams still find them (spawn spots, teams, targets), and a killtarget cannot
-  free them. An empty entity ("{ }") is zeroed by ED_ParseEdict and leaves its edict free.
 - Malformed entity lumps, edict 0: entity 0 fills edict 0 whatever its classname, and
   only SP_worldspawn marks it in use, so otherwise G_RunFrame never runs it and G_Find
-  skips it, though its spawn function's side effects stand (a trigger_always's
-  DelayedUse). `settleSpawnFrames` runs it in slot 0 and finds it by "targetname". A
-  later worldspawn entity runs SP_worldspawn (InitBodyQue, CS_SKY and the other
-  configstrings), which `skySettings` ignores.
+  skips it, though its spawn function's side effects stand (`spawnEntities` models the
+  edicts it G_Spawns). `settleSpawnFrames` runs it in slot 0 and finds it by "targetname". A
+  later worldspawn entity runs SP_worldspawn: `spawnEntities` models the edicts its
+  InitBodyQue takes, not its MOVETYPE_PUSH or CS_SKY and the other configstrings, which
+  `skySettings` ignores.
 - A light style change scans every face for the styles it uses (`setLightmapStyles`):
   0.7-0.9 ms per 10 Hz step over 5461 faces, measured 2026-10-04 in Node 22 on a
   synthetic map where no face uses the changed style. A per-style face list would make it scale with the
@@ -167,6 +163,13 @@ Remaining:
   A lump ending inside a final quoted `"}...` key also closes its entity in the game (its
   first character is `}`), and the next COM_Parse starts past the lump's terminator, so
   what follows depends on memory beyond the lump; `parseEntities` throws.
+- Malformed entity lumps, raw entities moved: door_go_down on a raw door team member (a
+  DOOR_TOGGLE master already up sends its team down) and train_resume on a raw func_train
+  a trigger_elevator targets run Move_Calc on zero moveinfo (speed, accel and decel 0).
+  With no distance to go and the entity (or its teammaster) current, Move_Final runs the
+  endfunc at once (door_hit_bottom closes the member's portals, train_wait fires the
+  corner's pathtarget); otherwise Move_Begin divides by the zero speed. `doorUse` only
+  records the state and `elevatorUse` returns.
 
 ## 2. Box trace + pmove
 - `checkBspIntegrity` does not detect node cycles; a node whose child leads back to
