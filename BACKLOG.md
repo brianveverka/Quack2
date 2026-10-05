@@ -51,17 +51,14 @@ deathmatch player, `.wal` textures and `?map=` BSPs from mounted pak/zip data (z
 and self-extractor stubs included), picked archives read by range, checker fallback,
 `pnpm smoke`).
 Remaining:
-- win32 Quake 2 runs every frame at x87 24-bit precision (`_controlfp(_PC_24)` in
-  sys_win.c WinMain), which rounds the C's `double` steps to a 24-bit mantissa too
-  (unless a GL driver resets it mid-frame; see `lightmapExtents`).
-  Ports that follow the C's double (warp.ts, renderer.ts, skyimage.ts, bmodels.ts) match
-  SSE builds instead; decide which build is the reference, then audit them. Its game
-  DLL and exe also convert (int) with MSVC's _ftol (game.dsp and quake2.dsp have no
-  /QIfist): a 64-bit fistp whose low 32 bits are kept, so 0 for NaN and the infinities
-  (and past 2^63) and the value wrapped to 32 bits past int's range, where SSE builds
-  give INT_MIN (`cInt`, in `stepPusher` and `networkCoord`). A door team whose speeds
-  Think_CalcMoveSpeed makes infinite or NaN then stays put in SV_Push on win32 and moves
-  INT_MIN / 8 units an axis a frame on SSE. Not measured on an MSVC build.
+- The turret settle code in bmodels.ts (`normalizeAngle`, `breachState`/`breachThink`,
+  `turretPush`/`turretThink`, the members' added yaw) runs in double where
+  turret_breach_think and SV_Push keep angles, move_angles, pos1/pos2, speed and delta in
+  float, so it misses an SSE build's angles (CLAUDE.md, Constraints): about 1e-5 degrees at
+  rest, up to 0.007 on a slow breach still turning (1546 of 3000 random breaches differ
+  after 300 frames against gcc x86-64, 2026-10-05). Port it in float, round the spawn
+  fields, run AnglesNormalize's loop, and settle on an exact 0 avelocity in place of
+  `SETTLED`; check the 10000-frame cap still holds.
 - A func_train that is a team slave runs its thinks (func_train_find, train_next) at its
   own entity slot in `settleSpawnFrames`; the game runs them in its master's slot, and
   only under a MOVETYPE_PUSH or STOP master (SV_Physics_Pusher). Under a NONE master the
@@ -138,6 +135,14 @@ Remaining:
   the first freed member. In the game, the member before it still points at that edict,
   so if a G_Spawn later in the frame refills it (a DelayedUse), the master's slot runs
   the new edict's think, earlier than its own slot would.
+- A `.pcx` sky side is mapped through the palette and resampled as GL_Upload8's
+  non-paletted branch does, but R_SetSky loads .pcx only with gl_ext_palettedtexture on,
+  where GL_Upload8 uploads the indices as GL_COLOR_INDEX8_EXT at their own size (no
+  index-255 fix, no GL_ResampleTexture). Same result for a 256x256 side without index 255;
+  the skyimage.ts header says otherwise.
+- `main.ts` passes `setTime` fractional milliseconds (performance.now()); the client's
+  cl.time is an int of ms (cl_view.c `cl.refdef.time = cl.time*0.001`), so warp and sky
+  times fall between the values the engine can produce.
 - Uses in the first settle frame are not modeled: a START_ON func_timer whose
   1 + pausetime + delay + wait is due by 0.1 thinks there (`runThink`), firing nothing,
   where the game fires its targets in that frame. Nor is target_explosion_explode's

@@ -50,8 +50,9 @@ import {
 
 // The warp is EmitWaterPolys per vertex: r_turbsin packed four to a vec4 (a float[256]
 // would take 256 uniform vectors, all WebGL2 guarantees). int() truncates as the C cast
-// does and `& 255` wraps negatives as two's complement does. Here the argument is
-// evaluated in single precision, the engine's in double, so a vertex near a table step
+// does in int's range (past it GLSL leaves it undefined, `cInt` gives INT_MIN) and
+// `& 255` wraps negatives as two's complement does. Here the argument is evaluated in
+// single precision, the engine's in double, so a vertex near a table step
 // can pick the neighbouring entry. uScroll is in st units on a warp (EmitWaterPolys adds
 // it before the 1/64) and in texture widths otherwise (v[3] + scroll in gl_rsurf.c).
 const VS = `#version 300 es
@@ -516,7 +517,8 @@ export class WorldRenderer {
     if (rebuild) gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, world.indices.subarray(0, world.indexCount), gl.DYNAMIC_DRAW);
     gl.uniformMatrix4fv(this.uModel, false, IDENTITY);
     gl.uniform1f(this.uTime, this.time);
-    // EmitWaterPolys' scroll for SURF_FLOWING warps, computed as the C does in double.
+    // EmitWaterPolys' scroll for SURF_FLOWING warps, computed as the C does in double; its
+    // store to float scroll is uniform1f's rounding.
     this.warpScroll = -64 * (this.time * 0.5 - Math.trunc(this.time * 0.5));
     this.flowScroll = flowingScroll(this.time);
     this.drawRanges(world.draws);

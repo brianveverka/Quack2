@@ -6,6 +6,8 @@
 // operation is rounded with Math.fround so results match the engine bit for bit where JS
 // allows. Comments mark where the C mixes in `double`.
 
+import { cInt } from "@quack2/sim";
+
 const f = Math.fround;
 
 /** r_turbsin from warpsin.h, the 256 values copied verbatim. */
@@ -219,9 +221,8 @@ export function subdivideWarpPolygon(points: ArrayLike<number>, sVec: ArrayLike<
  * flowing = SURF_FLOWING. Reference for the GPU shader and tests.
  *
  * os/ot are a poly vertex's st. r_newrefdef.time is float seconds, so `time` is rounded to
- * float first. The non-id386 path is ported: a C (int) cast truncates toward zero, and
- * `& 255` on a negative int is two's complement, which JS `| 0` then `& 255` matches for
- * values in int range.
+ * float first. The non-id386 path is ported: the C (int) cast is `cInt` (INT_MIN, so
+ * entry 0, past int's range), and `& 255` on a negative int is two's complement, as in JS.
  */
 export function warpTexCoord(os: number, ot: number, time: number, flowing: boolean): [number, number] {
   const rdt = f(time);
@@ -231,11 +232,11 @@ export function warpTexCoord(os: number, ot: number, time: number, flowing: bool
   const half = rdt * 0.5;
   const scroll = flowing ? f(-64 * (half - Math.trunc(half))) : 0;
   // ot*0.125 + time and the TURBSCALE product are double; the sum with os is float.
-  let s = f(os + TURBSIN[(((ot * 0.125 + rdt) * TURBSCALE) | 0) & 255]!);
+  let s = f(os + TURBSIN[cInt((ot * 0.125 + rdt) * TURBSCALE) & 255]!);
   s = f(s + scroll);
   // s *= (1.0/64): double multiply stored to float.
   s = f(s * (1 / 64));
-  let t = f(ot + TURBSIN[(((os * 0.125 + rdt) * TURBSCALE) | 0) & 255]!);
+  let t = f(ot + TURBSIN[cInt((os * 0.125 + rdt) * TURBSCALE) & 255]!);
   t = f(t * (1 / 64));
   return [s, t];
 }
