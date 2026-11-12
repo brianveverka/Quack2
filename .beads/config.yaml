@@ -73,3 +73,7 @@
 
 sync:
     remote: "git+ssh://git@github.com/brianveverka/Quack2.git"
+
+export:
+    auto: true
+    interval: 1ms
