@@ -11,7 +11,7 @@ where the game has them after spawn and culled by area portal, PVS and view frus
 teams of doors (linear and rotating), plats and buttons (not team slaves) the map's spawn sets moving drawn moving, a free-fly camera,
 `.wal` textures from game data you mount, checker placeholders for anything missing)
 are implemented and tested.
-Player movement, the server, and netcode are not written yet. See [BACKLOG.md](BACKLOG.md).
+Player movement, the server, and netcode are not written yet. Open work is tracked in the repo's Beads issue database (`.beads/`).
 
 ## Layout
 

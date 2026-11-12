@@ -403,7 +403,7 @@ interface Edicts {
   slots: Slot[];
   /** Each spawned or raw entity's index in `slots`. */
   slotOf: Map<number, number>;
-  /** By entity index. Entity 0 is edict 0, "spawned" as `inGame` says, else "free" (BACKLOG.md). */
+  /** By entity index. Entity 0 is edict 0, "spawned" as `inGame` says, else "free" (bd qk-oj1.1). */
   status: SpawnStatus[];
 }
 
@@ -420,7 +420,7 @@ interface Edicts {
  * is freed unless its edict is one G_FreeEdict refuses: with entity 0 a worldspawn the
  * body queue holds those, otherwise the first entities and their spawned edicts do, and
  * such an entity stays raw. A later worldspawn entity's InitBodyQue is modeled here only
- * for the edicts it takes (BACKLOG.md).
+ * for the edicts it takes (bd qk-oj1.1).
  */
 function spawnEntities(entities: readonly BspEntity[]): Edicts {
   const slots: Slot[] = [0];
@@ -1288,7 +1288,7 @@ function timerSpawnThink(ent: BspEntity): number {
 /**
  * func_timer_think at level.time `time`: fire its targets (through a DelayedUse if it has
  * a "delay"), then think again at level.time + wait + crandom() * random. Uses run only
- * in the second frame: one due in the first fires nothing here (BACKLOG.md).
+ * in the second frame: one due in the first fires nothing here (bd qk-oj1.16).
  */
 function timerThink(s: Settle, index: number, time: number): void {
   if (time === levelTimeAt(2)) useTargets(s, userOf(s, index));
@@ -1365,7 +1365,7 @@ function pickTarget(s: Settle, name: string | undefined): number | undefined {
  * An entity as train_next reads it when a train's "target" names it (`pickTarget`): a
  * train's live s.origin and target, and its spawnflags bit 1 is TRAIN_START_ON, which
  * train_next reads as TELEPORT; any other entity's spawn origin, target and spawnflags
- * (not where its spawn function or later moves put it: BACKLOG.md).
+ * (not where its spawn function or later moves put it: bd qk-oj1.11).
  */
 function pathCorner(s: Settle, name: string): PathCorner | undefined {
   const t = pickTarget(s, name);
@@ -1497,7 +1497,7 @@ function elevatorInit(s: Settle, index: number): void {
  * (train_resume), its move begun at once as `trainCurrent` says. A train freed since
  * init is left alone: the game moves its freed edict, or returns on the nextthink of a
  * DelayedUse G_Spawn put there; neither is drawn or opens a portal. So is a raw train,
- * which train_resume sends on with zero moveinfo (BACKLOG.md).
+ * which train_resume sends on with zero moveinfo (bd qk-oj1.23).
  */
 function elevatorUse(s: Settle, index: number, other: number): void {
   const train = s.elevators.get(index);
@@ -1547,7 +1547,7 @@ function doorToggles(ent: BspEntity): boolean {
  * door_go_up returns for a member up, going up or at STATE_TOP (`moveState`); at the top
  * it sets nextthink to level.time + wait, which for a raw member (wait 0, no think) makes
  * the server error in its next SV_RunThink, not modeled. door_go_down on a raw member runs
- * Move_Calc on zero moveinfo, not modeled beyond the state (BACKLOG.md). A member freed
+ * Move_Calc on zero moveinfo, not modeled beyond the state (bd qk-oj1.23). A member freed
  * by a killtarget ends the walk.
  */
 function doorUse(s: Settle, index: number): void {
@@ -1601,7 +1601,7 @@ function doorUse(s: Settle, index: number): void {
  * member or under a freed master. Under any other master it never thinks or is pushed:
  * a use (train_use, train_next) moves it only to a TELEPORT path_corner, and a
  * MOVETYPE_TOSS master (SV_Physics_Toss) would also copy its origin to it as it falls,
- * which needs the trace (BACKLOG.md). A func_door or func_door_rotating
+ * which needs the trace (bd qk-pj8.6). A func_door or func_door_rotating
  * master's think (Think_CalcMoveSpeed) first sets the speeds of every train on its chain
  * to NaN. A train's mins are its inline model's in `bsp`, else 0 0 0 (without
  * `bsp`, or a train with no inline model). A breach on a team whose master is in
@@ -2105,7 +2105,7 @@ export function brushMovers(bsp: Bsp, entities: readonly BspEntity[]): MovingBru
     // A door in a turret's team starts turned by the yaw steps that bring its breach to
     // rest, as `brushModelInstances` draws it (the game takes them after the settle frames
     // when the breach is slow). Move_Calc leaves s.angles alone; AngleMove turns towards
-    // absolute start or end angles, so a rotating door turns the yaw back as it moves (BACKLOG.md).
+    // absolute start or end angles, so a rotating door turns the yaw back as it moves (bd qk-oj1.5).
     const steps = turrets.get(i)?.steps ?? [];
     if (ent.classname === "func_door_rotating") {
       const init = rotatingDoor(ent, origin);

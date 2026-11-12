@@ -79,7 +79,7 @@ export interface PlacedInstance {
   box: Box;
   /**
    * Distinct non-solid clusters its `instanceBox` at the link pose touches. The server
-   * uses its link box (`linkBox`); see BACKLOG.md.
+   * uses its link box (`linkBox`); see bd qk-oj1.4.
    */
   clusters: readonly number[];
   /** areanum and areanum2 of the server's link box at the link pose (boxAreas). */
