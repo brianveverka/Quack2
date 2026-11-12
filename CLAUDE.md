@@ -31,9 +31,9 @@
   Questions, reviews and think-aloud are free and need no ceremony. An aside that touches
   the same files and takes a few minutes is just done and mentioned.
 - State the session's task in the first substantive reply, then hold it. When a new idea
-  arrives mid-task, don't just start on it: offer to park it (one line in `BACKLOG.md`),
-  fork it to a subagent if the work is genuinely self-contained, or take it to a fresh
-  session. Default to parking. Never let an idea evaporate; a one-line backlog entry is
+  arrives mid-task, don't just start on it: offer to park it (one bd issue, see
+  Backlogs), fork it to a subagent if the work is genuinely self-contained, or take it to
+  a fresh session. Default to parking. Never let an idea evaporate; a one-line issue is
   the floor.
 - Size the work before starting. If it is more than one session, say that instead of
   starting. Three shipped and verified changes beat eight half-done.
@@ -42,8 +42,7 @@
 - End every session with a paste-ready prompt for the next one, not a summary. It must
   be self-contained: the task in one line, what is done and verified, what is not, the
   exact files and paths, the next concrete step, and any live state the next session
-  must not assume. Never "continue where we left off". In a chain (see Orchestration)
-  the prompt is passed to the next session instead of printed.
+  must not assume. Never "continue where we left off".
 
 ## Source of truth
 - Documentation and code comments describe **current state and intent**; keep them
@@ -56,21 +55,33 @@
 - If a doc is wrong, say so and offer to fix it; never route around it silently.
 - Don't restate one doc's content inside another; don't start a parallel doc for
   something that already has a home.
-- This file is already loaded as instructions; never re-read it. `BACKLOG.md` and
-  `TASKS.md` are *not* preloaded - read those.
+- This file is already loaded as instructions; never re-read it.
 - A measured fact carries the date it was measured, and is re-measured before it is
   trusted again. Vendor docs are not a measurement.
 - If a change breaks something a doc calls a contract, the contract doc is updated in the
   same commit. Otherwise the change is not finished.
 
 ## Working with a repo
-- Before non-trivial work, read `README.md`, and skim `docs/` and `BACKLOG.md` for
-  current-state and planning docs. Don't assume a fixed set of filenames.
+- Before non-trivial work, read `README.md`, skim `docs/` for current-state and planning
+  docs, and check the queue (see Backlogs). Don't assume a fixed set of filenames.
 - Be explicit about status: implemented-and-verified vs scaffold/unverified vs
   blocked/awaiting-decision. Never describe unverified work as done.
-- Check `./ideas` when it exists; treat `.md` files there as backlog input.
+- Check `./ideas` when it exists; treat `.md` files there as candidate issues.
 - File roles: `README.md` is public-facing, `docs/` holds the deeper contract, `CLAUDE.md`
   is how to work *in* the repo. Read each; don't restate one inside another.
+
+## Backlogs
+
+Issues live in this repo's Beads database (`.beads/`). What next is `bd ready`; in-progress
+work is `bd list --status in_progress`. Tech debt a session notices is an ordinary issue
+labelled `debt`. Text containing `"` goes in through a file. After a session's writes:
+`bd dolt push`, and commit `.beads/issues.jsonl` on the default branch (restore it on a
+task branch; the database is the source).
+
+Milestones are epics, each blocked by the one before, so `bd ready` serves the current
+milestone's items; an item that needs Brian (game data, a real machine, a decision)
+carries the `human` label. A cloud session has no `bd`: it reads `.beads/issues.jsonl`
+and lists anything to file or close in its PR body, for a session with `bd` to apply.
 
 ## Secrets
 - Never commit secrets. The pattern is `.env` generated from a committed `.env.example`,
@@ -81,8 +92,8 @@
 - Ask first for anything that changes live behavior or cannot be undone: deploys,
   anything visible to other people or machines beyond the task branch and its PR, deleting
   data, or committing in a repo the session was not asked to commit in. Opening the PR, marking
-  it ready, enabling squash auto-merge, the green squash merge in Orchestration and
-  spawning the next chain session are pre-approved; any other merge is not.
+  it ready, enabling squash auto-merge and the green squash merge in Orchestration are
+  pre-approved; any other merge is not.
 - Deletions: count first, abort if the count is surprising, never delete on a wildcard.
 - Check the clock before anything time-sensitive.
 
@@ -91,7 +102,7 @@
   over rewrites. Don't touch unrelated files.
 - If a targeted edit fails twice on the same file, stop and rewrite it cleanly; don't
   loop. Never make >2 consecutive edits to a file without re-reading it.
-- Spot an out-of-scope refactor worth doing? Log it to the backlog; don't expand the
+- Spot an out-of-scope refactor worth doing? File it as a `debt` issue; don't expand the
   current change. In-scope cleanups still go inline.
 
 ## After changes
@@ -110,7 +121,7 @@ For each unit of work:
 1. **Work, noting concerns as you hit them,** each with its measurement, in a running
    list outside the repo. Not at the end. At commit the list goes under a `Concerns:`
    heading in the commit message body and into the reviewer's brief; any still open when
-   the PR is marked ready move to the PR body or BACKLOG.md.
+   the PR is marked ready move to the PR body or a `debt` issue.
 2. **Commit and push.** Record the commit ID. This is what makes "review what changed"
    answerable. The push is only a backup: a draft PR the harness opens for it cannot
    auto-merge. Don't mark the PR ready or enable auto-merge until step 6. Once it is
@@ -135,7 +146,7 @@ For each unit of work:
    full-loop file or fixes a BROKEN or MISSED finding, in any tier. Not a re-sweep. Fixes
    introduce defects. Otherwise skip it.
 6. **Fix in a new commit and push,** then open the PR or mark it ready and enable
-   auto-merge together, per Git workflow (Orchestration steps 1-3 in a chain).
+   auto-merge together, per Git workflow and Orchestration's PR steps.
    Don't amend or rebase to tidy up: squash merge collapses the branch into one commit on
    `main`, and pushed commits are never rewritten.
 
@@ -144,15 +155,15 @@ For each unit of work:
   fixtures, scripts, CI, package, build and tool config, permissions, agents, skills.
 - Docs: other Markdown, CLAUDE.md included. One review that checks every claim against
   the code, CI config and tool behavior; a second only as step 5 says.
-- No review: typo or format fixes in Markdown, and BACKLOG.md bullets moved or deleted.
+- No review: typo or format fixes in Markdown, and the `.beads/issues.jsonl` snapshot.
   The PR body says `Review: skipped (<reason>)`.
 
 **What gets fixed now:** decide by coupling, not timing. Caused by this change, or blocks
 the next one: fix now. Belongs to code that's about to be replaced: defer.
 
 ## Orchestration
-Brian is involved only when a decision is his to make. Sessions do the work, review it,
-merge it and start the next session themselves.
+Brian is involved only when a decision is his to make. Sessions do the work, review it
+and merge it themselves.
 
 ### Within a session: delegate the implementation
 - After reading and sizing, split the task into parts with clear interfaces (a module
@@ -165,22 +176,11 @@ merge it and start the next session themselves.
   `pnpm smoke` for renderer changes), and runs the Review loop on the integrated commit.
   Subagents never commit to the task branch, push, or open PRs.
 
-### Between sessions: the chain
-A chain session runs unattended. Where another rule says to propose, offer or ask
-before acting, it decides in-session and records the reasoning in the commit message
-and PR body instead: an approach is proposed in the PR body, a new idea is parked in
-BACKLOG.md, and a task bigger than one session is split, its first part done and the
-rest parked. Parked work goes where it belongs in milestone order: the rest of a split
-replaces its bullet in place, a new idea goes at the end of its milestone. Only
-Escalation stops it.
+### Between sessions
+No chain runs: cloud sessions have no `bd` to take an item from the queue and close it.
+Each session is started with its item named, from `bd ready` (see Backlogs).
 
-The work item is the first bullet under the first numbered milestone (`## 1. ...`) in
-BACKLOG.md that has any, unless the prompt names another. The session deletes that
-bullet in the same PR and updates the milestone's intro to match; a milestone left with
-no bullets is deleted whole. An item the sandbox cannot do (it needs game data, a real
-machine, or Brian) moves to a `## Needs Brian` section at the end of BACKLOG.md with the
-reason, and the session takes the next one.
-
+### Driving the PR to merged
 After step 6 of the Review loop:
 1. Find the branch's PR (`list_pull_requests` by head; the harness may already
    have opened it as a draft), else open it. Mark it ready (`update_pull_request` with
@@ -194,34 +194,20 @@ After step 6 of the Review loop:
    (and `pnpm smoke` for renderer changes) and push. The merge should wake the
    session; as a fallback, keep one `send_later` check-in armed, 50 minutes out, that
    reads the PR (`pull_request_read`) and re-arms itself until the PR is merged or the
-   chain escalates.
-4. When it has merged, first check that no session titled `Quack2 session <N+1>`
-   exists (`list_sessions`, tag `quack2-chain`); a second wake must not spawn twice.
-   Then spawn the next session with `create_session`: this repo as `source_url`, title
-   `Quack2 session <N+1>: <item>`, tag `quack2-chain`, no `permission_mode` (the child
-   inherits this session's), and the next-session prompt (see Session shape) as
-   `prompt`, starting with `Quack2 session <N+1> (chain)`. N is this session's number,
-   from its prompt, or else one more than the highest `Quack2 session <N>` title in
-   `list_sessions`. Confirm it started (`get_session` `status_bucket` is not
-   `failed`), unsubscribe from the PR, cancel the pending check-in, and end with the
-   child's session id.
-5. If no numbered milestone has bullets left, send `PushNotification` saying the
-   backlog is done. If `create_session` is refused (the platform caps a chain's depth)
-   or the child fails, do not retry: send `PushNotification` saying so and end with the
-   paste-ready prompt.
+   session escalates.
 
-### Escalation: when the chain stops for Brian
-Stop the chain (do not spawn) and escalate for:
+### Escalation: when a session stops for Brian
+Stop and escalate for:
 - a design choice with lasting consequences that the code, the docs, the engine source
   and the Constraints do not settle (data layout, matching an engine quirk versus exact
   values, a public interface other milestones will build on);
 - CI still red, or a BROKEN review finding still open, after two fix rounds;
 - anything Consent and blast radius says to ask first about, other than what this
-  section and the chain steps pre-approve.
+  section pre-approves.
 To escalate: send `PushNotification` with the question in one line, then ask with
 `AskUserQuestion` (options, recommendation first) and wait; where that tool is not
-available, end the turn with the question as text. On the answer, continue and resume
-the chain. Everything else is decided in-session and does not stop the chain.
+available, end the turn with the question as text. On the answer, continue. Everything
+else is decided in-session.
 
 ## Git workflow
 - Never commit directly to `main`.
@@ -243,7 +229,7 @@ the chain. Everything else is decided in-session and does not stop the chain.
   waits for it. Enable auto-merge as soon as the PR is ready (step 6 of the Review
   loop), while `check` is still pending. If GitHub refuses with "clean status" (nothing
   pending: checks already passed, or the requirement has lapsed), squash-merge it when
-  Orchestration step 2 allows (in any session, chained or not); otherwise stop and ask
+  Orchestration's PR step 2 allows; otherwise stop and ask
   the user to merge.
 
 ## Project
