@@ -75,12 +75,14 @@
 Issues live in this repo's Beads database (`.beads/`). What next is `bd ready`; in-progress
 work is `bd list --status in_progress`. Tech debt a session notices is an ordinary issue
 labelled `debt`. Text containing `"` goes in through a file. After a session's writes:
-`bd dolt push`, and commit `.beads/issues.jsonl` on the default branch (restore it on a
-task branch; the database is the source).
+`bd dolt push`, and commit `.beads/issues.jsonl` on the task branch, so it reaches `main`
+with that task's PR: `main` takes no direct commits (Git workflow). The database is the
+source; the file is safe to regenerate (`bd export -o <repo>/.beads/issues.jsonl`).
 
 Milestones are epics, each blocked by the one before, so `bd ready` serves the current
 milestone's items; an item that needs Brian (game data, a real machine, a decision)
-carries the `human` label. A cloud session has no `bd`: it reads `.beads/issues.jsonl`
+carries the `human` label. The next item is the oldest of
+`bd ready --exclude-type epic --exclude-label human --sort oldest`. A cloud session has no `bd`: it reads `.beads/issues.jsonl`
 and lists anything to file or close in its PR body, for a session with `bd` to apply.
 
 ## Secrets
@@ -125,7 +127,7 @@ For each unit of work:
 2. **Commit and push.** Record the commit ID. This is what makes "review what changed"
    answerable. The push is only a backup: a draft PR the harness opens for it cannot
    auto-merge. Don't mark the PR ready or enable auto-merge until step 6. Once it is
-   ready any push can merge, so only what Orchestration step 3 drives (CI fixes, review
+   ready any push can merge, so only what Orchestration's PR step 3 drives (CI fixes, review
    fixes, merges from `main`) goes on that branch; other work starts a new one.
 3. **Adversarial review, scoped to that commit,** at its tier (below). Hand it to a fresh
    reviewer (subagent or separate session), read-only. It reports; it does not fix.
@@ -202,8 +204,8 @@ Stop and escalate for:
   and the Constraints do not settle (data layout, matching an engine quirk versus exact
   values, a public interface other milestones will build on);
 - CI still red, or a BROKEN review finding still open, after two fix rounds;
-- anything Consent and blast radius says to ask first about, other than what this
-  section pre-approves.
+- anything Consent and blast radius says to ask first about, other than what it and
+  Driving the PR to merged pre-approve.
 To escalate: send `PushNotification` with the question in one line, then ask with
 `AskUserQuestion` (options, recommendation first) and wait; where that tool is not
 available, end the turn with the question as text. On the answer, continue. Everything
