@@ -7,3 +7,10 @@ coverage/
 # Game data (pak files, textures, models, sounds). Never committed: id Software
 # assets are not redistributable, and community maps arrive at runtime.
 assets/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*
