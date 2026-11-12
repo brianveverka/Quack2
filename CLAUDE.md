@@ -77,13 +77,15 @@ work is `bd list --status in_progress`. Tech debt a session notices is an ordina
 labelled `debt`. Text containing `"` goes in through a file. After a session's writes:
 `bd dolt push`, and commit `.beads/issues.jsonl` on the task branch, so it reaches `main`
 with that task's PR: `main` takes no direct commits (Git workflow). The database is the
-source; the file is safe to regenerate (`bd export -o <repo>/.beads/issues.jsonl`).
+source; the file is safe to regenerate (`bd export -o <repo>/.beads/issues.jsonl`), and a
+merge conflict in it is resolved that way, never by hand.
 
 Milestones are epics, each blocked by the one before, so `bd ready` serves the current
 milestone's items; an item that needs Brian (game data, a real machine, a decision)
-carries the `human` label. The next item is the oldest of
-`bd ready --exclude-type epic --exclude-label human --sort oldest`. A cloud session has no `bd`: it reads `.beads/issues.jsonl`
-and lists anything to file or close in its PR body, for a session with `bd` to apply.
+carries the `human` label. The next item is the first of
+`bd ready --exclude-type epic --exclude-label human,migration --sort oldest`. A cloud
+session has no `bd`: it reads `.beads/issues.jsonl` and lists anything to file or close
+in its PR body, for a session with `bd` to apply.
 
 ## Secrets
 - Never commit secrets. The pattern is `.env` generated from a committed `.env.example`,
@@ -127,8 +129,9 @@ For each unit of work:
 2. **Commit and push.** Record the commit ID. This is what makes "review what changed"
    answerable. The push is only a backup: a draft PR the harness opens for it cannot
    auto-merge. Don't mark the PR ready or enable auto-merge until step 6. Once it is
-   ready any push can merge, so only what Orchestration's PR step 3 drives (CI fixes, review
-   fixes, merges from `main`) goes on that branch; other work starts a new one.
+   ready any push can merge, so only what Driving the PR to merged step 3 covers (CI
+   fixes, review fixes, merges from `main`) goes on that branch; other work starts a new
+   one.
 3. **Adversarial review, scoped to that commit,** at its tier (below). Hand it to a fresh
    reviewer (subagent or separate session), read-only. It reports; it does not fix.
    Brief it to:
@@ -148,7 +151,7 @@ For each unit of work:
    full-loop file or fixes a BROKEN or MISSED finding, in any tier. Not a re-sweep. Fixes
    introduce defects. Otherwise skip it.
 6. **Fix in a new commit and push,** then open the PR or mark it ready and enable
-   auto-merge together, per Git workflow and Orchestration's PR steps.
+   auto-merge together, per Git workflow and Driving the PR to merged.
    Don't amend or rebase to tidy up: squash merge collapses the branch into one commit on
    `main`, and pushed commits are never rewritten.
 
@@ -231,7 +234,7 @@ else is decided in-session.
   waits for it. Enable auto-merge as soon as the PR is ready (step 6 of the Review
   loop), while `check` is still pending. If GitHub refuses with "clean status" (nothing
   pending: checks already passed, or the requirement has lapsed), squash-merge it when
-  Orchestration's PR step 2 allows; otherwise stop and ask
+  Driving the PR to merged step 2 allows; otherwise stop and ask
   the user to merge.
 
 ## Project
